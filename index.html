@@ -1,0 +1,1564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Tracker" />
+<meta name="theme-color" content="#1c1611" />
+<title>Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+/* ============================================================
+   THEME TOKENS - dark espresso editorial, golden amber accent
+   Kept as CSS variables so the whole palette is in one place.
+   ============================================================ */
+:root{
+  --bg:#1c1611;            /* espresso base */
+  --bg-2:#241c15;          /* raised surface */
+  --bg-3:#2e251c;          /* card / input */
+  --bg-4:#3a2f23;          /* hover / border-strong */
+  --line:#3a2f2333;        /* hairline */
+  --line-2:#4a3d2e;        /* visible border */
+  --ink:#f3ead9;           /* primary text, warm cream */
+  --ink-2:#cbbca4;         /* secondary text */
+  --ink-3:#998a73;         /* muted text */
+  --amber:#e0a33e;         /* primary accent, golden amber */
+  --amber-2:#f0bd63;       /* lighter amber */
+  --amber-dim:#e0a33e22;   /* amber tint fill */
+  --amber-line:#e0a33e55;  /* amber border */
+  --green:#7fa66a;         /* done / success */
+  --blue:#6f9bc4;          /* info */
+  --red:#cf6b54;           /* destructive / overdue */
+  --violet:#a98bc4;        /* someday */
+  --radius:14px;
+  --radius-sm:10px;
+  --radius-lg:20px;
+  --shadow:0 6px 24px -8px rgba(0,0,0,0.55);
+  --shadow-lg:0 18px 50px -12px rgba(0,0,0,0.7);
+  --nav-h:64px;
+  --ease:cubic-bezier(.22,.61,.36,1);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{margin:0;padding:0;height:100%;}
+body{
+  background:
+    radial-gradient(120% 80% at 85% -10%, #2a2017 0%, transparent 55%),
+    radial-gradient(140% 90% at -10% 110%, #241b13 0%, transparent 50%),
+    var(--bg);
+  background-attachment:fixed;
+  color:var(--ink);
+  font-family:'Outfit',-apple-system,system-ui,sans-serif;
+  font-size:16px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  overscroll-behavior-y:none;
+}
+#root{min-height:100%;}
+/* faint film grain for editorial texture */
+body::after{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.025;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+h1,h2,h3,h4{font-family:'Fraunces',Georgia,serif;font-weight:600;margin:0;letter-spacing:-0.01em;}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit;}
+input,textarea,select{font-family:inherit;font-size:16px;color:var(--ink);}
+::placeholder{color:var(--ink-3);}
+a{color:var(--amber);}
+
+/* ---------- layout ---------- */
+.app{max-width:680px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;padding-bottom:calc(var(--nav-h) + env(safe-area-inset-bottom));}
+.screen{flex:1;padding:0 18px 24px;animation:fade .35s var(--ease);}
+@keyframes fade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
+.topbar{position:sticky;top:0;z-index:40;padding:calc(env(safe-area-inset-top) + 14px) 18px 12px;
+  background:linear-gradient(180deg, var(--bg) 60%, transparent);}
+.topbar-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;}
+.eyebrow{font-family:'Outfit';font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--amber);font-weight:600;}
+.title{font-size:30px;line-height:1.05;margin-top:2px;}
+.title-sm{font-size:22px;}
+.subtle{color:var(--ink-3);font-size:13px;}
+
+/* ---------- sync banner ---------- */
+.sync{display:flex;align-items:center;gap:8px;font-size:12px;padding:7px 12px;border-radius:999px;
+  margin-top:10px;border:1px solid var(--line-2);background:var(--bg-2);width:fit-content;transition:.3s;}
+.sync .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3);}
+.sync.idle .dot{background:var(--green);}
+.sync.busy .dot{background:var(--amber);animation:pulse 1s infinite;}
+.sync.pending .dot{background:var(--blue);}
+.sync.error{border-color:var(--red);color:var(--red);}
+.sync.error .dot{background:var(--red);}
+@keyframes pulse{50%{opacity:.3;}}
+
+/* ---------- cards & lists ---------- */
+.card{background:var(--bg-3);border:1px solid var(--line-2);border-radius:var(--radius);padding:14px;box-shadow:var(--shadow);}
+.list{display:flex;flex-direction:column;gap:10px;margin-top:14px;}
+.item{display:flex;gap:12px;align-items:flex-start;background:var(--bg-2);border:1px solid var(--line-2);
+  border-radius:var(--radius);padding:13px 14px;transition:.18s var(--ease);}
+.item:active{transform:scale(.99);}
+.item.done{opacity:.5;}
+.item-body{flex:1;min-width:0;}
+.item-title{font-size:15.5px;font-weight:500;line-height:1.35;word-break:break-word;}
+.item.done .item-title{text-decoration:line-through;}
+.item-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;align-items:center;}
+.chip{font-size:11px;padding:3px 9px;border-radius:999px;background:var(--bg-4);color:var(--ink-2);
+  display:inline-flex;align-items:center;gap:4px;font-weight:500;letter-spacing:.01em;}
+.chip.amber{background:var(--amber-dim);color:var(--amber-2);border:1px solid var(--amber-line);}
+.chip.red{background:#cf6b5422;color:#e08c78;}
+.chip.blue{background:#6f9bc422;color:#8fb6d8;}
+.chip.green{background:#7fa66a22;color:#9cc486;}
+.chip.violet{background:#a98bc422;color:#c0a8d8;}
+.chip.work{background:#6f9bc41a;color:#8fb6d8;}
+.chip.personal{background:#cf8a5422;color:#e0a878;}
+
+/* checkbox */
+.check{width:22px;height:22px;border-radius:7px;border:2px solid var(--line-2);flex-shrink:0;margin-top:1px;
+  display:flex;align-items:center;justify-content:center;transition:.18s;background:transparent;}
+.check.on{background:var(--amber);border-color:var(--amber);}
+.check svg{width:13px;height:13px;stroke:var(--bg);stroke-width:3.5;fill:none;opacity:0;transition:.15s;}
+.check.on svg{opacity:1;}
+
+/* ---------- forms ---------- */
+.field{margin-bottom:14px;}
+.label{display:block;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px;font-weight:600;}
+.input,.textarea,.select{width:100%;background:var(--bg-3);border:1px solid var(--line-2);border-radius:var(--radius-sm);
+  padding:12px 13px;color:var(--ink);outline:none;transition:.18s;}
+.input:focus,.textarea:focus,.select:focus{border-color:var(--amber-line);background:var(--bg-4);}
+.textarea{resize:vertical;min-height:84px;line-height:1.5;}
+.select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%23998a73' stroke-width='2'%3E%3Cpath d='M1 1l5 5 5-5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:34px;}
+.row{display:flex;gap:10px;}
+.row>*{flex:1;}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 18px;border-radius:var(--radius-sm);
+  font-weight:600;font-size:15px;transition:.18s var(--ease);border:1px solid transparent;}
+.btn:active{transform:scale(.97);}
+.btn-primary{background:var(--amber);color:#241a0c;}
+.btn-primary:active{background:var(--amber-2);}
+.btn-ghost{background:var(--bg-3);color:var(--ink);border-color:var(--line-2);}
+.btn-danger{background:#cf6b541a;color:var(--red);border-color:#cf6b5455;}
+.btn-block{width:100%;}
+.btn-sm{padding:8px 13px;font-size:13px;}
+
+/* segmented control / tabs */
+.tabs{display:flex;gap:4px;background:var(--bg-2);border:1px solid var(--line-2);border-radius:999px;padding:4px;margin-top:14px;overflow-x:auto;scrollbar-width:none;}
+.tabs::-webkit-scrollbar{display:none;}
+.tab{flex:1;white-space:nowrap;padding:8px 14px;border-radius:999px;font-size:13px;font-weight:600;color:var(--ink-3);transition:.18s;}
+.tab.on{background:var(--amber-dim);color:var(--amber-2);}
+
+/* pills for filter */
+.pills{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px;}
+.pill{padding:6px 13px;border-radius:999px;font-size:12.5px;font-weight:600;background:var(--bg-2);border:1px solid var(--line-2);color:var(--ink-3);transition:.15s;}
+.pill.on{background:var(--amber);color:#241a0c;border-color:var(--amber);}
+
+/* empty state */
+.empty{text-align:center;padding:60px 20px;color:var(--ink-3);}
+.empty .glyph{font-family:'Fraunces';font-size:46px;color:var(--line-2);margin-bottom:10px;}
+.empty p{margin:6px 0 0;font-size:14px;}
+
+/* ---------- bottom nav ---------- */
+.nav{position:fixed;left:0;right:0;bottom:0;z-index:50;height:calc(var(--nav-h) + env(safe-area-inset-bottom));
+  padding-bottom:env(safe-area-inset-bottom);
+  background:rgba(28,22,17,.92);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+  border-top:1px solid var(--line-2);display:flex;align-items:center;justify-content:space-around;max-width:680px;margin:0 auto;}
+.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--ink-3);font-size:10px;font-weight:600;letter-spacing:.04em;padding:8px 0;transition:.15s;}
+.nav-btn.on{color:var(--amber);}
+.nav-btn svg{width:23px;height:23px;stroke:currentColor;fill:none;stroke-width:1.8;}
+.nav-fab{flex:0 0 auto;margin-top:-22px;}
+.fab{width:54px;height:54px;border-radius:50%;background:var(--amber);color:#241a0c;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 10px 26px -6px rgba(224,163,62,.6);transition:.18s var(--ease);}
+.fab:active{transform:scale(.92) rotate(45deg);}
+.fab svg{width:26px;height:26px;stroke:#241a0c;stroke-width:2.4;fill:none;}
+
+/* ---------- sheet / modal ---------- */
+.scrim{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.55);backdrop-filter:blur(3px);animation:fade .2s;}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:61;max-width:680px;margin:0 auto;
+  background:var(--bg-2);border-top-left-radius:var(--radius-lg);border-top-right-radius:var(--radius-lg);
+  border-top:1px solid var(--line-2);box-shadow:var(--shadow-lg);
+  max-height:92vh;overflow-y:auto;animation:slideup .32s var(--ease);
+  padding:8px 18px calc(24px + env(safe-area-inset-bottom));}
+@keyframes slideup{from{transform:translateY(100%);}to{transform:none;}}
+.sheet-grip{width:38px;height:4px;border-radius:999px;background:var(--line-2);margin:8px auto 14px;}
+.sheet-title{font-size:21px;margin-bottom:4px;}
+.sheet h4{font-size:17px;}
+
+/* action sheet rows */
+.act-row{display:flex;align-items:center;gap:14px;padding:15px 6px;border-bottom:1px solid var(--line);width:100%;text-align:left;transition:.15s;}
+.act-row:last-child{border-bottom:none;}
+.act-row:active{background:var(--bg-3);}
+.act-ic{width:40px;height:40px;border-radius:11px;background:var(--amber-dim);border:1px solid var(--amber-line);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.act-ic svg{width:20px;height:20px;stroke:var(--amber-2);fill:none;stroke-width:1.8;}
+.act-txt b{display:block;font-size:15.5px;font-weight:600;}
+.act-txt span{font-size:12.5px;color:var(--ink-3);}
+
+/* ---------- matrix (eisenhower) ---------- */
+.matrix{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px;}
+.quad{background:var(--bg-2);border:1px solid var(--line-2);border-radius:var(--radius);padding:12px;min-height:130px;}
+.quad-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;}
+.quad-head b{font-family:'Fraunces';font-size:14px;font-weight:600;}
+.quad.q1{border-top:2px solid var(--red);}
+.quad.q2{border-top:2px solid var(--green);}
+.quad.q3{border-top:2px solid var(--amber);}
+.quad.q4{border-top:2px solid var(--ink-3);}
+.quad-item{font-size:12.5px;padding:7px 9px;background:var(--bg-3);border-radius:8px;margin-bottom:6px;line-height:1.3;border:1px solid var(--line);}
+.quad-item:active{border-color:var(--amber-line);}
+.quad-count{font-size:11px;color:var(--ink-3);}
+
+/* ---------- review (AI results) ---------- */
+.rev-item{background:var(--bg-3);border:1px solid var(--line-2);border-radius:var(--radius);padding:12px;margin-bottom:10px;}
+.rev-item.skip{opacity:.4;}
+
+/* progress / weekly review */
+.steps{display:flex;flex-direction:column;gap:10px;margin-top:16px;}
+.step{display:flex;gap:12px;align-items:flex-start;background:var(--bg-2);border:1px solid var(--line-2);border-radius:var(--radius);padding:14px;}
+.step.done{border-color:var(--amber-line);}
+.step-n{width:26px;height:26px;border-radius:50%;border:2px solid var(--line-2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0;color:var(--ink-3);}
+.step.done .step-n{background:var(--amber);border-color:var(--amber);color:#241a0c;}
+.step b{font-size:15px;font-weight:600;}
+.step p{margin:3px 0 0;font-size:13px;color:var(--ink-3);}
+
+/* diagnostics */
+.log{font-family:ui-monospace,Menlo,monospace;font-size:11px;background:#120d09;border:1px solid var(--line-2);border-radius:var(--radius-sm);padding:12px;max-height:340px;overflow:auto;line-height:1.6;white-space:pre-wrap;word-break:break-word;}
+.log .tag{color:var(--amber-2);}
+.log .err{color:var(--red);}
+.log .t{color:var(--ink-3);}
+
+/* misc */
+.divider{height:1px;background:var(--line-2);margin:18px 0;}
+.hint{font-size:12.5px;color:var(--ink-3);line-height:1.5;margin-top:6px;}
+.danger-text{color:var(--red);}
+.center{text-align:center;}
+.spin{width:20px;height:20px;border:2px solid var(--amber-line);border-top-color:var(--amber);border-radius:50%;animation:spin .7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.toast{position:fixed;bottom:calc(var(--nav-h) + 24px);left:50%;transform:translateX(-50%);z-index:80;
+  background:var(--bg-4);border:1px solid var(--line-2);color:var(--ink);padding:11px 18px;border-radius:999px;font-size:13.5px;font-weight:500;box-shadow:var(--shadow-lg);animation:fade .2s;max-width:90%;}
+.subtasks{margin-top:8px;display:flex;flex-direction:column;gap:5px;}
+.subtask{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink-2);}
+.subtask .mini{width:16px;height:16px;border-radius:5px;border:1.5px solid var(--line-2);flex-shrink:0;}
+.subtask .mini.on{background:var(--amber);border-color:var(--amber);}
+.subtask.done span{text-decoration:line-through;opacity:.6;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+/* ============================================================
+   LOGGING - module-level ring buffer, ASCII-only bracketed tags.
+   iPhone has no console, so Settings -> Diagnostics renders this.
+   ============================================================ */
+const LOG_CAP = 600;
+const LOG = [];
+function log(tag, msg){
+  // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
+  const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
+  LOG.push(line);
+  if (LOG.length > LOG_CAP) LOG.shift();
+  try { console.log("[" + tag + "] " + line.msg); } catch(e){}
+}
+log("INIT", "script booting");
+
+/* ============================================================
+   SMALL UTILITIES
+   ============================================================ */
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+const nowISO = () => new Date().toISOString();
+const todayKey = (d) => { const x = d?new Date(d):new Date(); return x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")+"-"+String(x.getDate()).padStart(2,"0"); };
+const TODAY = () => todayKey();
+function fmtDate(iso){
+  if(!iso) return "";
+  const d = new Date(iso + (iso.length<=10 ? "T00:00:00" : ""));
+  if(isNaN(d)) return "";
+  return d.toLocaleDateString(undefined,{month:"short",day:"numeric"});
+}
+function isOverdue(due){ return due && due < TODAY(); }
+function isToday(due){ return due && due === TODAY(); }
+
+// UTF-8 safe base64 (btoa breaks on multibyte). Used for GitHub Contents API.
+function utf8ToB64(str){
+  try { return btoa(String.fromCharCode(...new TextEncoder().encode(str))); }
+  catch(e){ log("ERROR","utf8ToB64 failed: "+e.message); throw e; }
+}
+function b64ToUtf8(b64){
+  try { const bin = atob(b64.replace(/\n/g,"")); const bytes = Uint8Array.from(bin,c=>c.charCodeAt(0)); return new TextDecoder().decode(bytes); }
+  catch(e){ log("ERROR","b64ToUtf8 failed: "+e.message); throw e; }
+}
+
+/* ============================================================
+   LOCAL STORAGE LAYER (namespaced "tracker:")
+   Source of truth at rest = GitHub; this is the offline cache.
+   ============================================================ */
+const NS = "tracker:";
+const lsGet = (k, fb) => { try { const v = localStorage.getItem(NS+k); return v===null ? fb : JSON.parse(v); } catch(e){ log("ERROR","lsGet "+k+": "+e.message); return fb; } };
+const lsSet = (k, v) => { try { localStorage.setItem(NS+k, JSON.stringify(v)); } catch(e){ log("ERROR","lsSet "+k+": "+e.message); } };
+const lsDel = (k) => { try { localStorage.removeItem(NS+k); } catch(e){} };
+
+const FILES = ["todos","ideas","projects","goals"]; // one JSON file per entity
+
+/* ============================================================
+   GITHUB CONTENTS API
+   Fine-grained PAT scoped to the private data repo, Contents R/W.
+   ============================================================ */
+function ghHeaders(token){
+  return { "Authorization":"Bearer "+token, "Accept":"application/vnd.github+json", "X-GitHub-Api-Version":"2022-11-28" };
+}
+function ghPath(cfg, file){ return "https://api.github.com/repos/"+cfg.owner+"/"+cfg.repo+"/contents/data/"+file+".json"; }
+
+// Read one entity file -> { data:[], sha } | { data:[], sha:null } if missing.
+async function ghRead(cfg, file){
+  const url = ghPath(cfg, file);
+  log("GITHUB","GET "+file);
+  try{
+    const r = await fetch(url, { headers: ghHeaders(cfg.token) });
+    if(r.status === 404){ log("GITHUB",file+" not found (new file)"); return { data:[], sha:null }; }
+    if(!r.ok){ const t=await r.text(); log("ERROR","GET "+file+" "+r.status+" "+t.slice(0,120)); throw new Error("GitHub "+r.status); }
+    const j = await r.json();
+    const parsed = JSON.parse(b64ToUtf8(j.content));
+    log("GITHUB","GET "+file+" ok ("+(parsed.length||0)+" rows)");
+    return { data: Array.isArray(parsed)?parsed:[], sha: j.sha };
+  }catch(e){ log("ERROR","ghRead "+file+": "+e.message); throw e; }
+}
+
+// Write one entity file. sha required for updates (null for create).
+async function ghWrite(cfg, file, data, sha){
+  const url = ghPath(cfg, file);
+  log("GITHUB","PUT "+file+" ("+data.length+" rows)");
+  try{
+    const body = { message:"update "+file+" "+nowISO(), content: utf8ToB64(JSON.stringify(data,null,2)) };
+    if(sha) body.sha = sha;
+    const r = await fetch(url, { method:"PUT", headers:{...ghHeaders(cfg.token),"Content-Type":"application/json"}, body:JSON.stringify(body) });
+    if(!r.ok){ const t=await r.text(); log("ERROR","PUT "+file+" "+r.status+" "+t.slice(0,160)); throw new Error("GitHub write "+r.status); }
+    const j = await r.json();
+    log("GITHUB","PUT "+file+" ok");
+    return j.content.sha;
+  }catch(e){ log("ERROR","ghWrite "+file+": "+e.message); throw e; }
+}
+
+// SETUP WRITE-TEST: PUT then DELETE a sentinel so a bad/under-scoped token
+// fails LOUDLY at setup, not on the first real save (Dining Log lesson).
+async function ghWriteTest(cfg){
+  const url = "https://api.github.com/repos/"+cfg.owner+"/"+cfg.repo+"/contents/data/.write-test";
+  log("SETUP","write-test begin");
+  try{
+    const put = await fetch(url,{method:"PUT",headers:{...ghHeaders(cfg.token),"Content-Type":"application/json"},
+      body:JSON.stringify({message:"write-test",content:utf8ToB64("ok "+nowISO())})});
+    if(!put.ok){ const t=await put.text(); log("ERROR","write-test PUT "+put.status+" "+t.slice(0,160));
+      if(put.status===404) throw new Error("Repo not found or token lacks access. Check owner/repo and that the PAT is scoped to this repo.");
+      if(put.status===403||put.status===401) throw new Error("Token rejected (need Contents: Read and write on the data repo).");
+      throw new Error("Write test failed ("+put.status+")."); }
+    const j = await put.json();
+    const del = await fetch(url,{method:"DELETE",headers:{...ghHeaders(cfg.token),"Content-Type":"application/json"},
+      body:JSON.stringify({message:"write-test cleanup",sha:j.content.sha})});
+    if(!del.ok) log("SYNC","write-test cleanup non-fatal "+del.status);
+    log("SETUP","write-test passed");
+    return true;
+  }catch(e){ log("ERROR","write-test: "+e.message); throw e; }
+}
+
+/* ============================================================
+   CLAUDE API - direct browser call with the user's own key.
+   Used for: (1) brain-dump text -> structured items,
+             (2) photo OCR -> structured items.
+   NOTE: key lives in localStorage on this device only.
+   ============================================================ */
+const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+const EXTRACT_SYSTEM =
+  "You convert messy input into a clean list of actionable items for a GTD tracker. "+
+  "Return ONLY a JSON array, no prose, no markdown fences. Each element: "+
+  '{"title": string (imperative, concise), '+
+  '"type": "todo"|"idea"|"project", '+
+  '"note": string (optional, short context), '+
+  '"suggestedStatus": "inbox"|"next"|"someday" }. '+
+  "A multi-step outcome is a project; a raw thought to sit on is an idea; a single action is a todo. "+
+  "Default type to todo and suggestedStatus to inbox when unsure. Keep titles under 12 words.";
+
+function stripFences(s){ return String(s).replace(/```json/gi,"").replace(/```/g,"").trim(); }
+
+async function claudeExtract(cfg, content){
+  // content is the messages[0].content array (text and/or image blocks)
+  log("AI","extract request model="+cfg.model);
+  if(!cfg.apiKey) throw new Error("No Claude API key set (Settings).");
+  try{
+    const r = await fetch(ANTHROPIC_URL,{
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "x-api-key":cfg.apiKey,
+        "anthropic-version":"2023-06-01",
+        "anthropic-dangerous-direct-browser-access":"true"
+      },
+      body:JSON.stringify({
+        model: cfg.model || "claude-sonnet-4-6",
+        max_tokens: 16000,                 // generous: OCR output can be large (Dining Log lesson)
+        system: EXTRACT_SYSTEM,
+        messages:[{ role:"user", content }]
+      })
+    });
+    if(!r.ok){ const t=await r.text(); log("ERROR","claude "+r.status+" "+t.slice(0,200));
+      if(r.status===401) throw new Error("Claude key rejected (401). Check the API key in Settings.");
+      throw new Error("Claude API error "+r.status+"."); }
+    const j = await r.json();
+    if(j.stop_reason === "max_tokens"){ // truncated -> guide user instead of JSON parse crash
+      log("AI","stop_reason max_tokens (truncated)");
+      throw new Error("That was too large to read in one pass. Try fewer lines or scan a smaller section.");
+    }
+    const text = (j.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
+    log("AI","raw len="+text.length);
+    let arr;
+    try { arr = JSON.parse(stripFences(text)); }
+    catch(e){ log("ERROR","JSON parse: "+e.message+" :: "+text.slice(0,120)); throw new Error("Could not read structured items back. Try again."); }
+    if(!Array.isArray(arr)) throw new Error("Unexpected response shape.");
+    log("AI","extracted "+arr.length+" items");
+    return arr;
+  }catch(e){ log("ERROR","claudeExtract: "+e.message); throw e; }
+}
+
+// Resize an image File to <=1568px long edge, JPEG q0.82 (keeps OCR accurate, cuts tokens).
+function resizeImage(file){
+  return new Promise((resolve,reject)=>{
+    log("OCR","resize "+(file.size/1024|0)+"KB "+file.type);
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      try{
+        const max = 1568;
+        let { width:w, height:h } = img;
+        if(Math.max(w,h) > max){ const s = max/Math.max(w,h); w=Math.round(w*s); h=Math.round(h*s); }
+        const c = document.createElement("canvas"); c.width=w; c.height=h;
+        c.getContext("2d").drawImage(img,0,0,w,h);
+        const dataUrl = c.toDataURL("image/jpeg",0.82);
+        URL.revokeObjectURL(url);
+        log("OCR","resized to "+w+"x"+h);
+        resolve(dataUrl.split(",")[1]); // base64 only
+      }catch(e){ log("ERROR","resize: "+e.message); reject(e); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Could not load image.")); };
+    img.src = url;
+  });
+}
+
+/* ============================================================
+   DATA STORE HOOK
+   Holds all entities in memory + localStorage. Optimistic local
+   writes, then push to GitHub. Dirty files retry on next sync /
+   when the device comes back online.
+   ============================================================ */
+const STATUS_ORDER = ["inbox","next","waiting","someday","done"];
+const QUADRANTS = {
+  q1:{label:"Do First", hint:"Urgent + Important", cls:"q1"},
+  q2:{label:"Schedule", hint:"Important, Not Urgent", cls:"q2"},
+  q3:{label:"Do Quick", hint:"Urgent, Not Important", cls:"q3"},
+  q4:{label:"Drop?", hint:"Neither", cls:"q4"}
+};
+
+function useStore(){
+  const [cfg, setCfg] = useState(() => lsGet("cfg", { owner:"", repo:"", token:"", apiKey:"", model:"claude-sonnet-4-6", configured:false }));
+  const [data, setData] = useState(() => {
+    const d = {}; FILES.forEach(f => d[f] = lsGet("cache:"+f, [])); return d;
+  });
+  const [sha, setSha] = useState(() => lsGet("sha", {}));
+  const [dirty, setDirty] = useState(() => lsGet("dirty", {}));
+  const [sync, setSync] = useState("idle");      // idle | busy | pending | error
+  const [syncMsg, setSyncMsg] = useState("");
+  const [online, setOnline] = useState(navigator.onLine);
+  const cfgRef = useRef(cfg); cfgRef.current = cfg;
+  const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
+  const dataRef = useRef(data); dataRef.current = data;
+  const shaRef = useRef(sha); shaRef.current = sha;
+
+  // persist config
+  const saveCfg = useCallback((next) => { setCfg(next); lsSet("cfg", next); }, []);
+
+  // mark a file dirty + persist its cache
+  const markDirty = useCallback((file, rows) => {
+    lsSet("cache:"+file, rows);
+    const nd = { ...dirtyRef.current, [file]:true }; setDirty(nd); lsSet("dirty", nd);
+  }, []);
+
+  // push all dirty files to GitHub
+  const pushDirty = useCallback(async () => {
+    const c = cfgRef.current;
+    if(!c.configured){ return; }
+    if(!navigator.onLine){ log("SYNC","offline; deferring push"); setSync("pending"); return; }
+    const pending = FILES.filter(f => dirtyRef.current[f]);
+    if(pending.length===0){ setSync("idle"); return; }
+    setSync("busy"); setSyncMsg("Saving...");
+    log("SYNC","push "+pending.join(","));
+    try{
+      for(const f of pending){
+        const newSha = await ghWrite(c, f, dataRef.current[f], shaRef.current[f]);
+        const ns = { ...shaRef.current, [f]:newSha }; shaRef.current = ns; setSha(ns); lsSet("sha", ns);
+        const nd = { ...dirtyRef.current, [f]:false }; dirtyRef.current = nd; setDirty(nd); lsSet("dirty", nd);
+      }
+      setSync("idle"); setSyncMsg("");
+      log("SYNC","push complete");
+    }catch(e){
+      setSync("error"); setSyncMsg(e.message||"Sync failed");
+      log("ERROR","pushDirty: "+e.message);
+    }
+  }, []);
+
+  // pull from GitHub (only overwrites files that are NOT locally dirty)
+  const pull = useCallback(async () => {
+    const c = cfgRef.current;
+    if(!c.configured || !navigator.onLine) return;
+    setSync("busy"); setSyncMsg("Syncing...");
+    log("SYNC","pull all");
+    try{
+      const nextData = { ...dataRef.current }; const nextSha = { ...shaRef.current };
+      for(const f of FILES){
+        if(dirtyRef.current[f]){ log("SYNC","skip pull "+f+" (dirty)"); continue; }
+        const res = await ghRead(c, f);
+        nextData[f] = res.data; nextSha[f] = res.sha; lsSet("cache:"+f, res.data);
+      }
+      dataRef.current = nextData; setData(nextData);
+      shaRef.current = nextSha; setSha(nextSha); lsSet("sha", nextSha);
+      setSync(FILES.some(f=>dirtyRef.current[f])?"pending":"idle"); setSyncMsg("");
+      log("SYNC","pull complete");
+      await pushDirty();
+    }catch(e){ setSync("error"); setSyncMsg(e.message||"Sync failed"); log("ERROR","pull: "+e.message); }
+  }, [pushDirty]);
+
+  // online/offline listeners
+  useEffect(() => {
+    const on = () => { setOnline(true); log("SYNC","online"); pushDirty(); };
+    const off = () => { setOnline(false); log("SYNC","offline"); setSync("pending"); };
+    window.addEventListener("online", on); window.addEventListener("offline", off);
+    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
+  }, [pushDirty]);
+
+  // initial pull on mount if configured
+  useEffect(() => { if(cfgRef.current.configured){ pull(); } /* else first-run setup */ }, [pull]);
+
+  // periodic retry while dirty
+  useEffect(() => {
+    const id = setInterval(() => { if(FILES.some(f=>dirtyRef.current[f]) && navigator.onLine) pushDirty(); }, 30000);
+    return () => clearInterval(id);
+  }, [pushDirty]);
+
+  // generic mutators ------------------------------------------------
+  const upsert = useCallback((file, row) => {
+    const list = dataRef.current[file] || [];
+    const i = list.findIndex(x => x.id === row.id);
+    let next;
+    if(i>=0){ next = list.slice(); next[i] = { ...next[i], ...row, updatedAt:nowISO() }; }
+    else { next = [{ ...row, id: row.id||uid(), createdAt:nowISO(), updatedAt:nowISO() }, ...list]; }
+    const nd = { ...dataRef.current, [file]:next }; dataRef.current = nd; setData(nd);
+    markDirty(file, next);
+    log("SAVE", file+" upsert "+(row.title||row.name||row.id||"").slice(0,40));
+    pushDirty();
+    return next.find(x => x.id === (row.id||next[0].id));
+  }, [markDirty, pushDirty]);
+
+  const remove = useCallback((file, id) => {
+    const next = (dataRef.current[file]||[]).filter(x => x.id !== id);
+    const nd = { ...dataRef.current, [file]:next }; dataRef.current = nd; setData(nd);
+    markDirty(file, next);
+    log("SAVE", file+" delete "+id); pushDirty();
+  }, [markDirty, pushDirty]);
+
+  // bulk add (used by AI capture review)
+  const bulkAdd = useCallback((file, rows) => {
+    const stamped = rows.map(r => ({ ...r, id:uid(), createdAt:nowISO(), updatedAt:nowISO() }));
+    const next = [...stamped, ...(dataRef.current[file]||[])];
+    const nd = { ...dataRef.current, [file]:next }; dataRef.current = nd; setData(nd);
+    markDirty(file, next);
+    log("SAVE", file+" bulkAdd "+rows.length); pushDirty();
+  }, [markDirty, pushDirty]);
+
+  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, bulkAdd, setSync, ghWriteTest };
+}
+
+/* ============================================================
+   ICONS (inline SVG, stroke = currentColor)
+   ============================================================ */
+const Ic = {
+  today:   <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
+  lists:   <svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>,
+  matrix:  <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18M3 12h18"/></svg>,
+  more:    <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>,
+  plus:    <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>,
+  bolt:    <svg viewBox="0 0 24 24"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>,
+  camera:  <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>,
+  todo:    <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>,
+  idea:    <svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.3h6c0-1 .4-1.8 1-2.3A7 7 0 0 0 12 2z"/></svg>,
+  project: <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>,
+  goal:    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/></svg>,
+  review:  <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>,
+  now:     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
+  gear:    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1l-.4-2.5H9.6L9.2 5a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.4 2.5h4.8l.4-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6a7 7 0 0 0 .1-1z"/></svg>,
+  check:   <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>,
+  back:    <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>,
+  trash:   <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>,
+  star:    <svg viewBox="0 0 24 24"><path d="M12 2l3 7 7 .5-5.3 4.5L18 21l-6-3.8L6 21l1.3-7L2 9.5 9 9z"/></svg>,
+  clock:   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
+};
+function NavIc({d}){ return d; }
+
+/* ============================================================
+   SMALL SHARED COMPONENTS
+   ============================================================ */
+function Sheet({ title, onClose, children }){
+  useEffect(() => { document.body.style.overflow="hidden"; return () => { document.body.style.overflow=""; }; }, []);
+  return (
+    <div>
+      <div className="scrim" onClick={onClose}></div>
+      <div className="sheet" role="dialog">
+        <div className="sheet-grip"></div>
+        {title && <h3 className="sheet-title">{title}</h3>}
+        {children}
+      </div>
+    </div>
+  );
+}
+function Toast({ msg }){ return msg ? <div className="toast">{msg}</div> : null; }
+function Empty({ glyph, title, sub }){
+  return <div className="empty"><div className="glyph">{glyph||"\u2727"}</div><b style={{color:"var(--ink-2)",fontFamily:"Fraunces",fontSize:18}}>{title}</b><p>{sub}</p></div>;
+}
+function Check({ on, onClick }){
+  return <button className={"check"+(on?" on":"")} onClick={onClick} aria-label="toggle">{Ic.check}</button>;
+}
+function TypeChip({ type }){
+  return <span className={"chip "+(type==="work"?"work":"personal")}>{type==="work"?"Work":"Personal"}</span>;
+}
+
+// Confirm dialog (destructive actions need a deliberate second tap, no traps)
+function Confirm({ text, confirmLabel, onConfirm, onCancel }){
+  return (
+    <Sheet title="Are you sure?" onClose={onCancel}>
+      <p className="hint" style={{fontSize:14,marginBottom:16}}>{text}</p>
+      <button className="btn btn-danger btn-block" onClick={onConfirm}>{confirmLabel||"Delete"}</button>
+      <button className="btn btn-ghost btn-block" style={{marginTop:10}} onClick={onCancel}>Cancel</button>
+    </Sheet>
+  );
+}
+
+/* ============================================================
+   TODO EDITOR  (full manual form - every field editable by hand)
+   ============================================================ */
+function TodoEditor({ store, todo, onClose, toast }){
+  const t = todo || {};
+  const [title,setTitle]=useState(t.title||"");
+  const [status,setStatus]=useState(t.status||"inbox");
+  const [type,setType]=useState(t.type||"personal");
+  const [quad,setQuad]=useState(t.quad||"");
+  const [due,setDue]=useState(t.due||"");
+  const [defer,setDefer]=useState(t.defer||"");
+  const [tags,setTags]=useState((t.tags||[]).join(", "));
+  const [projectId,setProjectId]=useState(t.projectId||"");
+  const [url,setUrl]=useState(t.url||"");
+  const [notes,setNotes]=useState(t.notes||"");
+  const [waitingOn,setWaitingOn]=useState(t.waitingOn||"");
+  const [subtasks,setSubtasks]=useState(t.subtasks||[]);
+  const [newSub,setNewSub]=useState("");
+  const projects = store.data.projects.filter(p=>p.status!=="archived");
+
+  function save(){
+    if(!title.trim()){ toast("Add a title first"); return; }
+    store.upsert("todos",{ id:t.id, title:title.trim(), status, type, quad, due, defer,
+      tags: tags.split(",").map(s=>s.trim()).filter(Boolean), projectId, url:url.trim(), notes,
+      waitingOn: status==="waiting"?waitingOn:"", subtasks,
+      starredToday: t.starredToday||false, completedAt: t.completedAt||null });
+    toast(t.id?"Saved":"Added"); onClose();
+  }
+  function addSub(){ if(!newSub.trim())return; setSubtasks([...subtasks,{id:uid(),title:newSub.trim(),done:false}]); setNewSub(""); }
+
+  return (
+    <Sheet title={t.id?"Edit todo":"New todo"} onClose={onClose}>
+      <div className="field"><span className="label">Title</span>
+        <input className="input" value={title} onChange={e=>setTitle(e.target.value)} placeholder="What needs doing?" autoFocus/></div>
+      <div className="row">
+        <div className="field"><span className="label">Status</span>
+          <select className="select" value={status} onChange={e=>setStatus(e.target.value)}>
+            {STATUS_ORDER.map(s=><option key={s} value={s}>{s[0].toUpperCase()+s.slice(1)}</option>)}
+          </select></div>
+        <div className="field"><span className="label">Type</span>
+          <select className="select" value={type} onChange={e=>setType(e.target.value)}>
+            <option value="personal">Personal</option><option value="work">Work</option></select></div>
+      </div>
+      {status==="waiting" &&
+        <div className="field"><span className="label">Waiting on</span>
+          <input className="input" value={waitingOn} onChange={e=>setWaitingOn(e.target.value)} placeholder="Who / what?"/></div>}
+      <div className="field"><span className="label">Priority (Eisenhower)</span>
+        <select className="select" value={quad} onChange={e=>setQuad(e.target.value)}>
+          <option value="">None</option>
+          {Object.entries(QUADRANTS).map(([k,v])=><option key={k} value={k}>{v.label} - {v.hint}</option>)}
+        </select></div>
+      <div className="row">
+        <div className="field"><span className="label">Due</span>
+          <input className="input" type="date" value={due} onChange={e=>setDue(e.target.value)}/></div>
+        <div className="field"><span className="label">Defer until</span>
+          <input className="input" type="date" value={defer} onChange={e=>setDefer(e.target.value)}/></div>
+      </div>
+      <div className="field"><span className="label">Project (optional)</span>
+        <select className="select" value={projectId} onChange={e=>setProjectId(e.target.value)}>
+          <option value="">None</option>
+          {projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+        </select></div>
+      <div className="field"><span className="label">Tags (comma separated)</span>
+        <input className="input" value={tags} onChange={e=>setTags(e.target.value)} placeholder="errand, finance"/></div>
+      <div className="field"><span className="label">Link (optional)</span>
+        <input className="input" value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://"/></div>
+      <div className="field"><span className="label">Subtasks</span>
+        <div className="subtasks">
+          {subtasks.map(s=>
+            <div key={s.id} className={"subtask"+(s.done?" done":"")}>
+              <button className={"mini"+(s.done?" on":"")} onClick={()=>setSubtasks(subtasks.map(x=>x.id===s.id?{...x,done:!x.done}:x))}></button>
+              <span style={{flex:1}}>{s.title}</span>
+              <button onClick={()=>setSubtasks(subtasks.filter(x=>x.id!==s.id))} style={{color:"var(--ink-3)",fontSize:18}}>&times;</button>
+            </div>)}
+        </div>
+        <div className="row" style={{marginTop:8}}>
+          <input className="input" value={newSub} onChange={e=>setNewSub(e.target.value)} placeholder="Add subtask"
+            onKeyDown={e=>e.key==="Enter"&&addSub()} style={{flex:3}}/>
+          <button className="btn btn-ghost btn-sm" onClick={addSub} style={{flex:1}}>Add</button>
+        </div>
+      </div>
+      <div className="field"><span className="label">Notes</span>
+        <textarea className="textarea" value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Details, context..."/></div>
+      <button className="btn btn-primary btn-block" onClick={save}>{t.id?"Save changes":"Add todo"}</button>
+      {t.id && <button className="btn btn-danger btn-block" style={{marginTop:10}}
+        onClick={()=>{ store.remove("todos",t.id); toast("Deleted"); onClose(); }}>Delete</button>}
+    </Sheet>
+  );
+}
+
+/* ============================================================
+   IDEA EDITOR
+   ============================================================ */
+function IdeaEditor({ store, idea, onClose, toast }){
+  const t = idea || {};
+  const [title,setTitle]=useState(t.title||"");
+  const [body,setBody]=useState(t.body||"");
+  const [type,setType]=useState(t.type||"personal");
+  const [tags,setTags]=useState((t.tags||[]).join(", "));
+  const [state,setState]=useState(t.state||"raw");
+  function save(){
+    if(!title.trim()){ toast("Add a title first"); return; }
+    store.upsert("ideas",{ id:t.id, title:title.trim(), body, type, state,
+      tags: tags.split(",").map(s=>s.trim()).filter(Boolean),
+      capturedAt: t.capturedAt||nowISO(), promotedProjectId: t.promotedProjectId||null });
+    toast(t.id?"Saved":"Captured"); onClose();
+  }
+  function promote(){
+    // Idea -> Project: carry title + body, mark idea promoted (E1/C2 decision)
+    const p = store.upsert("projects",{ name:title.trim(), type, status:"active",
+      outcome:"", description: body, deadline:"", goalId:null });
+    store.upsert("ideas",{ id:t.id, title:title.trim(), body, type, tags:tags.split(",").map(s=>s.trim()).filter(Boolean),
+      state:"promoted", capturedAt:t.capturedAt||nowISO(), promotedProjectId:p.id });
+    toast("Promoted to project"); onClose();
+  }
+  return (
+    <Sheet title={t.id?"Edit idea":"New idea"} onClose={onClose}>
+      <div className="field"><span className="label">Idea</span>
+        <input className="input" value={title} onChange={e=>setTitle(e.target.value)} placeholder="A raw thought..." autoFocus/></div>
+      <div className="field"><span className="label">Body</span>
+        <textarea className="textarea" value={body} onChange={e=>setBody(e.target.value)} placeholder="Flesh it out, or leave it to sit."/></div>
+      <div className="row">
+        <div className="field"><span className="label">Type</span>
+          <select className="select" value={type} onChange={e=>setType(e.target.value)}>
+            <option value="personal">Personal</option><option value="work">Work</option></select></div>
+        <div className="field"><span className="label">State</span>
+          <select className="select" value={state} onChange={e=>setState(e.target.value)}>
+            <option value="raw">Raw</option><option value="developing">Developing</option>
+            <option value="promoted">Promoted</option><option value="discarded">Discarded</option></select></div>
+      </div>
+      <div className="field"><span className="label">Tags</span>
+        <input className="input" value={tags} onChange={e=>setTags(e.target.value)} placeholder="comma, separated"/></div>
+      <button className="btn btn-primary btn-block" onClick={save}>{t.id?"Save":"Capture idea"}</button>
+      {t.id && t.state!=="promoted" &&
+        <button className="btn btn-ghost btn-block" style={{marginTop:10}} onClick={promote}>Promote to project</button>}
+      {t.id && <button className="btn btn-danger btn-block" style={{marginTop:10}}
+        onClick={()=>{ store.remove("ideas",t.id); toast("Deleted"); onClose(); }}>Delete</button>}
+    </Sheet>
+  );
+}
+
+/* ============================================================
+   PROJECT EDITOR
+   ============================================================ */
+function ProjectEditor({ store, project, onClose, toast }){
+  const t = project || {};
+  const [name,setName]=useState(t.name||"");
+  const [type,setType]=useState(t.type||"personal");
+  const [status,setStatus]=useState(t.status||"active");
+  const [outcome,setOutcome]=useState(t.outcome||"");
+  const [deadline,setDeadline]=useState(t.deadline||"");
+  const [description,setDescription]=useState(t.description||"");
+  const [goalId,setGoalId]=useState(t.goalId||"");
+  const goals = store.data.goals.filter(g=>g.status==="active");
+  function save(){
+    if(!name.trim()){ toast("Name it first"); return; }
+    store.upsert("projects",{ id:t.id, name:name.trim(), type, status, outcome, deadline, description, goalId:goalId||null });
+    toast(t.id?"Saved":"Created"); onClose();
+  }
+  return (
+    <Sheet title={t.id?"Edit project":"New project"} onClose={onClose}>
+      <div className="field"><span className="label">Name (as an outcome)</span>
+        <input className="input" value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Submit final tech pack" autoFocus/></div>
+      <div className="field"><span className="label">Outcome - what does done look like?</span>
+        <textarea className="textarea" value={outcome} onChange={e=>setOutcome(e.target.value)} placeholder="The project is done when..."/></div>
+      <div className="row">
+        <div className="field"><span className="label">Type</span>
+          <select className="select" value={type} onChange={e=>setType(e.target.value)}>
+            <option value="personal">Personal</option><option value="work">Work</option></select></div>
+        <div className="field"><span className="label">Status</span>
+          <select className="select" value={status} onChange={e=>setStatus(e.target.value)}>
+            <option value="active">Active</option><option value="onhold">On hold</option>
+            <option value="someday">Someday</option><option value="done">Done</option><option value="archived">Archived</option></select></div>
+      </div>
+      <div className="field"><span className="label">Deadline (optional)</span>
+        <input className="input" type="date" value={deadline} onChange={e=>setDeadline(e.target.value)}/></div>
+      <div className="field"><span className="label">Roll up to goal (optional)</span>
+        <select className="select" value={goalId} onChange={e=>setGoalId(e.target.value)}>
+          <option value="">None</option>{goals.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}</select></div>
+      <div className="field"><span className="label">Description / support notes</span>
+        <textarea className="textarea" value={description} onChange={e=>setDescription(e.target.value)}/></div>
+      <button className="btn btn-primary btn-block" onClick={save}>{t.id?"Save":"Create project"}</button>
+      {t.id && <button className="btn btn-danger btn-block" style={{marginTop:10}}
+        onClick={()=>{ store.remove("projects",t.id); toast("Deleted"); onClose(); }}>Delete</button>}
+    </Sheet>
+  );
+}
+
+/* ============================================================
+   GOAL EDITOR
+   ============================================================ */
+function GoalEditor({ store, goal, onClose, toast }){
+  const t = goal || {};
+  const [name,setName]=useState(t.name||"");
+  const [type,setType]=useState(t.type||"personal");
+  const [why,setWhy]=useState(t.why||"");
+  const [target,setTarget]=useState(t.target||"");
+  const [status,setStatus]=useState(t.status||"active");
+  function save(){
+    if(!name.trim()){ toast("Name it first"); return; }
+    store.upsert("goals",{ id:t.id, name:name.trim(), type, why, target, status });
+    toast(t.id?"Saved":"Created"); onClose();
+  }
+  return (
+    <Sheet title={t.id?"Edit goal":"New goal"} onClose={onClose}>
+      <div className="field"><span className="label">Goal</span>
+        <input className="input" value={name} onChange={e=>setName(e.target.value)} placeholder="A longer-term objective" autoFocus/></div>
+      <div className="field"><span className="label">Why it matters</span>
+        <textarea className="textarea" value={why} onChange={e=>setWhy(e.target.value)} placeholder="The motivation behind it"/></div>
+      <div className="row">
+        <div className="field"><span className="label">Type</span>
+          <select className="select" value={type} onChange={e=>setType(e.target.value)}>
+            <option value="personal">Personal</option><option value="work">Work</option></select></div>
+        <div className="field"><span className="label">Status</span>
+          <select className="select" value={status} onChange={e=>setStatus(e.target.value)}>
+            <option value="active">Active</option><option value="achieved">Achieved</option><option value="dropped">Dropped</option></select></div>
+      </div>
+      <div className="field"><span className="label">Target date (optional)</span>
+        <input className="input" type="date" value={target} onChange={e=>setTarget(e.target.value)}/></div>
+      <button className="btn btn-primary btn-block" onClick={save}>{t.id?"Save":"Create goal"}</button>
+      {t.id && <button className="btn btn-danger btn-block" style={{marginTop:10}}
+        onClick={()=>{ store.remove("goals",t.id); toast("Deleted"); onClose(); }}>Delete</button>}
+    </Sheet>
+  );
+}
+
+/* ============================================================
+   TODO ROW (shared display)
+   ============================================================ */
+function TodoRow({ store, todo, onOpen }){
+  const done = todo.status==="done";
+  const project = store.data.projects.find(p=>p.id===todo.projectId);
+  const subDone = (todo.subtasks||[]).filter(s=>s.done).length;
+  function toggle(){
+    store.upsert("todos",{ id:todo.id, status: done?"next":"done", completedAt: done?null:nowISO() });
+  }
+  return (
+    <div className={"item"+(done?" done":"")}>
+      <Check on={done} onClick={toggle}/>
+      <div className="item-body" onClick={onOpen}>
+        <div className="item-title">{todo.title}</div>
+        <div className="item-meta">
+          {todo.starredToday && <span className="chip amber">{Ic.star}</span>}
+          {todo.status!=="done" && todo.status!=="next" && <span className="chip">{todo.status}</span>}
+          {todo.quad && <span className="chip amber">{QUADRANTS[todo.quad].label}</span>}
+          {todo.due && <span className={"chip "+(isOverdue(todo.due)?"red":isToday(todo.due)?"amber":"")}>{isOverdue(todo.due)?"Overdue ":""}{fmtDate(todo.due)}</span>}
+          {todo.defer && todo.defer>TODAY() && <span className="chip blue">{Ic.clock} {fmtDate(todo.defer)}</span>}
+          {todo.waitingOn && <span className="chip blue">waiting: {todo.waitingOn}</span>}
+          {project && <span className="chip">{project.name}</span>}
+          {(todo.subtasks||[]).length>0 && <span className="chip">{subDone}/{todo.subtasks.length}</span>}
+          {(todo.tags||[]).map(t=><span key={t} className="chip">#{t}</span>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   CAPTURE - action sheet + quick add + AI flows
+   ============================================================ */
+function CaptureSheet({ store, onClose, toast, openEditor }){
+  const [mode,setMode]=useState("menu");     // menu | quick | brain | photo | review
+  const [quick,setQuick]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [brain,setBrain]=useState("");
+  const [results,setResults]=useState([]);   // AI extracted items pending review
+  const [err,setErr]=useState("");
+  const fileRef = useRef(null);
+
+  function quickAdd(){
+    if(!quick.trim())return;
+    store.upsert("todos",{ title:quick.trim(), status:"inbox", type:"personal", tags:[], subtasks:[] });
+    toast("Added to Inbox"); setQuick("");
+    log("NAV","quick-add to inbox");
+  }
+  async function runBrain(){
+    if(!brain.trim())return;
+    setBusy(true); setErr("");
+    try{
+      const items = await claudeExtract(store.cfg, [{type:"text",text:"Turn this into tracker items:\n\n"+brain}]);
+      setResults(items.map(x=>({ ...x, keep:true }))); setMode("review");
+    }catch(e){ setErr(e.message); } finally{ setBusy(false); }
+  }
+  async function runPhoto(file){
+    if(!file)return;
+    setBusy(true); setErr(""); setMode("photo");
+    try{
+      const b64 = await resizeImage(file);
+      const items = await claudeExtract(store.cfg, [
+        { type:"image", source:{ type:"base64", media_type:"image/jpeg", data:b64 } },
+        { type:"text", text:"Extract every task/idea written or shown in this image as tracker items." }
+      ]);
+      setResults(items.map(x=>({ ...x, keep:true }))); setMode("review");
+    }catch(e){ setErr(e.message); setMode("photo"); } finally{ setBusy(false); }
+  }
+  function saveReview(){
+    const keep = results.filter(r=>r.keep);
+    const byFile = { todos:[], ideas:[], projects:[] };
+    keep.forEach(r=>{
+      if(r.type==="idea") byFile.ideas.push({ title:r.title, body:r.note||"", type:"personal", tags:[], state:"raw", capturedAt:nowISO() });
+      else if(r.type==="project") byFile.projects.push({ name:r.title, type:"personal", status:"active", outcome:"", description:r.note||"", deadline:"", goalId:null });
+      else byFile.todos.push({ title:r.title, status:r.suggestedStatus||"inbox", type:"personal", tags:[], notes:r.note||"", subtasks:[] });
+    });
+    Object.entries(byFile).forEach(([f,rows])=>{ if(rows.length) store.bulkAdd(f,rows); });
+    toast("Added "+keep.length+" item"+(keep.length===1?"":"s")); onClose();
+  }
+
+  if(mode==="menu") return (
+    <Sheet title="Capture" onClose={onClose}>
+      <div className="field" style={{marginTop:6}}>
+        <div className="row">
+          <input className="input" value={quick} onChange={e=>setQuick(e.target.value)} placeholder="Quick add to Inbox..."
+            onKeyDown={e=>e.key==="Enter"&&quickAdd()} autoFocus style={{flex:3}}/>
+          <button className="btn btn-primary btn-sm" onClick={quickAdd} style={{flex:1}}>Add</button>
+        </div>
+        <p className="hint">Type or dictate. Triage from the Inbox later.</p>
+      </div>
+      <div className="divider"></div>
+      <button className="act-row" onClick={()=>{ onClose(); openEditor("todo"); }}>
+        <span className="act-ic">{Ic.todo}</span><span className="act-txt"><b>New todo</b><span>Full form, all fields</span></span></button>
+      <button className="act-row" onClick={()=>{ onClose(); openEditor("idea"); }}>
+        <span className="act-ic">{Ic.idea}</span><span className="act-txt"><b>New idea</b><span>A thought to sit on</span></span></button>
+      <button className="act-row" onClick={()=>{ onClose(); openEditor("project"); }}>
+        <span className="act-ic">{Ic.project}</span><span className="act-txt"><b>New project</b><span>An outcome with many steps</span></span></button>
+      <button className="act-row" onClick={()=>{ onClose(); openEditor("goal"); }}>
+        <span className="act-ic">{Ic.goal}</span><span className="act-txt"><b>New goal</b><span>Longer-term objective</span></span></button>
+      <div className="divider"></div>
+      <button className="act-row" onClick={()=>setMode("brain")}>
+        <span className="act-ic">{Ic.bolt}</span><span className="act-txt"><b>Brain dump</b><span>Paste a paragraph, AI structures it</span></span></button>
+      <button className="act-row" onClick={()=>fileRef.current && fileRef.current.click()}>
+        <span className="act-ic">{Ic.camera}</span><span className="act-txt"><b>Photo / scan</b><span>Read tasks from a picture</span></span></button>
+      <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}}
+        onChange={e=>{ const f=e.target.files[0]; e.target.value=""; runPhoto(f); }}/>
+    </Sheet>
+  );
+
+  if(mode==="brain") return (
+    <Sheet title="Brain dump" onClose={onClose}>
+      <p className="hint" style={{marginBottom:10}}>Dump everything on your mind. Claude turns it into clean inbox items you review before saving.</p>
+      <textarea className="textarea" style={{minHeight:160}} value={brain} onChange={e=>setBrain(e.target.value)}
+        placeholder="call dentist, the salty tee box tech pack needs final colors, idea: subscription box, email BANA about the fee..." autoFocus/>
+      {err && <p className="hint danger-text" style={{marginTop:8}}>{err}</p>}
+      <button className="btn btn-primary btn-block" style={{marginTop:12}} disabled={busy} onClick={runBrain}>
+        {busy? <span className="spin"></span> : "Structure it"}</button>
+      <button className="btn btn-ghost btn-block" style={{marginTop:10}} onClick={()=>setMode("menu")}>Back</button>
+    </Sheet>
+  );
+
+  if(mode==="photo") return (
+    <Sheet title="Photo / scan" onClose={onClose}>
+      {busy ? <div className="center" style={{padding:"40px 0"}}><div className="spin" style={{margin:"0 auto 14px"}}></div>
+        <p className="hint">Reading your image...</p></div> :
+        <div>
+          {err && <p className="hint danger-text" style={{marginBottom:10}}>{err}</p>}
+          <button className="btn btn-primary btn-block" onClick={()=>fileRef.current && fileRef.current.click()}>Choose / take photo</button>
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}}
+            onChange={e=>{ const f=e.target.files[0]; e.target.value=""; runPhoto(f); }}/>
+          <button className="btn btn-ghost btn-block" style={{marginTop:10}} onClick={()=>setMode("menu")}>Back</button>
+        </div>}
+    </Sheet>
+  );
+
+  if(mode==="review") return (
+    <Sheet title={"Review "+results.length+" item"+(results.length===1?"":"s")} onClose={onClose}>
+      <p className="hint" style={{marginBottom:12}}>Nothing saves until you confirm. Tap to toggle, edit titles inline.</p>
+      {results.map((r,i)=>
+        <div key={i} className={"rev-item"+(r.keep?"":" skip")}>
+          <div style={{display:"flex",gap:10,alignItems:"center"}}>
+            <Check on={r.keep} onClick={()=>setResults(results.map((x,j)=>j===i?{...x,keep:!x.keep}:x))}/>
+            <input className="input" value={r.title} style={{flex:1}}
+              onChange={e=>setResults(results.map((x,j)=>j===i?{...x,title:e.target.value}:x))}/>
+          </div>
+          <div style={{display:"flex",gap:8,marginTop:8,paddingLeft:32}}>
+            <select className="select" value={r.type} style={{flex:1}}
+              onChange={e=>setResults(results.map((x,j)=>j===i?{...x,type:e.target.value}:x))}>
+              <option value="todo">Todo</option><option value="idea">Idea</option><option value="project">Project</option></select>
+          </div>
+        </div>)}
+      <button className="btn btn-primary btn-block" style={{marginTop:6}} onClick={saveReview}>Add kept items</button>
+      <button className="btn btn-ghost btn-block" style={{marginTop:10}} onClick={()=>setMode("menu")}>Back</button>
+    </Sheet>
+  );
+  return null;
+}
+
+/* ============================================================
+   FILTER HELPERS
+   ============================================================ */
+// An item deferred to a future date is hidden everywhere until then.
+const isDeferredAway = (t) => t.defer && t.defer > TODAY();
+// Quadrant sort weight (Do First highest)
+const quadWeight = (q) => ({q1:0,q3:1,q2:2,q4:3,"":4})[q||""];
+
+function todayItems(todos){
+  return todos.filter(t => t.status!=="done" && t.status!=="someday" && !isDeferredAway(t) &&
+    ( isToday(t.due) || isOverdue(t.due) || t.starredToday || (t.defer && t.defer===TODAY()) ));
+}
+function sortTodos(a,b){
+  const q = quadWeight(a.quad)-quadWeight(b.quad); if(q) return q;
+  if(a.due && b.due) return a.due<b.due?-1:1; if(a.due) return -1; if(b.due) return 1;
+  return 0;
+}
+
+/* ============================================================
+   VIEW: TODAY  (+ entry to Now/Focus)
+   ============================================================ */
+function TodayView({ store, onOpen, goNow, typeFilter }){
+  let items = todayItems(store.data.todos).filter(t=>typeFilter==="all"||t.type===typeFilter).sort(sortTodos);
+  const staleIdeas = store.data.ideas.filter(i=>{
+    if(i.state==="promoted"||i.state==="discarded") return false;
+    const age = (Date.now()-new Date(i.capturedAt||i.createdAt||Date.now()))/86400000;
+    return age>=30;
+  });
+  const d = new Date();
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="eyebrow">{d.toLocaleDateString(undefined,{weekday:"long"})}</div>
+        <div className="topbar-row"><h1 className="title">Today</h1>
+          <button className="btn btn-ghost btn-sm" onClick={goNow}>{Ic.now} Focus</button></div>
+        <div className="subtle" style={{marginTop:2}}>{d.toLocaleDateString(undefined,{month:"long",day:"numeric"})}</div>
+      </div>
+      {staleIdeas.length>0 &&
+        <div className="card" style={{marginTop:14,borderColor:"var(--amber-line)",background:"var(--amber-dim)"}}>
+          <b style={{fontFamily:"Fraunces",fontSize:15}}>Revisit your ideas</b>
+          <p className="hint" style={{marginTop:4}}>{staleIdeas.length} idea{staleIdeas.length===1?"":"s"} untouched 30+ days. A quick review keeps the system trusted.</p>
+        </div>}
+      {items.length===0 ? <Empty glyph="\u2600" title="Nothing scheduled" sub="Star items for today, or set a due date."/> :
+        <div className="list">{items.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: NOW / FOCUS  (single next action)
+   ============================================================ */
+function NowView({ store, onOpen, back }){
+  const candidates = store.data.todos
+    .filter(t=>t.status==="next"||todayItems([t]).length>0)
+    .filter(t=>t.status!=="done").sort(sortTodos);
+  const [idx,setIdx]=useState(0);
+  const t = candidates[idx];
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <button className="btn btn-ghost btn-sm" onClick={back}>{Ic.back} Back</button>
+        <h1 className="title" style={{marginTop:8}}>Now</h1>
+      </div>
+      {!t ? <Empty glyph="\u25CB" title="All clear" sub="No next action queued. Nice."/> :
+        <div style={{marginTop:30}}>
+          <div className="card" style={{padding:24,textAlign:"center"}}>
+            <div className="subtle" style={{marginBottom:10}}>{t.quad?QUADRANTS[t.quad].label:"Next action"}</div>
+            <h2 style={{fontSize:24,lineHeight:1.25}}>{t.title}</h2>
+            {t.notes && <p className="hint" style={{marginTop:10}}>{t.notes}</p>}
+          </div>
+          <button className="btn btn-primary btn-block" style={{marginTop:18}}
+            onClick={()=>{ store.upsert("todos",{id:t.id,status:"done",completedAt:nowISO()}); setIdx(0); }}>Mark done</button>
+          <div className="row" style={{marginTop:10}}>
+            <button className="btn btn-ghost" onClick={()=>setIdx((idx+1)%candidates.length)}>Skip</button>
+            <button className="btn btn-ghost" onClick={()=>onOpen(t)}>Edit</button>
+          </div>
+          <p className="hint center" style={{marginTop:14}}>{idx+1} of {candidates.length}</p>
+        </div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: LISTS  (GTD statuses, filterable)
+   ============================================================ */
+function ListsView({ store, onOpen, typeFilter, setTypeFilter }){
+  const [tab,setTab]=useState("inbox");
+  const counts = {};
+  STATUS_ORDER.forEach(s=>{ counts[s]=store.data.todos.filter(t=>t.status===s&&(typeFilter==="all"||t.type===typeFilter)).length; });
+  let items = store.data.todos
+    .filter(t=>t.status===tab && (typeFilter==="all"||t.type===typeFilter))
+    .filter(t=>tab==="someday"||tab==="done"||!isDeferredAway(t))
+    .sort(sortTodos);
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="eyebrow">Organize</div><h1 className="title">Lists</h1>
+      </div>
+      <div className="pills">
+        {["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
+      </div>
+      <div className="tabs">
+        {STATUS_ORDER.map(s=><button key={s} className={"tab"+(tab===s?" on":"")} onClick={()=>setTab(s)}>{s[0].toUpperCase()+s.slice(1)} {counts[s]>0&&<span style={{opacity:.6}}>{counts[s]}</span>}</button>)}
+      </div>
+      {items.length===0 ? <Empty glyph="\u2014" title={"No "+tab+" items"} sub={tab==="inbox"?"Capture with the + button.":"Move items here as you organize."}/> :
+        <div className="list">{items.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: MATRIX (Eisenhower)
+   ============================================================ */
+function MatrixView({ store, onOpen, typeFilter, setTypeFilter }){
+  const active = store.data.todos.filter(t=>t.status!=="done"&&t.status!=="someday"&&!isDeferredAway(t)&&(typeFilter==="all"||t.type===typeFilter));
+  const byQ = {q1:[],q2:[],q3:[],q4:[]};
+  active.forEach(t=>{ if(t.quad&&byQ[t.quad]) byQ[t.quad].push(t); });
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="eyebrow">Prioritize</div><h1 className="title">Matrix</h1>
+        <div className="subtle" style={{marginTop:2}}>Eisenhower: urgent x important</div>
+      </div>
+      <div className="pills">
+        {["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
+      </div>
+      <div className="matrix">
+        {Object.entries(QUADRANTS).map(([k,v])=>
+          <div key={k} className={"quad "+v.cls}>
+            <div className="quad-head"><b>{v.label}</b><span className="quad-count">{byQ[k].length}</span></div>
+            <div className="subtle" style={{fontSize:10,marginTop:-6,marginBottom:8}}>{v.hint}</div>
+            {byQ[k].sort(sortTodos).map(t=><div key={t.id} className="quad-item" onClick={()=>onOpen(t)}>{t.title}</div>)}
+            {byQ[k].length===0 && <div className="subtle" style={{fontSize:11}}>Empty</div>}
+          </div>)}
+      </div>
+      <p className="hint" style={{marginTop:14}}>Unprioritized todos won't appear here. Set a priority in any todo to place it.</p>
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: PROJECTS
+   ============================================================ */
+function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, onOpenTodo }){
+  const [active,setActive]=useState(null); // project detail
+  const projects = store.data.projects.filter(p=>(typeFilter==="all"||p.type===typeFilter)).sort((a,b)=>{
+    const order={active:0,onhold:1,someday:2,done:3,archived:4}; return (order[a.status]||0)-(order[b.status]||0);
+  });
+  if(active){
+    const p = store.data.projects.find(x=>x.id===active.id)||active;
+    const todos = store.data.todos.filter(t=>t.projectId===p.id).sort(sortTodos);
+    const goal = store.data.goals.find(g=>g.id===p.goalId);
+    return (
+      <div className="screen">
+        <div className="topbar" style={{padding:0,position:"static"}}>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setActive(null)}>{Ic.back} Projects</button>
+          <div className="topbar-row" style={{marginTop:8}}><h1 className="title title-sm">{p.name}</h1>
+            <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("project",p)}>Edit</button></div>
+          <div className="item-meta" style={{marginTop:8}}>
+            <TypeChip type={p.type}/><span className="chip">{p.status}</span>
+            {p.deadline && <span className="chip amber">{fmtDate(p.deadline)}</span>}
+            {goal && <span className="chip violet">{Ic.goal} {goal.name}</span>}
+          </div>
+        </div>
+        {p.outcome && <div className="card" style={{marginTop:14}}><div className="label">Outcome</div><div>{p.outcome}</div></div>}
+        {p.description && <p className="hint" style={{marginTop:12}}>{p.description}</p>}
+        <div className="topbar-row" style={{marginTop:18}}><h3 style={{fontSize:17}}>Todos</h3>
+          <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("todo",{projectId:p.id,type:p.type})}>{Ic.plus} Add</button></div>
+        {todos.length===0? <Empty glyph="\u2014" title="No todos yet" sub="Add the next action for this project."/> :
+          <div className="list">{todos.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpenTodo(t)}/>)}</div>}
+      </div>
+    );
+  }
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="topbar-row"><div><div className="eyebrow">Outcomes</div><h1 className="title">Projects</h1></div>
+          <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("project")}>{Ic.plus} New</button></div>
+      </div>
+      <div className="pills">{["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
+      {projects.length===0? <Empty glyph="\u25A1" title="No projects" sub="A project is any outcome needing more than one step."/> :
+        <div className="list">{projects.map(p=>{
+          const open = store.data.todos.filter(t=>t.projectId===p.id&&t.status!=="done").length;
+          return <div key={p.id} className="item" onClick={()=>setActive(p)}>
+            <div className="item-body"><div className="item-title">{p.name}</div>
+              <div className="item-meta"><TypeChip type={p.type}/><span className="chip">{p.status}</span>
+                <span className="chip">{open} open</span>{p.deadline&&<span className="chip amber">{fmtDate(p.deadline)}</span>}</div></div></div>;
+        })}</div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: IDEAS
+   ============================================================ */
+function IdeasView({ store, openEditor, typeFilter, setTypeFilter }){
+  const ideas = store.data.ideas.filter(i=>(typeFilter==="all"||i.type===typeFilter)).sort((a,b)=>(b.capturedAt||"").localeCompare(a.capturedAt||""));
+  const stateChip = {raw:"",developing:"blue",promoted:"green",discarded:""};
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="topbar-row"><div><div className="eyebrow">Incubate</div><h1 className="title">Ideas</h1></div>
+          <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("idea")}>{Ic.plus} New</button></div>
+      </div>
+      <div className="pills">{["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
+      {ideas.length===0? <Empty glyph="\u273C" title="No ideas yet" sub="Capture a raw thought and let it sit."/> :
+        <div className="list">{ideas.map(i=>
+          <div key={i.id} className="item" onClick={()=>openEditor("idea",i)} style={i.state==="discarded"?{opacity:.5}:null}>
+            <div className="item-body"><div className="item-title">{i.title}</div>
+              {i.body && <p className="hint" style={{marginTop:4,whiteSpace:"pre-wrap"}}>{i.body.slice(0,120)}{i.body.length>120?"...":""}</p>}
+              <div className="item-meta"><TypeChip type={i.type}/>
+                <span className={"chip "+(stateChip[i.state]||"")}>{i.state}</span>
+                <span className="chip">{fmtDate(i.capturedAt)}</span>
+                {(i.tags||[]).map(t=><span key={t} className="chip">#{t}</span>)}</div></div></div>)}</div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: GOALS
+   ============================================================ */
+function GoalsView({ store, openEditor, typeFilter, setTypeFilter }){
+  const goals = store.data.goals.filter(g=>(typeFilter==="all"||g.type===typeFilter));
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="topbar-row"><div><div className="eyebrow">Horizon</div><h1 className="title">Goals</h1></div>
+          <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("goal")}>{Ic.plus} New</button></div>
+      </div>
+      <div className="pills">{["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
+      {goals.length===0? <Empty glyph="\u25CE" title="No goals" sub="Set a longer-term objective for projects to roll up to."/> :
+        <div className="list">{goals.map(g=>{
+          const projs = store.data.projects.filter(p=>p.goalId===g.id);
+          return <div key={g.id} className="item" onClick={()=>openEditor("goal",g)} style={g.status!=="active"?{opacity:.6}:null}>
+            <div className="item-body"><div className="item-title">{g.name}</div>
+              {g.why && <p className="hint" style={{marginTop:4}}>{g.why.slice(0,110)}</p>}
+              <div className="item-meta"><TypeChip type={g.type}/><span className="chip">{g.status}</span>
+                <span className="chip">{projs.length} project{projs.length===1?"":"s"}</span>
+                {g.target&&<span className="chip amber">{fmtDate(g.target)}</span>}</div></div></div>;
+        })}</div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: WEEKLY REVIEW (lightweight guided checklist)
+   Steps reset each session; tapping a step jumps to its view.
+   ============================================================ */
+function WeeklyReview({ store, back, go }){
+  const [done,setDone]=useState({});
+  const inbox = store.data.todos.filter(t=>t.status==="inbox").length;
+  const waiting = store.data.todos.filter(t=>t.status==="waiting").length;
+  const someday = store.data.todos.filter(t=>t.status==="someday").length;
+  const noNext = store.data.projects.filter(p=>p.status==="active" &&
+    store.data.todos.filter(t=>t.projectId===p.id&&t.status==="next").length===0).length;
+  const steps = [
+    { k:"inbox", b:"Process Inbox to zero", p:inbox+" item"+(inbox===1?"":"s")+" waiting", go:()=>go("lists") },
+    { k:"next", b:"Review Next actions", p:"Still the right next steps?", go:()=>go("lists") },
+    { k:"waiting", b:"Review Waiting-for", p:waiting+" item"+(waiting===1?"":"s")+" - nudge anyone?", go:()=>go("lists") },
+    { k:"someday", b:"Review Someday / maybe", p:someday+" parked - anything ready to activate?", go:()=>go("lists") },
+    { k:"projects", b:"Every active project has a next action", p:noNext>0? noNext+" project"+(noNext===1?"":"s")+" missing one":"All projects covered", go:()=>go("projects") },
+    { k:"goals", b:"Glance at your goals", p:"Are projects still serving them?", go:()=>go("goals") },
+  ];
+  const completed = Object.values(done).filter(Boolean).length;
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <button className="btn btn-ghost btn-sm" onClick={back}>{Ic.back} Back</button>
+        <h1 className="title" style={{marginTop:8}}>Weekly Review</h1>
+        <div className="subtle" style={{marginTop:2}}>{completed} of {steps.length} done - GTD's keystone habit</div>
+      </div>
+      <div className="steps">
+        {steps.map((s,i)=>
+          <div key={s.k} className={"step"+(done[s.k]?" done":"")}>
+            <button className="step-n" onClick={()=>setDone({...done,[s.k]:!done[s.k]})}>{done[s.k]?Ic.check:i+1}</button>
+            <div style={{flex:1}} onClick={s.go}><b>{s.b}</b><p>{s.p}</p></div>
+          </div>)}
+      </div>
+      {completed===steps.length && <div className="card center" style={{marginTop:16,borderColor:"var(--amber-line)"}}>
+        <b style={{fontFamily:"Fraunces",fontSize:17}}>Review complete</b><p className="hint" style={{marginTop:4}}>Mind like water. See you next week.</p></div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: DIAGNOSTICS (log buffer)
+   ============================================================ */
+function Diagnostics({ back }){
+  const [,force]=useState(0);
+  useEffect(()=>{ const id=setInterval(()=>force(x=>x+1),1500); return ()=>clearInterval(id); },[]);
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <button className="btn btn-ghost btn-sm" onClick={back}>{Ic.back} Settings</button>
+        <h1 className="title" style={{marginTop:8}}>Diagnostics</h1>
+        <div className="subtle">Newest at the bottom - {LOG.length} lines</div>
+      </div>
+      <div className="log" style={{marginTop:14}}>
+        {LOG.map((l,i)=><div key={i}><span className="t">{l.t} </span><span className={l.tag==="ERROR"?"err":"tag"}>[{l.tag}]</span> {l.msg}</div>)}
+      </div>
+      <button className="btn btn-ghost btn-block" style={{marginTop:12}}
+        onClick={()=>{ navigator.clipboard && navigator.clipboard.writeText(LOG.map(l=>l.t+" ["+l.tag+"] "+l.msg).join("\n")); }}>Copy log</button>
+    </div>
+  );
+}
+
+/* ============================================================
+   SETTINGS FORM (shared by first-run setup + settings)
+   ============================================================ */
+function SettingsForm({ store, toast, onConnected }){
+  const c = store.cfg;
+  const [owner,setOwner]=useState(c.owner||"");
+  const [repo,setRepo]=useState(c.repo||"tracker-data");
+  const [token,setToken]=useState(c.token||"");
+  const [apiKey,setApiKey]=useState(c.apiKey||"");
+  const [model,setModel]=useState(c.model||"claude-sonnet-4-6");
+  const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState("");
+  async function connect(){
+    setErr("");
+    if(!owner.trim()||!repo.trim()||!token.trim()){ setErr("Owner, data repo, and token are required."); return; }
+    setBusy(true);
+    const cfg = { owner:owner.trim(), repo:repo.trim(), token:token.trim(), apiKey:apiKey.trim(), model:model.trim()||"claude-sonnet-4-6", configured:true };
+    try{
+      await ghWriteTest(cfg);                 // real write-test, surfaces bad tokens now
+      store.saveCfg(cfg);
+      toast("Connected"); log("SETUP","connected as "+owner+"/"+repo);
+      if(onConnected) onConnected();
+    }catch(e){ setErr(e.message); }
+    finally{ setBusy(false); }
+  }
+  return (
+    <div>
+      <div className="field"><span className="label">GitHub username / org (owner)</span>
+        <input className="input" value={owner} onChange={e=>setOwner(e.target.value)} placeholder="your-github-name" autoCapitalize="off"/></div>
+      <div className="field"><span className="label">Private data repo name</span>
+        <input className="input" value={repo} onChange={e=>setRepo(e.target.value)} placeholder="tracker-data" autoCapitalize="off"/>
+        <p className="hint">Keep this name distinct from your app-shell repo and token name.</p></div>
+      <div className="field"><span className="label">Fine-grained PAT</span>
+        <input className="input" type="password" value={token} onChange={e=>setToken(e.target.value)} placeholder="github_pat_..." autoCapitalize="off"/>
+        <p className="hint">Scope it to the data repo only, with Contents: Read and write.</p></div>
+      <div className="divider"></div>
+      <div className="field"><span className="label">Claude API key (for brain-dump + photo)</span>
+        <input className="input" type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-ant-..." autoCapitalize="off"/>
+        <p className="hint">Optional. Stored only on this device. Without it, manual capture still works.</p></div>
+      <div className="field"><span className="label">Model</span>
+        <input className="input" value={model} onChange={e=>setModel(e.target.value)} placeholder="claude-sonnet-4-6" autoCapitalize="off"/></div>
+      {err && <p className="hint danger-text">{err}</p>}
+      <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={busy} onClick={connect}>
+        {busy? <span className="spin"></span> : "Test & connect"}</button>
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: SETTINGS
+   ============================================================ */
+function SettingsView({ store, toast, go }){
+  const [confirmClear,setConfirmClear]=useState(false);
+  function exportData(){
+    const blob = new Blob([JSON.stringify(store.data,null,2)],{type:"application/json"});
+    const a = document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tracker-export.json"; a.click();
+    log("NAV","export data");
+  }
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="eyebrow">Configure</div><h1 className="title">Settings</h1>
+      </div>
+      <div className={"sync "+store.sync} style={{marginTop:12}}>
+        <span className="dot"></span>{store.sync==="idle"?"Synced":store.sync==="busy"?(store.syncMsg||"Working"):store.sync==="pending"?"Changes queued (offline)":store.syncMsg||"Sync error"}
+      </div>
+      <div className="divider"></div>
+      <h3 style={{fontSize:17,marginBottom:12}}>Connection</h3>
+      <SettingsForm store={store} toast={toast} onConnected={()=>{ store.pull(); }}/>
+      <div className="divider"></div>
+      <button className="act-row" onClick={()=>go("diagnostics")}>
+        <span className="act-ic">{Ic.gear}</span><span className="act-txt"><b>Diagnostics</b><span>View the activity log</span></span></button>
+      <button className="act-row" onClick={exportData}>
+        <span className="act-ic">{Ic.project}</span><span className="act-txt"><b>Export data</b><span>Download a JSON backup</span></span></button>
+      <button className="act-row" onClick={()=>store.pull()}>
+        <span className="act-ic">{Ic.review}</span><span className="act-txt"><b>Force sync now</b><span>Pull from GitHub</span></span></button>
+      <div className="divider"></div>
+      <div className="card" style={{borderColor:"var(--line-2)"}}>
+        <b style={{fontFamily:"Fraunces",fontSize:15}}>One launch context</b>
+        <p className="hint" style={{marginTop:4}}>Home Screen and a Safari tab keep separate storage. Pick one (Home Screen recommended) and stick with it; you'll re-enter credentials once in each.</p>
+      </div>
+      <button className="btn btn-danger btn-block" style={{marginTop:16}} onClick={()=>setConfirmClear(true)}>Clear this device & sign out</button>
+      {confirmClear && <Confirm text="This clears the local cache and credentials on THIS device. Your data in GitHub is untouched and re-syncs when you reconnect."
+        confirmLabel="Clear device" onConfirm={()=>{ FILES.forEach(f=>lsDel("cache:"+f)); ["cfg","sha","dirty"].forEach(lsDel); location.reload(); }}
+        onCancel={()=>setConfirmClear(false)}/>}
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: MORE (hub)
+   ============================================================ */
+function MoreView({ store, go }){
+  const rows = [
+    { k:"projects", ic:Ic.project, b:"Projects", s:store.data.projects.filter(p=>p.status==="active").length+" active" },
+    { k:"ideas",    ic:Ic.idea,    b:"Ideas",    s:store.data.ideas.filter(i=>i.state!=="discarded"&&i.state!=="promoted").length+" open" },
+    { k:"goals",    ic:Ic.goal,    b:"Goals",    s:store.data.goals.filter(g=>g.status==="active").length+" active" },
+    { k:"review",   ic:Ic.review,  b:"Weekly Review", s:"Run the GTD checklist" },
+    { k:"now",      ic:Ic.now,     b:"Now / Focus", s:"One thing at a time" },
+    { k:"settings", ic:Ic.gear,    b:"Settings", s:"Connection, diagnostics, backup" },
+  ];
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="eyebrow">Everything</div><h1 className="title">More</h1>
+      </div>
+      <div style={{marginTop:14}}>
+        {rows.map(r=><button key={r.k} className="act-row" onClick={()=>go(r.k)}>
+          <span className="act-ic">{r.ic}</span><span className="act-txt"><b>{r.b}</b><span>{r.s}</span></span></button>)}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   FIRST-RUN SETUP
+   ============================================================ */
+function Setup({ store, toast }){
+  return (
+    <div className="app"><div className="screen">
+      <div style={{paddingTop:"calc(env(safe-area-inset-top) + 40px)"}}>
+        <div className="eyebrow">Get started</div>
+        <h1 className="title" style={{fontSize:34,marginTop:4}}>Your Tracker</h1>
+        <p className="hint" style={{marginTop:8,fontSize:14}}>
+          A GTD + Eisenhower tracker for todos, ideas, projects, and goals. Your data lives in your own private GitHub repo.
+        </p>
+      </div>
+      <div className="card" style={{marginTop:20}}>
+        <SettingsForm store={store} toast={toast}/>
+      </div>
+      <div className="card" style={{marginTop:14,background:"var(--bg-2)"}}>
+        <b style={{fontFamily:"Fraunces",fontSize:15}}>Before you start</b>
+        <p className="hint" style={{marginTop:6}}>
+          1. Create a private repo (e.g. <b>tracker-data</b>) for your data.<br/>
+          2. Make a fine-grained PAT scoped to that repo, Contents: Read and write.<br/>
+          3. Add this page to your Home Screen and launch it from there.
+        </p>
+      </div>
+    </div></div>
+  );
+}
+
+/* ============================================================
+   APP SHELL
+   ============================================================ */
+function App(){
+  const store = useStore();
+  const [tab,setTab]=useState("today");        // bottom-nav tab
+  const [sub,setSub]=useState(null);           // sub-view within More (projects/ideas/etc)
+  const [capture,setCapture]=useState(false);
+  const [editor,setEditor]=useState(null);     // {kind, entity}
+  const [toastMsg,setToastMsg]=useState("");
+  const [typeFilter,setTypeFilter]=useState("all");
+  const toastRef = useRef();
+  const toast = useCallback((m)=>{ setToastMsg(m); clearTimeout(toastRef.current); toastRef.current=setTimeout(()=>setToastMsg(""),2200); },[]);
+
+  const openEditor = useCallback((kind, entity)=>{ setEditor({kind, entity}); log("NAV","editor "+kind); },[]);
+  const openTodo = useCallback((t)=>setEditor({kind:"todo", entity:t}),[]);
+  const go = useCallback((k)=>{ setSub(k); log("NAV","go "+k); },[]);
+
+  if(!store.cfg.configured) return <div><Setup store={store} toast={toast}/><Toast msg={toastMsg}/></div>;
+
+  // sub-views launched from More / Today
+  let subView = null;
+  if(sub==="projects") subView=<ProjectsView store={store} openEditor={openEditor} onOpenTodo={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter}/>;
+  else if(sub==="ideas") subView=<IdeasView store={store} openEditor={openEditor} typeFilter={typeFilter} setTypeFilter={setTypeFilter}/>;
+  else if(sub==="goals") subView=<GoalsView store={store} openEditor={openEditor} typeFilter={typeFilter} setTypeFilter={setTypeFilter}/>;
+  else if(sub==="review") subView=<WeeklyReview store={store} back={()=>setSub(null)} go={go}/>;
+  else if(sub==="now") subView=<NowView store={store} onOpen={openTodo} back={()=>setSub(null)}/>;
+  else if(sub==="settings") subView=<SettingsView store={store} toast={toast} go={go}/>;
+  else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
+
+  let main;
+  if(sub && sub!=="more") main=subView;
+  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter}/>;
+  else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter}/>;
+  else if(tab==="matrix") main=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter}/>;
+  else if(tab==="more") main=<MoreView store={store} go={go}/>;
+
+  function navTo(t){ setTab(t); setSub(null); }
+
+  const syncLabel = store.sync==="idle"?"Synced":store.sync==="busy"?(store.syncMsg||"Working"):store.sync==="pending"?"Queued offline":store.syncMsg||"Sync error";
+
+  return (
+    <div className="app">
+      {/* global sync banner (only when not on settings, which has its own) */}
+      {sub!=="settings" && store.sync!=="idle" &&
+        <div style={{padding:"calc(env(safe-area-inset-top) + 8px) 18px 0"}}>
+          <div className={"sync "+store.sync}><span className="dot"></span>{syncLabel}</div>
+        </div>}
+      {main}
+
+      {/* bottom nav */}
+      <div className="nav">
+        <button className={"nav-btn"+(tab==="today"&&!sub?" on":"")} onClick={()=>navTo("today")}><NavIc d={Ic.today}/>Today</button>
+        <button className={"nav-btn"+(tab==="lists"&&!sub?" on":"")} onClick={()=>navTo("lists")}><NavIc d={Ic.lists}/>Lists</button>
+        <button className="nav-btn nav-fab" onClick={()=>setCapture(true)}><span className="fab">{Ic.plus}</span></button>
+        <button className={"nav-btn"+(tab==="matrix"&&!sub?" on":"")} onClick={()=>navTo("matrix")}><NavIc d={Ic.matrix}/>Matrix</button>
+        <button className={"nav-btn"+(tab==="more"||sub?" on":"")} onClick={()=>navTo("more")}><NavIc d={Ic.more}/>More</button>
+      </div>
+
+      {/* capture sheet */}
+      {capture && <CaptureSheet store={store} toast={toast} onClose={()=>setCapture(false)} openEditor={openEditor}/>}
+
+      {/* editors */}
+      {editor && editor.kind==="todo" && <TodoEditor store={store} todo={editor.entity} toast={toast} onClose={()=>setEditor(null)}/>}
+      {editor && editor.kind==="idea" && <IdeaEditor store={store} idea={editor.entity} toast={toast} onClose={()=>setEditor(null)}/>}
+      {editor && editor.kind==="project" && <ProjectEditor store={store} project={editor.entity} toast={toast} onClose={()=>setEditor(null)}/>}
+      {editor && editor.kind==="goal" && <GoalEditor store={store} goal={editor.entity} toast={toast} onClose={()=>setEditor(null)}/>}
+
+      <Toast msg={toastMsg}/>
+    </div>
+  );
+}
+
+/* ============================================================
+   MOUNT
+   ============================================================ */
+(function(){
+  try{
+    log("INIT","mounting app");
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App/>);
+    log("INIT","mounted");
+  }catch(e){
+    log("ERROR","mount failed: "+e.message);
+    document.getElementById("root").innerHTML =
+      '<div style="padding:40px;color:#f3ead9;font-family:sans-serif"><h2>Startup error</h2><p>'+e.message+'</p></div>';
+  }
+})();
+</script>
+</body>
+</html>
