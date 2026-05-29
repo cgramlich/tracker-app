@@ -1065,7 +1065,7 @@ function TodayView({ store, onOpen, goNow, typeFilter }){
           <b style={{fontFamily:"Fraunces",fontSize:15}}>Revisit your ideas</b>
           <p className="hint" style={{marginTop:4}}>{staleIdeas.length} idea{staleIdeas.length===1?"":"s"} untouched 30+ days. A quick review keeps the system trusted.</p>
         </div>}
-      {items.length===0 ? <Empty glyph="\u2600" title="Nothing scheduled" sub="Star items for today, or set a due date."/> :
+      {items.length===0 ? <Empty glyph={"\u2600"} title="Nothing scheduled" sub="Star items for today, or set a due date."/> :
         <div className="list">{items.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div>}
     </div>
   );
@@ -1086,7 +1086,7 @@ function NowView({ store, onOpen, back }){
         <button className="btn btn-ghost btn-sm" onClick={back}>{Ic.back} Back</button>
         <h1 className="title" style={{marginTop:8}}>Now</h1>
       </div>
-      {!t ? <Empty glyph="\u25CB" title="All clear" sub="No next action queued. Nice."/> :
+      {!t ? <Empty glyph={"\u25CB"} title="All clear" sub="No next action queued. Nice."/> :
         <div style={{marginTop:30}}>
           <div className="card" style={{padding:24,textAlign:"center"}}>
             <div className="subtle" style={{marginBottom:10}}>{t.quad?QUADRANTS[t.quad].label:"Next action"}</div>
@@ -1127,7 +1127,7 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter }){
       <div className="tabs">
         {STATUS_ORDER.map(s=><button key={s} className={"tab"+(tab===s?" on":"")} onClick={()=>setTab(s)}>{s[0].toUpperCase()+s.slice(1)} {counts[s]>0&&<span style={{opacity:.6}}>{counts[s]}</span>}</button>)}
       </div>
-      {items.length===0 ? <Empty glyph="\u2014" title={"No "+tab+" items"} sub={tab==="inbox"?"Capture with the + button.":"Move items here as you organize."}/> :
+      {items.length===0 ? <Empty glyph={"\u2014"} title={"No "+tab+" items"} sub={tab==="inbox"?"Capture with the + button.":"Move items here as you organize."}/> :
         <div className="list">{items.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div>}
     </div>
   );
@@ -1191,7 +1191,7 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
         {p.description && <p className="hint" style={{marginTop:12}}>{p.description}</p>}
         <div className="topbar-row" style={{marginTop:18}}><h3 style={{fontSize:17}}>Todos</h3>
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("todo",{projectId:p.id,type:p.type})}>{Ic.plus} Add</button></div>
-        {todos.length===0? <Empty glyph="\u2014" title="No todos yet" sub="Add the next action for this project."/> :
+        {todos.length===0? <Empty glyph={"\u2014"} title="No todos yet" sub="Add the next action for this project."/> :
           <div className="list">{todos.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpenTodo(t)}/>)}</div>}
       </div>
     );
@@ -1203,7 +1203,7 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("project")}>{Ic.plus} New</button></div>
       </div>
       <div className="pills">{["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
-      {projects.length===0? <Empty glyph="\u25A1" title="No projects" sub="A project is any outcome needing more than one step."/> :
+      {projects.length===0? <Empty glyph={"\u25A1"} title="No projects" sub="A project is any outcome needing more than one step."/> :
         <div className="list">{projects.map(p=>{
           const open = store.data.todos.filter(t=>t.projectId===p.id&&t.status!=="done").length;
           return <div key={p.id} className="item" onClick={()=>setActive(p)}>
@@ -1228,7 +1228,7 @@ function IdeasView({ store, openEditor, typeFilter, setTypeFilter }){
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("idea")}>{Ic.plus} New</button></div>
       </div>
       <div className="pills">{["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
-      {ideas.length===0? <Empty glyph="\u273C" title="No ideas yet" sub="Capture a raw thought and let it sit."/> :
+      {ideas.length===0? <Empty glyph={"\u273C"} title="No ideas yet" sub="Capture a raw thought and let it sit."/> :
         <div className="list">{ideas.map(i=>
           <div key={i.id} className="item" onClick={()=>openEditor("idea",i)} style={i.state==="discarded"?{opacity:.5}:null}>
             <div className="item-body"><div className="item-title">{i.title}</div>
@@ -1253,7 +1253,7 @@ function GoalsView({ store, openEditor, typeFilter, setTypeFilter }){
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("goal")}>{Ic.plus} New</button></div>
       </div>
       <div className="pills">{["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
-      {goals.length===0? <Empty glyph="\u25CE" title="No goals" sub="Set a longer-term objective for projects to roll up to."/> :
+      {goals.length===0? <Empty glyph={"\u25CE"} title="No goals" sub="Set a longer-term objective for projects to roll up to."/> :
         <div className="list">{goals.map(g=>{
           const projs = store.data.projects.filter(p=>p.goalId===g.id);
           return <div key={g.id} className="item" onClick={()=>openEditor("goal",g)} style={g.status!=="active"?{opacity:.6}:null}>
@@ -1332,6 +1332,13 @@ function Diagnostics({ back }){
 /* ============================================================
    SETTINGS FORM (shared by first-run setup + settings)
    ============================================================ */
+// Known Claude models for the picker. "Custom" lets you type any future model id.
+const MODELS = [
+  { v:"claude-sonnet-4-6",          l:"Sonnet 4.6 - balanced (recommended)" },
+  { v:"claude-haiku-4-5-20251001",  l:"Haiku 4.5 - fastest, cheapest" },
+  { v:"claude-opus-4-8",            l:"Opus 4.8 - most capable, priciest" },
+];
+
 function SettingsForm({ store, toast, onConnected }){
   const c = store.cfg;
   const [owner,setOwner]=useState(c.owner||"");
@@ -1339,6 +1346,8 @@ function SettingsForm({ store, toast, onConnected }){
   const [token,setToken]=useState(c.token||"");
   const [apiKey,setApiKey]=useState(c.apiKey||"");
   const [model,setModel]=useState(c.model||"claude-sonnet-4-6");
+  // If the saved model isn't one of the known options, start in "custom" mode.
+  const [custom,setCustom]=useState(!MODELS.some(m=>m.v===(c.model||"claude-sonnet-4-6")));
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
   async function connect(){
@@ -1368,8 +1377,16 @@ function SettingsForm({ store, toast, onConnected }){
       <div className="field"><span className="label">Claude API key (for brain-dump + photo)</span>
         <input className="input" type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-ant-..." autoCapitalize="off"/>
         <p className="hint">Optional. Stored only on this device. Without it, manual capture still works.</p></div>
-      <div className="field"><span className="label">Model</span>
-        <input className="input" value={model} onChange={e=>setModel(e.target.value)} placeholder="claude-sonnet-4-6" autoCapitalize="off"/></div>
+      <div className="field"><span className="label">Model (for brain-dump + photo)</span>
+        <select className="select" value={custom?"__custom":model}
+          onChange={e=>{ if(e.target.value==="__custom"){ setCustom(true); } else { setCustom(false); setModel(e.target.value); } }}>
+          {MODELS.map(m=><option key={m.v} value={m.v}>{m.l}</option>)}
+          <option value="__custom">Custom (type a model id)</option>
+        </select>
+        {custom &&
+          <input className="input" style={{marginTop:8}} value={model} onChange={e=>setModel(e.target.value)}
+            placeholder="e.g. claude-opus-4-7" autoCapitalize="off"/>}
+        <p className="hint">Sonnet handles OCR and brain-dump well at moderate cost. Switch any time.</p></div>
       {err && <p className="hint danger-text">{err}</p>}
       <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={busy} onClick={connect}>
         {busy? <span className="spin"></span> : "Test & connect"}</button>
