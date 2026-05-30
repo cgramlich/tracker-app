@@ -707,6 +707,48 @@ function Confirm({ text, confirmLabel, onConfirm, onCancel }){
 }
 
 /* ============================================================
+   CONVERT an item between entity types (todo/idea/project/goal).
+   Destructive replace: creates the new entity, removes the old.
+   ============================================================ */
+const TYPE_FILE = { todo:"todos", idea:"ideas", project:"projects", goal:"goals" };
+const FILE_NOUN = { todos:"todo", ideas:"idea", projects:"project", goals:"goal" };
+function convertEntity(store, fromFile, item, toType, toast, onClose){
+  // Pull common fields regardless of source shape (todos/ideas use title; projects/goals use name).
+  const title = item.title || item.name || "";
+  const body  = item.notes || item.body || item.description || item.outcome || item.why || "";
+  const type  = item.type || "";
+  const date  = item.due || item.deadline || item.target || "";
+  const tags  = item.tags || [];
+  let row;
+  if(toType==="todo")         row = { title, notes:body, type, status:"inbox", due:date, tags, subtasks:[] };
+  else if(toType==="idea")    row = { title, body, type, state:"raw", capturedAt:nowISO(), tags };
+  else if(toType==="project") row = { name:title, type, status:"active", outcome:"", description:body, deadline:date, goalId:null };
+  else if(toType==="goal")    row = { name:title, type, why:body, status:"active", target:date };
+  store.upsert(TYPE_FILE[toType], row);
+  store.remove(fromFile, item.id);
+  log("SAVE","convert "+fromFile+" -> "+toType);
+  toast("Converted to "+toType); onClose();
+}
+function ConvertRow({ store, fromFile, item, toast, onClose }){
+  const [confirm,setConfirm]=useState(null);
+  const opts = [["todo","Todo","todos"],["idea","Idea","ideas"],["project","Project","projects"],["goal","Goal","goals"]]
+    .filter(o=>o[2]!==fromFile);
+  return (
+    <div style={{marginTop:16}}>
+      <span className="label">Convert this into</span>
+      <div className="pills">
+        {opts.map(([t,l])=><button key={t} className="pill" onClick={()=>setConfirm(t)}>{l}</button>)}
+      </div>
+      {confirm && <Confirm
+        text={"Convert this "+FILE_NOUN[fromFile]+" into a "+confirm+"? The original will be replaced, and fields that don't carry over are dropped."}
+        confirmLabel={"Convert to "+confirm}
+        onConfirm={()=>convertEntity(store, fromFile, item, confirm, toast, onClose)}
+        onCancel={()=>setConfirm(null)}/>}
+    </div>
+  );
+}
+
+/* ============================================================
    TODO EDITOR  (full manual form - every field editable by hand)
    ============================================================ */
 function TodoEditor({ store, todo, onClose, toast }){
@@ -832,6 +874,7 @@ function TodoEditor({ store, todo, onClose, toast }){
       <div className="field"><span className="label">Notes</span>
         <textarea className="textarea" value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Details, context..."/></div>
       <button className="btn btn-primary btn-block" onClick={save}>{t.id?"Save changes":"Add todo"}</button>
+      {t.id && <ConvertRow store={store} fromFile="todos" item={t} toast={toast} onClose={onClose}/>}
       {t.id && <button className="btn btn-danger btn-block" style={{marginTop:10}}
         onClick={()=>{ store.remove("todos",t.id); toast("Deleted"); onClose(); }}>Delete</button>}
     </Sheet>
@@ -883,6 +926,7 @@ function IdeaEditor({ store, idea, onClose, toast }){
       <button className="btn btn-primary btn-block" onClick={save}>{t.id?"Save":"Capture idea"}</button>
       {t.id && t.state!=="promoted" &&
         <button className="btn btn-ghost btn-block" style={{marginTop:10}} onClick={promote}>Promote to project</button>}
+      {t.id && <ConvertRow store={store} fromFile="ideas" item={t} toast={toast} onClose={onClose}/>}
       {t.id && <button className="btn btn-danger btn-block" style={{marginTop:10}}
         onClick={()=>{ store.remove("ideas",t.id); toast("Deleted"); onClose(); }}>Delete</button>}
     </Sheet>
@@ -930,6 +974,7 @@ function ProjectEditor({ store, project, onClose, toast }){
       <div className="field"><span className="label">Description / support notes</span>
         <textarea className="textarea" value={description} onChange={e=>setDescription(e.target.value)}/></div>
       <button className="btn btn-primary btn-block" onClick={save}>{t.id?"Save":"Create project"}</button>
+      {t.id && <ConvertRow store={store} fromFile="projects" item={t} toast={toast} onClose={onClose}/>}
       {t.id && <button className="btn btn-danger btn-block" style={{marginTop:10}}
         onClick={()=>{ store.remove("projects",t.id); toast("Deleted"); onClose(); }}>Delete</button>}
     </Sheet>
@@ -968,6 +1013,7 @@ function GoalEditor({ store, goal, onClose, toast }){
       <div className="field"><span className="label">Target date (optional)</span>
         <input className="input" type="date" value={target} onChange={e=>setTarget(e.target.value)}/></div>
       <button className="btn btn-primary btn-block" onClick={save}>{t.id?"Save":"Create goal"}</button>
+      {t.id && <ConvertRow store={store} fromFile="goals" item={t} toast={toast} onClose={onClose}/>}
       {t.id && <button className="btn btn-danger btn-block" style={{marginTop:10}}
         onClick={()=>{ store.remove("goals",t.id); toast("Deleted"); onClose(); }}>Delete</button>}
     </Sheet>
@@ -1181,7 +1227,7 @@ function sortTodos(a,b){
 /* ============================================================
    VIEW: TODAY  (+ entry to Now/Focus)
    ============================================================ */
-function TodayView({ store, onOpen, goNow, onSearch, typeFilter }){
+function TodayView({ store, onOpen, goNow, typeFilter }){
   let items = todayItems(store.data.todos).filter(t=>typeFilter==="all"||t.type===typeFilter).sort(sortTodos);
   const staleIdeas = store.data.ideas.filter(i=>{
     if(i.state==="promoted"||i.state==="discarded") return false;
@@ -1197,7 +1243,6 @@ function TodayView({ store, onOpen, goNow, onSearch, typeFilter }){
           <button className="btn btn-ghost btn-sm" onClick={goNow}>{Ic.now} Focus</button></div>
         <div className="subtle" style={{marginTop:2}}>{d.toLocaleDateString(undefined,{month:"long",day:"numeric"})}</div>
       </div>
-      <button className="search-bar" onClick={onSearch}>{Ic.search}<span>Search everything</span></button>
       {staleIdeas.length>0 &&
         <div className="card" style={{marginTop:14,borderColor:"var(--amber-line)",background:"var(--amber-dim)"}}>
           <b style={{fontFamily:"Fraunces",fontSize:15}}>Revisit your ideas</b>
@@ -1585,8 +1630,10 @@ function LocationsEditor({ store, toast }){
 /* ============================================================
    VIEW: SETTINGS
    ============================================================ */
-function SettingsView({ store, toast, go }){
-  const [confirmClear,setConfirmClear]=useState(false);
+/* ============================================================
+   VIEW: EXPORT (reachable from More)
+   ============================================================ */
+function ExportView({ store, toast, back }){
   function download(name, text, mime){
     const blob = new Blob([text],{type:mime});
     const a = document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; a.click();
@@ -1661,6 +1708,23 @@ function SettingsView({ store, toast, go }){
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
+        <button className="btn btn-ghost btn-sm" onClick={back}>{Ic.back} Back</button>
+        <h1 className="title" style={{marginTop:8}}>Export</h1>
+      </div>
+      <p className="hint" style={{marginTop:8}}>Get your data out anytime. This reads only what is on this device.</p>
+      <button className="act-row" onClick={exportText}>
+        <span className="act-ic">{Ic.lists}</span><span className="act-txt"><b>Export as text</b><span>Share to Notes, Mail, Messages</span></span></button>
+      <button className="act-row" onClick={exportData}>
+        <span className="act-ic">{Ic.project}</span><span className="act-txt"><b>Export data (JSON)</b><span>Full machine-readable backup</span></span></button>
+    </div>
+  );
+}
+
+function SettingsView({ store, toast, go }){
+  const [confirmClear,setConfirmClear]=useState(false);
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
         <div className="eyebrow">Configure</div><h1 className="title">Settings</h1>
       </div>
       <div className={"sync "+store.sync} style={{marginTop:12}}>
@@ -1675,10 +1739,6 @@ function SettingsView({ store, toast, go }){
       <div className="divider"></div>
       <button className="act-row" onClick={()=>go("diagnostics")}>
         <span className="act-ic">{Ic.gear}</span><span className="act-txt"><b>Diagnostics</b><span>View the activity log</span></span></button>
-      <button className="act-row" onClick={exportText}>
-        <span className="act-ic">{Ic.lists}</span><span className="act-txt"><b>Export as text</b><span>Share to Notes, Mail, Messages</span></span></button>
-      <button className="act-row" onClick={exportData}>
-        <span className="act-ic">{Ic.project}</span><span className="act-txt"><b>Export data (JSON)</b><span>Full machine-readable backup</span></span></button>
       <button className="act-row" onClick={()=>store.pull()}>
         <span className="act-ic">{Ic.review}</span><span className="act-txt"><b>Force sync now</b><span>Pull from GitHub</span></span></button>
       <div className="divider"></div>
@@ -1749,7 +1809,8 @@ function MoreView({ store, go }){
     { k:"goals",    ic:Ic.goal,    b:"Goals", s:store.data.goals.filter(g=>g.status==="active").length+" active" },
     { k:"review",   ic:Ic.review,  b:"Weekly Review", s:"Run the GTD checklist" },
     { k:"now",      ic:Ic.now,     b:"Now / Focus", s:"One thing at a time" },
-    { k:"settings", ic:Ic.gear,    b:"Settings", s:"Connection, diagnostics, backup" },
+    { k:"export",   ic:Ic.lists,   b:"Export", s:"Text list or JSON backup" },
+    { k:"settings", ic:Ic.gear,    b:"Settings", s:"Connection, locations, diagnostics" },
   ];
   return (
     <div className="screen">
@@ -1822,12 +1883,13 @@ function App(){
   else if(sub==="now") subView=<NowView store={store} onOpen={openTodo} back={()=>setSub(null)}/>;
   else if(sub==="search") subView=<SearchView store={store} openEditor={openEditor} back={()=>setSub(null)}/>;
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
+  else if(sub==="export") subView=<ExportView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="settings") subView=<SettingsView store={store} toast={toast} go={go}/>;
   else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
 
   let main;
   if(sub && sub!=="more") main=subView;
-  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} onSearch={()=>setSub("search")} typeFilter={typeFilter}/>;
+  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter}/>;
   else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(tab==="more") main=<MoreView store={store} go={go}/>;
 
@@ -1841,10 +1903,12 @@ function App(){
 
   return (
     <div className="app">
-      {/* global sync banner (only when not on settings, which has its own) */}
-      {sub!=="settings" && store.sync!=="idle" &&
-        <div style={{padding:"calc(env(safe-area-inset-top) + 8px) 18px 0"}}>
-          <div className={"sync "+store.sync}><span className="dot"></span>{syncLabel}</div>
+      {/* global top bar - search on every page (hidden on the search view itself) + sync */}
+      {sub!=="search" &&
+        <div style={{padding:"calc(env(safe-area-inset-top) + 10px) 18px 0"}}>
+          <button className="search-bar" style={{marginTop:0}} onClick={()=>setSub("search")}>{Ic.search}<span>Search everything</span></button>
+          {sub!=="settings" && store.sync!=="idle" &&
+            <div className={"sync "+store.sync} style={{marginTop:10}}><span className="dot"></span>{syncLabel}</div>}
         </div>}
       {main}
 
