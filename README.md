@@ -16,7 +16,7 @@ is served free from GitHub Pages; your data lives in your own private GitHub rep
 - **Today view:** due-today + deferred-arrived + manually starred
 - **Now / Focus:** one next action at a time
 - **Weekly Review:** a lightweight guided checklist (the GTD keystone habit)
-- **Search:** find any todo, idea, project, or goal - from the Today screen or the More hub
+- **Search:** a Search tab in the bottom bar finds any todo, idea, project, or goal
 - **Categories:** tag everything CG / KG / Kids / RTR / STB / MHN and filter by them
 - **Locations / contexts:** tag todos by place (Office, 656, 6821, Car, Any place)
   and filter "what can I do here"
