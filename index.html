@@ -165,9 +165,9 @@ a{color:var(--amber);}
   padding-bottom:env(safe-area-inset-bottom);
   background:rgba(28,22,17,.92);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
   border-top:1px solid var(--line-2);display:flex;align-items:center;justify-content:space-around;max-width:680px;margin:0 auto;}
-.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--ink-3);font-size:10px;font-weight:600;letter-spacing:.04em;padding:8px 0;transition:.15s;}
+.nav-btn{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:2px;color:var(--ink-3);font-size:9px;font-weight:600;letter-spacing:.01em;padding:8px 0;transition:.15s;}
 .nav-btn.on{color:var(--amber);}
-.nav-btn svg{width:23px;height:23px;stroke:currentColor;fill:none;stroke-width:1.8;}
+.nav-btn svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.8;}
 .nav-fab{flex:0 0 auto;margin-top:-22px;}
 .fab{width:54px;height:54px;border-radius:50%;background:var(--amber);color:#241a0c;display:flex;align-items:center;justify-content:center;
   box-shadow:0 10px 26px -6px rgba(224,163,62,.6);transition:.18s var(--ease);}
@@ -1176,7 +1176,7 @@ function sortTodos(a,b){
 /* ============================================================
    VIEW: TODAY  (+ entry to Now/Focus)
    ============================================================ */
-function TodayView({ store, onOpen, goNow, onSearch, typeFilter }){
+function TodayView({ store, onOpen, goNow, typeFilter }){
   let items = todayItems(store.data.todos).filter(t=>typeFilter==="all"||t.type===typeFilter).sort(sortTodos);
   const staleIdeas = store.data.ideas.filter(i=>{
     if(i.state==="promoted"||i.state==="discarded") return false;
@@ -1189,10 +1189,7 @@ function TodayView({ store, onOpen, goNow, onSearch, typeFilter }){
       <div className="topbar" style={{padding:0,position:"static"}}>
         <div className="eyebrow">{d.toLocaleDateString(undefined,{weekday:"long"})}</div>
         <div className="topbar-row"><h1 className="title">Today</h1>
-          <div style={{display:"flex",gap:8}}>
-            <button className="btn btn-ghost btn-sm" onClick={onSearch} aria-label="Search">{Ic.search}</button>
-            <button className="btn btn-ghost btn-sm" onClick={goNow}>{Ic.now} Focus</button>
-          </div></div>
+          <button className="btn btn-ghost btn-sm" onClick={goNow}>{Ic.now} Focus</button></div>
         <div className="subtle" style={{marginTop:2}}>{d.toLocaleDateString(undefined,{month:"long",day:"numeric"})}</div>
       </div>
       {staleIdeas.length>0 &&
@@ -1742,10 +1739,8 @@ function SearchView({ store, openEditor, back }){
    ============================================================ */
 function MoreView({ store, go }){
   const rows = [
-    { k:"search",   ic:Ic.search,  b:"Search", s:"Find any todo, idea, project, or goal" },
+    { k:"matrix",   ic:Ic.matrix,  b:"Matrix", s:"Eisenhower priorities" },
     { k:"projects", ic:Ic.project, b:"Projects", s:store.data.projects.filter(p=>p.status==="active").length+" active" },
-    { k:"ideas",    ic:Ic.idea,    b:"Ideas",    s:store.data.ideas.filter(i=>i.state!=="discarded"&&i.state!=="promoted").length+" open" },
-    { k:"goals",    ic:Ic.goal,    b:"Goals",    s:store.data.goals.filter(g=>g.status==="active").length+" active" },
     { k:"review",   ic:Ic.review,  b:"Weekly Review", s:"Run the GTD checklist" },
     { k:"now",      ic:Ic.now,     b:"Now / Focus", s:"One thing at a time" },
     { k:"settings", ic:Ic.gear,    b:"Settings", s:"Connection, diagnostics, backup" },
@@ -1820,17 +1815,21 @@ function App(){
   else if(sub==="review") subView=<WeeklyReview store={store} back={()=>setSub(null)} go={go}/>;
   else if(sub==="now") subView=<NowView store={store} onOpen={openTodo} back={()=>setSub(null)}/>;
   else if(sub==="search") subView=<SearchView store={store} openEditor={openEditor} back={()=>setSub(null)}/>;
+  else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(sub==="settings") subView=<SettingsView store={store} toast={toast} go={go}/>;
   else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
 
   let main;
   if(sub && sub!=="more") main=subView;
-  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} onSearch={()=>setSub("search")} typeFilter={typeFilter}/>;
+  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter}/>;
   else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
-  else if(tab==="matrix") main=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(tab==="more") main=<MoreView store={store} go={go}/>;
 
   function navTo(t){ setTab(t); setSub(null); }
+  // Promote Ideas/Goals/Search to nav items: clear the main tab so only the sub lights up.
+  function goNav(s){ setTab(""); setSub(s); }
+  const NAV_SUBS = ["ideas","goals","search"];
+  const moreActive = tab==="more" || (sub && !NAV_SUBS.includes(sub)); // More also covers Matrix/Projects/etc.
 
   const syncLabel = store.sync==="idle"?"Synced":store.sync==="busy"?(store.syncMsg||"Working"):store.sync==="pending"?"Queued offline":store.syncMsg||"Sync error";
 
@@ -1843,13 +1842,15 @@ function App(){
         </div>}
       {main}
 
-      {/* bottom nav */}
+      {/* bottom nav - 3 items, center capture FAB, 3 items */}
       <div className="nav">
         <button className={"nav-btn"+(tab==="today"&&!sub?" on":"")} onClick={()=>navTo("today")}><NavIc d={Ic.today}/>Today</button>
         <button className={"nav-btn"+(tab==="lists"&&!sub?" on":"")} onClick={()=>navTo("lists")}><NavIc d={Ic.lists}/>To-Dos</button>
+        <button className={"nav-btn"+(sub==="ideas"?" on":"")} onClick={()=>goNav("ideas")}><NavIc d={Ic.idea}/>Ideas</button>
         <button className="nav-btn nav-fab" onClick={()=>setCapture(true)}><span className="fab">{Ic.plus}</span></button>
-        <button className={"nav-btn"+(tab==="matrix"&&!sub?" on":"")} onClick={()=>navTo("matrix")}><NavIc d={Ic.matrix}/>Matrix</button>
-        <button className={"nav-btn"+(tab==="more"||sub?" on":"")} onClick={()=>navTo("more")}><NavIc d={Ic.more}/>More</button>
+        <button className={"nav-btn"+(sub==="goals"?" on":"")} onClick={()=>goNav("goals")}><NavIc d={Ic.goal}/>Goals</button>
+        <button className={"nav-btn"+(sub==="search"?" on":"")} onClick={()=>goNav("search")}><NavIc d={Ic.search}/>Search</button>
+        <button className={"nav-btn"+(moreActive?" on":"")} onClick={()=>navTo("more")}><NavIc d={Ic.more}/>More</button>
       </div>
 
       {/* capture sheet */}
