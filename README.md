@@ -1,5 +1,4 @@
 # Tracker
-
 A personal and professional task tracker built on **GTD** (Getting Things Done)
 and the **Eisenhower matrix**. Captures todos, ideas, projects, and goals in one
 place. Solo, mobile-first, works offline.
@@ -12,13 +11,20 @@ is served free from GitHub Pages; your data lives in your own private GitHub rep
 ## What it does
 
 - **Four entities:** Todos, Ideas, Projects, Goals - each with its own view
-- **GTD workflow:** Inbox -> Next -> Waiting -> Someday -> Done
+- **GTD workflow:** Inbox -> Next -> Waiting -> Someday -> Done, plus an "All" view
 - **Eisenhower matrix:** prioritize by urgent x important
 - **Today view:** due-today + deferred-arrived + manually starred
 - **Now / Focus:** one next action at a time
 - **Weekly Review:** a lightweight guided checklist (the GTD keystone habit)
-- **Capture:** one-tap quick-add, full manual forms, AI brain-dump, and photo OCR
-- **Offline-first:** edits are cached locally and pushed to GitHub when online
+- **Search:** find any todo, idea, project, or goal - from the Today screen or the More hub
+- **Categories:** tag everything CG / KG / Kids / RTR / STB / MHN and filter by them
+- **Locations / contexts:** tag todos by place (Office, 656, 6821, Car, Any place)
+  and filter "what can I do here"
+- **Recurring todos:** daily / weekly / monthly, spawned on completion
+- **Capture:** one-tap quick-add, full manual forms, inline new-project creation,
+  AI brain-dump, and photo OCR (review before anything saves)
+- **Offline-first:** edits cache locally and push to GitHub when online
+- **Exports:** a readable text export to the share sheet, plus a full JSON backup
 - **Your data, your repo:** plain JSON files you can read, back up, or export
 
 ## Two repos (by design)
@@ -40,6 +46,7 @@ data/goals.json
 ## Get started
 
 1. Follow **SETUP.md** for the step-by-step GitHub setup (repos, Pages, token).
+   Note: use the GitHub website, not the mobile app, to upload files.
 2. Open the Pages URL on your phone, add it to the Home Screen, launch it.
 3. Enter your repo details and connect.
 4. Read **MANUAL.md** to learn the day-to-day flow.
