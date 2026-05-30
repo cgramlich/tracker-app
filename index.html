@@ -456,8 +456,24 @@ const QUADRANTS = {
   q4:{label:"Drop?", hint:"Neither", cls:"q4"}
 };
 
+// GTD contexts / locations. Seeded with the user's places; editable in Settings.
+// A todo's location is stored as a plain label string so it travels with the data
+// and syncs across devices without an id->label map.
+const DEFAULT_LOCATIONS = ["Office - 656 River Way", "6821 Merrilee Ln", "Car"];
+function knownLocations(store){
+  const seed = (store.cfg.locations && store.cfg.locations.length) ? store.cfg.locations : DEFAULT_LOCATIONS;
+  const used = (store.data.todos || []).map(t=>t.location).filter(Boolean);
+  return Array.from(new Set([...seed, ...used]));   // union keeps options valid on any device
+}
+
+// Life-area categories (replace the old personal/work). Edit this one list to change
+// the filter tabs everywhere. Each gets a color for quick visual scanning.
+const CATEGORIES = ["CG","KG","Kids","RTR","STB","MHN"];
+const CAT_HUE = { CG:"#6f9bc4", KG:"#a98bc4", Kids:"#7fa66a", RTR:"#e0a33e", STB:"#cf8a54", MHN:"#c98aa6" };
+const catHue = (c) => CAT_HUE[c] || "#998a73";
+
 function useStore(){
-  const [cfg, setCfg] = useState(() => lsGet("cfg", { owner:"", repo:"", token:"", apiKey:"", model:"claude-sonnet-4-6", configured:false }));
+  const [cfg, setCfg] = useState(() => lsGet("cfg", { owner:"", repo:"", token:"", apiKey:"", model:"claude-sonnet-4-6", locations:DEFAULT_LOCATIONS, configured:false }));
   const [data, setData] = useState(() => {
     const d = {}; FILES.forEach(f => d[f] = lsGet("cache:"+f, [])); return d;
   });
@@ -624,7 +640,9 @@ function Check({ on, onClick }){
   return <button className={"check"+(on?" on":"")} onClick={onClick} aria-label="toggle">{Ic.check}</button>;
 }
 function TypeChip({ type }){
-  return <span className={"chip "+(type==="work"?"work":"personal")}>{type==="work"?"Work":"Personal"}</span>;
+  if(!type) return null;                       // uncategorized items show no chip
+  const h = catHue(type);
+  return <span className="chip" style={{background:h+"22", color:h, border:"1px solid "+h+"55"}}>{type}</span>;
 }
 
 // Confirm dialog (destructive actions need a deliberate second tap, no traps)
@@ -645,7 +663,7 @@ function TodoEditor({ store, todo, onClose, toast }){
   const t = todo || {};
   const [title,setTitle]=useState(t.title||"");
   const [status,setStatus]=useState(t.status||"inbox");
-  const [type,setType]=useState(t.type||"personal");
+  const [type,setType]=useState(t.type||"");
   const [quad,setQuad]=useState(t.quad||"");
   const [due,setDue]=useState(t.due||"");
   const [defer,setDefer]=useState(t.defer||"");
@@ -656,12 +674,27 @@ function TodoEditor({ store, todo, onClose, toast }){
   const [waitingOn,setWaitingOn]=useState(t.waitingOn||"");
   const [subtasks,setSubtasks]=useState(t.subtasks||[]);
   const [newSub,setNewSub]=useState("");
+  const locs = knownLocations(store);
+  const [location,setLocation]=useState(t.location||"");
+  const [locCustom,setLocCustom]=useState(!!t.location && !locs.includes(t.location));
+  const [newProj,setNewProj]=useState("");      // inline "create new project" name
   const projects = store.data.projects.filter(p=>p.status!=="archived");
 
   function save(){
     if(!title.trim()){ toast("Add a title first"); return; }
+    // If the user chose "create new project", make it first and link to its id.
+    let finalProjectId = projectId;
+    if(projectId==="__new"){
+      if(newProj.trim()){
+        const p = store.upsert("projects",{ name:newProj.trim(), type, status:"active", outcome:"", description:"", deadline:"", goalId:null });
+        finalProjectId = p.id;
+        log("SAVE","todo created project "+newProj.trim());
+      } else {
+        finalProjectId = "";   // chose "new" but typed nothing -> leave unlinked
+      }
+    }
     store.upsert("todos",{ id:t.id, title:title.trim(), status, type, quad, due, defer,
-      tags: tags.split(",").map(s=>s.trim()).filter(Boolean), projectId, url:url.trim(), notes,
+      tags: tags.split(",").map(s=>s.trim()).filter(Boolean), projectId:finalProjectId, url:url.trim(), notes, location,
       waitingOn: status==="waiting"?waitingOn:"", subtasks,
       starredToday: t.starredToday||false, completedAt: t.completedAt||null });
     toast(t.id?"Saved":"Added"); onClose();
@@ -677,9 +710,9 @@ function TodoEditor({ store, todo, onClose, toast }){
           <select className="select" value={status} onChange={e=>setStatus(e.target.value)}>
             {STATUS_ORDER.map(s=><option key={s} value={s}>{s[0].toUpperCase()+s.slice(1)}</option>)}
           </select></div>
-        <div className="field"><span className="label">Type</span>
+        <div className="field"><span className="label">Category</span>
           <select className="select" value={type} onChange={e=>setType(e.target.value)}>
-            <option value="personal">Personal</option><option value="work">Work</option></select></div>
+            <option value="">Uncategorized</option>{CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
       </div>
       {status==="waiting" &&
         <div className="field"><span className="label">Waiting on</span>
@@ -699,7 +732,23 @@ function TodoEditor({ store, todo, onClose, toast }){
         <select className="select" value={projectId} onChange={e=>setProjectId(e.target.value)}>
           <option value="">None</option>
           {projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
-        </select></div>
+          <option value="__new">+ Create new project...</option>
+        </select>
+        {projectId==="__new" &&
+          <input className="input" style={{marginTop:8}} value={newProj} onChange={e=>setNewProj(e.target.value)}
+            placeholder="New project name (created on save)" autoCapitalize="sentences"/>}
+      </div>
+      <div className="field"><span className="label">Location / context</span>
+        <select className="select" value={locCustom?"__custom":location}
+          onChange={e=>{ if(e.target.value==="__custom"){ setLocCustom(true); setLocation(""); } else { setLocCustom(false); setLocation(e.target.value); } }}>
+          <option value="">Anywhere</option>
+          {locs.map(l=><option key={l} value={l}>{l}</option>)}
+          <option value="__custom">Other (type a place)</option>
+        </select>
+        {locCustom &&
+          <input className="input" style={{marginTop:8}} value={location} onChange={e=>setLocation(e.target.value)}
+            placeholder="e.g. Hardware store" autoCapitalize="words"/>}
+        <p className="hint">"Anywhere" shows up no matter where you filter. Manage your saved places in Settings.</p></div>
       <div className="field"><span className="label">Tags (comma separated)</span>
         <input className="input" value={tags} onChange={e=>setTags(e.target.value)} placeholder="errand, finance"/></div>
       <div className="field"><span className="label">Link (optional)</span>
@@ -735,7 +784,7 @@ function IdeaEditor({ store, idea, onClose, toast }){
   const t = idea || {};
   const [title,setTitle]=useState(t.title||"");
   const [body,setBody]=useState(t.body||"");
-  const [type,setType]=useState(t.type||"personal");
+  const [type,setType]=useState(t.type||"");
   const [tags,setTags]=useState((t.tags||[]).join(", "));
   const [state,setState]=useState(t.state||"raw");
   function save(){
@@ -760,9 +809,9 @@ function IdeaEditor({ store, idea, onClose, toast }){
       <div className="field"><span className="label">Body</span>
         <textarea className="textarea" value={body} onChange={e=>setBody(e.target.value)} placeholder="Flesh it out, or leave it to sit."/></div>
       <div className="row">
-        <div className="field"><span className="label">Type</span>
+        <div className="field"><span className="label">Category</span>
           <select className="select" value={type} onChange={e=>setType(e.target.value)}>
-            <option value="personal">Personal</option><option value="work">Work</option></select></div>
+            <option value="">Uncategorized</option>{CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
         <div className="field"><span className="label">State</span>
           <select className="select" value={state} onChange={e=>setState(e.target.value)}>
             <option value="raw">Raw</option><option value="developing">Developing</option>
@@ -785,7 +834,7 @@ function IdeaEditor({ store, idea, onClose, toast }){
 function ProjectEditor({ store, project, onClose, toast }){
   const t = project || {};
   const [name,setName]=useState(t.name||"");
-  const [type,setType]=useState(t.type||"personal");
+  const [type,setType]=useState(t.type||"");
   const [status,setStatus]=useState(t.status||"active");
   const [outcome,setOutcome]=useState(t.outcome||"");
   const [deadline,setDeadline]=useState(t.deadline||"");
@@ -804,9 +853,9 @@ function ProjectEditor({ store, project, onClose, toast }){
       <div className="field"><span className="label">Outcome - what does done look like?</span>
         <textarea className="textarea" value={outcome} onChange={e=>setOutcome(e.target.value)} placeholder="The project is done when..."/></div>
       <div className="row">
-        <div className="field"><span className="label">Type</span>
+        <div className="field"><span className="label">Category</span>
           <select className="select" value={type} onChange={e=>setType(e.target.value)}>
-            <option value="personal">Personal</option><option value="work">Work</option></select></div>
+            <option value="">Uncategorized</option>{CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
         <div className="field"><span className="label">Status</span>
           <select className="select" value={status} onChange={e=>setStatus(e.target.value)}>
             <option value="active">Active</option><option value="onhold">On hold</option>
@@ -832,7 +881,7 @@ function ProjectEditor({ store, project, onClose, toast }){
 function GoalEditor({ store, goal, onClose, toast }){
   const t = goal || {};
   const [name,setName]=useState(t.name||"");
-  const [type,setType]=useState(t.type||"personal");
+  const [type,setType]=useState(t.type||"");
   const [why,setWhy]=useState(t.why||"");
   const [target,setTarget]=useState(t.target||"");
   const [status,setStatus]=useState(t.status||"active");
@@ -848,9 +897,9 @@ function GoalEditor({ store, goal, onClose, toast }){
       <div className="field"><span className="label">Why it matters</span>
         <textarea className="textarea" value={why} onChange={e=>setWhy(e.target.value)} placeholder="The motivation behind it"/></div>
       <div className="row">
-        <div className="field"><span className="label">Type</span>
+        <div className="field"><span className="label">Category</span>
           <select className="select" value={type} onChange={e=>setType(e.target.value)}>
-            <option value="personal">Personal</option><option value="work">Work</option></select></div>
+            <option value="">Uncategorized</option>{CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
         <div className="field"><span className="label">Status</span>
           <select className="select" value={status} onChange={e=>setStatus(e.target.value)}>
             <option value="active">Active</option><option value="achieved">Achieved</option><option value="dropped">Dropped</option></select></div>
@@ -880,12 +929,14 @@ function TodoRow({ store, todo, onOpen }){
       <div className="item-body" onClick={onOpen}>
         <div className="item-title">{todo.title}</div>
         <div className="item-meta">
+          <TypeChip type={todo.type}/>
           {todo.starredToday && <span className="chip amber">{Ic.star}</span>}
           {todo.status!=="done" && todo.status!=="next" && <span className="chip">{todo.status}</span>}
           {todo.quad && <span className="chip amber">{QUADRANTS[todo.quad].label}</span>}
           {todo.due && <span className={"chip "+(isOverdue(todo.due)?"red":isToday(todo.due)?"amber":"")}>{isOverdue(todo.due)?"Overdue ":""}{fmtDate(todo.due)}</span>}
           {todo.defer && todo.defer>TODAY() && <span className="chip blue">{Ic.clock} {fmtDate(todo.defer)}</span>}
           {todo.waitingOn && <span className="chip blue">waiting: {todo.waitingOn}</span>}
+          {todo.location && <span className="chip green">{todo.location}</span>}
           {project && <span className="chip">{project.name}</span>}
           {(todo.subtasks||[]).length>0 && <span className="chip">{subDone}/{todo.subtasks.length}</span>}
           {(todo.tags||[]).map(t=><span key={t} className="chip">#{t}</span>)}
@@ -899,17 +950,25 @@ function TodoRow({ store, todo, onOpen }){
    CAPTURE - action sheet + quick add + AI flows
    ============================================================ */
 function CaptureSheet({ store, onClose, toast, openEditor }){
-  const [mode,setMode]=useState("menu");     // menu | quick | brain | photo | review
+  // Resume an unsaved review draft if one was left behind (survives close + reload).
+  const initialPending = lsGet("pendingReview", []) || [];
+  const [mode,setMode]=useState(initialPending.length ? "review" : "menu"); // menu | quick | brain | photo | review
   const [quick,setQuick]=useState("");
   const [busy,setBusy]=useState(false);
   const [brain,setBrain]=useState("");
-  const [results,setResults]=useState([]);   // AI extracted items pending review
+  const [results,setResults]=useState(initialPending); // AI extracted items pending review
   const [err,setErr]=useState("");
   const fileRef = useRef(null);
 
+  // WHY: persist the in-progress review so an accidental dismiss never throws away
+  // AI work the user already paid an API call for. Cleared only on save or discard.
+  useEffect(() => {
+    if(results.length) lsSet("pendingReview", results); else lsDel("pendingReview");
+  }, [results]);
+
   function quickAdd(){
     if(!quick.trim())return;
-    store.upsert("todos",{ title:quick.trim(), status:"inbox", type:"personal", tags:[], subtasks:[] });
+    store.upsert("todos",{ title:quick.trim(), status:"inbox", type:"", tags:[], subtasks:[] });
     toast("Added to Inbox"); setQuick("");
     log("NAV","quick-add to inbox");
   }
@@ -937,16 +996,29 @@ function CaptureSheet({ store, onClose, toast, openEditor }){
     const keep = results.filter(r=>r.keep);
     const byFile = { todos:[], ideas:[], projects:[] };
     keep.forEach(r=>{
-      if(r.type==="idea") byFile.ideas.push({ title:r.title, body:r.note||"", type:"personal", tags:[], state:"raw", capturedAt:nowISO() });
-      else if(r.type==="project") byFile.projects.push({ name:r.title, type:"personal", status:"active", outcome:"", description:r.note||"", deadline:"", goalId:null });
-      else byFile.todos.push({ title:r.title, status:r.suggestedStatus||"inbox", type:"personal", tags:[], notes:r.note||"", subtasks:[] });
+      if(r.type==="idea") byFile.ideas.push({ title:r.title, body:r.note||"", type:"", tags:[], state:"raw", capturedAt:nowISO() });
+      else if(r.type==="project") byFile.projects.push({ name:r.title, type:"", status:"active", outcome:"", description:r.note||"", deadline:"", goalId:null });
+      else byFile.todos.push({ title:r.title, status:r.suggestedStatus||"inbox", type:"", tags:[], notes:r.note||"", subtasks:[] });
     });
     Object.entries(byFile).forEach(([f,rows])=>{ if(rows.length) store.bulkAdd(f,rows); });
+    lsDel("pendingReview");                  // explicit: unmount may pre-empt the effect
+    setResults([]);
     toast("Added "+keep.length+" item"+(keep.length===1?"":"s")); onClose();
+  }
+  function discardDraft(){
+    lsDel("pendingReview"); setResults([]); setMode("menu");
+    toast("Draft discarded");
   }
 
   if(mode==="menu") return (
     <Sheet title="Capture" onClose={onClose}>
+      {results.length>0 &&
+        <button className="card" style={{display:"flex",alignItems:"center",gap:12,width:"100%",textAlign:"left",
+          borderColor:"var(--amber-line)",background:"var(--amber-dim)",marginTop:6,marginBottom:4}}
+          onClick={()=>setMode("review")}>
+          <span className="act-ic">{Ic.bolt}</span>
+          <span className="act-txt"><b>Resume your review</b><span>{results.length} item{results.length===1?"":"s"} waiting - nothing saved yet</span></span>
+        </button>}
       <div className="field" style={{marginTop:6}}>
         <div className="row">
           <input className="input" value={quick} onChange={e=>setQuick(e.target.value)} placeholder="Quick add to Inbox..."
@@ -1017,7 +1089,9 @@ function CaptureSheet({ store, onClose, toast, openEditor }){
           </div>
         </div>)}
       <button className="btn btn-primary btn-block" style={{marginTop:6}} onClick={saveReview}>Add kept items</button>
-      <button className="btn btn-ghost btn-block" style={{marginTop:10}} onClick={()=>setMode("menu")}>Back</button>
+      <button className="btn btn-ghost btn-block" style={{marginTop:10}} onClick={()=>setMode("menu")}>Keep for later</button>
+      <button className="btn btn-danger btn-block" style={{marginTop:10}} onClick={discardDraft}>Discard these</button>
+      <p className="hint center" style={{marginTop:10}}>"Keep for later" saves this as a draft you can resume from the + menu.</p>
     </Sheet>
   );
   return null;
@@ -1108,12 +1182,16 @@ function NowView({ store, onOpen, back }){
 /* ============================================================
    VIEW: LISTS  (GTD statuses, filterable)
    ============================================================ */
-function ListsView({ store, onOpen, typeFilter, setTypeFilter }){
+function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLocFilter }){
   const [tab,setTab]=useState("inbox");
+  const locs = knownLocations(store);
+  // A location filter shows that place's items PLUS "anywhere" (blank) items - GTD contexts.
+  const matchLoc = (t) => locFilter==="all" || !t.location || t.location===locFilter;
+  const passType = (t) => typeFilter==="all"||t.type===typeFilter;
   const counts = {};
-  STATUS_ORDER.forEach(s=>{ counts[s]=store.data.todos.filter(t=>t.status===s&&(typeFilter==="all"||t.type===typeFilter)).length; });
+  STATUS_ORDER.forEach(s=>{ counts[s]=store.data.todos.filter(t=>t.status===s&&passType(t)&&matchLoc(t)).length; });
   let items = store.data.todos
-    .filter(t=>t.status===tab && (typeFilter==="all"||t.type===typeFilter))
+    .filter(t=>t.status===tab && passType(t) && matchLoc(t))
     .filter(t=>tab==="someday"||tab==="done"||!isDeferredAway(t))
     .sort(sortTodos);
   return (
@@ -1122,11 +1200,17 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter }){
         <div className="eyebrow">Organize</div><h1 className="title">Lists</h1>
       </div>
       <div className="pills">
-        {["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
+        {["all",...CATEGORIES].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
       </div>
+      {locs.length>0 &&
+        <div className="pills">
+          <button className={"pill"+(locFilter==="all"?" on":"")} onClick={()=>setLocFilter("all")}>Any place</button>
+          {locs.map(l=><button key={l} className={"pill"+(locFilter===l?" on":"")} onClick={()=>setLocFilter(l)}>{l}</button>)}
+        </div>}
       <div className="tabs">
         {STATUS_ORDER.map(s=><button key={s} className={"tab"+(tab===s?" on":"")} onClick={()=>setTab(s)}>{s[0].toUpperCase()+s.slice(1)} {counts[s]>0&&<span style={{opacity:.6}}>{counts[s]}</span>}</button>)}
       </div>
+      {locFilter!=="all" && <p className="hint" style={{marginTop:8}}>Showing {locFilter} + anywhere items.</p>}
       {items.length===0 ? <Empty glyph={"\u2014"} title={"No "+tab+" items"} sub={tab==="inbox"?"Capture with the + button.":"Move items here as you organize."}/> :
         <div className="list">{items.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div>}
     </div>
@@ -1136,8 +1220,10 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter }){
 /* ============================================================
    VIEW: MATRIX (Eisenhower)
    ============================================================ */
-function MatrixView({ store, onOpen, typeFilter, setTypeFilter }){
-  const active = store.data.todos.filter(t=>t.status!=="done"&&t.status!=="someday"&&!isDeferredAway(t)&&(typeFilter==="all"||t.type===typeFilter));
+function MatrixView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLocFilter }){
+  const locs = knownLocations(store);
+  const matchLoc = (t) => locFilter==="all" || !t.location || t.location===locFilter;
+  const active = store.data.todos.filter(t=>t.status!=="done"&&t.status!=="someday"&&!isDeferredAway(t)&&(typeFilter==="all"||t.type===typeFilter)&&matchLoc(t));
   const byQ = {q1:[],q2:[],q3:[],q4:[]};
   active.forEach(t=>{ if(t.quad&&byQ[t.quad]) byQ[t.quad].push(t); });
   return (
@@ -1147,8 +1233,13 @@ function MatrixView({ store, onOpen, typeFilter, setTypeFilter }){
         <div className="subtle" style={{marginTop:2}}>Eisenhower: urgent x important</div>
       </div>
       <div className="pills">
-        {["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
+        {["all",...CATEGORIES].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
       </div>
+      {locs.length>0 &&
+        <div className="pills">
+          <button className={"pill"+(locFilter==="all"?" on":"")} onClick={()=>setLocFilter("all")}>Any place</button>
+          {locs.map(l=><button key={l} className={"pill"+(locFilter===l?" on":"")} onClick={()=>setLocFilter(l)}>{l}</button>)}
+        </div>}
       <div className="matrix">
         {Object.entries(QUADRANTS).map(([k,v])=>
           <div key={k} className={"quad "+v.cls}>
@@ -1202,7 +1293,7 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
         <div className="topbar-row"><div><div className="eyebrow">Outcomes</div><h1 className="title">Projects</h1></div>
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("project")}>{Ic.plus} New</button></div>
       </div>
-      <div className="pills">{["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
+      <div className="pills">{["all",...CATEGORIES].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {projects.length===0? <Empty glyph={"\u25A1"} title="No projects" sub="A project is any outcome needing more than one step."/> :
         <div className="list">{projects.map(p=>{
           const open = store.data.todos.filter(t=>t.projectId===p.id&&t.status!=="done").length;
@@ -1227,7 +1318,7 @@ function IdeasView({ store, openEditor, typeFilter, setTypeFilter }){
         <div className="topbar-row"><div><div className="eyebrow">Incubate</div><h1 className="title">Ideas</h1></div>
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("idea")}>{Ic.plus} New</button></div>
       </div>
-      <div className="pills">{["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
+      <div className="pills">{["all",...CATEGORIES].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {ideas.length===0? <Empty glyph={"\u273C"} title="No ideas yet" sub="Capture a raw thought and let it sit."/> :
         <div className="list">{ideas.map(i=>
           <div key={i.id} className="item" onClick={()=>openEditor("idea",i)} style={i.state==="discarded"?{opacity:.5}:null}>
@@ -1252,7 +1343,7 @@ function GoalsView({ store, openEditor, typeFilter, setTypeFilter }){
         <div className="topbar-row"><div><div className="eyebrow">Horizon</div><h1 className="title">Goals</h1></div>
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("goal")}>{Ic.plus} New</button></div>
       </div>
-      <div className="pills">{["all","personal","work"].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
+      <div className="pills">{["all",...CATEGORIES].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {goals.length===0? <Empty glyph={"\u25CE"} title="No goals" sub="Set a longer-term objective for projects to roll up to."/> :
         <div className="list">{goals.map(g=>{
           const projs = store.data.projects.filter(p=>p.goalId===g.id);
@@ -1395,6 +1486,37 @@ function SettingsForm({ store, toast, onConnected }){
 }
 
 /* ============================================================
+   LOCATIONS EDITOR (manage GTD contexts, saved in config)
+   ============================================================ */
+function LocationsEditor({ store, toast }){
+  const list = (store.cfg.locations && store.cfg.locations.length) ? store.cfg.locations : DEFAULT_LOCATIONS;
+  const [adding,setAdding]=useState("");
+  function persist(next){ store.saveCfg({ ...store.cfg, locations: next }); }
+  function add(){
+    const v = adding.trim(); if(!v) return;
+    if(list.includes(v)){ toast("Already in the list"); return; }
+    persist([...list, v]); setAdding(""); log("NAV","location added");
+  }
+  function rename(i, v){ const next=list.slice(); next[i]=v; persist(next); }
+  function remove(i){ persist(list.filter((_,j)=>j!==i)); }
+  return (
+    <div>
+      {list.map((l,i)=>
+        <div className="row" key={i} style={{marginBottom:8}}>
+          <input className="input" value={l} style={{flex:3}} onChange={e=>rename(i,e.target.value)}/>
+          <button className="btn btn-ghost btn-sm" style={{flex:0,padding:"0 14px"}} onClick={()=>remove(i)}>{Ic.trash}</button>
+        </div>)}
+      <div className="row" style={{marginTop:6}}>
+        <input className="input" value={adding} onChange={e=>setAdding(e.target.value)} placeholder="Add a place / context"
+          onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:3}} autoCapitalize="words"/>
+        <button className="btn btn-ghost btn-sm" onClick={add} style={{flex:1}}>Add</button>
+      </div>
+      <p className="hint" style={{marginTop:6}}>Renaming here does not relabel todos already tagged with the old name. These are per-device; they sync implicitly through the todos that use them.</p>
+    </div>
+  );
+}
+
+/* ============================================================
    VIEW: SETTINGS
    ============================================================ */
 function SettingsView({ store, toast, go }){
@@ -1415,6 +1537,9 @@ function SettingsView({ store, toast, go }){
       <div className="divider"></div>
       <h3 style={{fontSize:17,marginBottom:12}}>Connection</h3>
       <SettingsForm store={store} toast={toast} onConnected={()=>{ store.pull(); }}/>
+      <div className="divider"></div>
+      <h3 style={{fontSize:17,marginBottom:12}}>Locations / contexts</h3>
+      <LocationsEditor store={store} toast={toast}/>
       <div className="divider"></div>
       <button className="act-row" onClick={()=>go("diagnostics")}>
         <span className="act-ic">{Ic.gear}</span><span className="act-txt"><b>Diagnostics</b><span>View the activity log</span></span></button>
@@ -1499,6 +1624,7 @@ function App(){
   const [editor,setEditor]=useState(null);     // {kind, entity}
   const [toastMsg,setToastMsg]=useState("");
   const [typeFilter,setTypeFilter]=useState("all");
+  const [locFilter,setLocFilter]=useState("all");
   const toastRef = useRef();
   const toast = useCallback((m)=>{ setToastMsg(m); clearTimeout(toastRef.current); toastRef.current=setTimeout(()=>setToastMsg(""),2200); },[]);
 
@@ -1521,8 +1647,8 @@ function App(){
   let main;
   if(sub && sub!=="more") main=subView;
   else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter}/>;
-  else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter}/>;
-  else if(tab==="matrix") main=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter}/>;
+  else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
+  else if(tab==="matrix") main=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(tab==="more") main=<MoreView store={store} go={go}/>;
 
   function navTo(t){ setTab(t); setSub(null); }
