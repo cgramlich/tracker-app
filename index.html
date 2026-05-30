@@ -497,14 +497,44 @@ function knownLocations(store){
   return Array.from(new Set([...seed, ...used]));   // union keeps options valid on any device
 }
 
-// Life-area categories (replace the old personal/work). Edit this one list to change
-// the filter tabs everywhere. Each gets a color for quick visual scanning.
-const CATEGORIES = ["CG","KG","Kids","RTR","STB","MHN"];
-const CAT_HUE = { CG:"#6f9bc4", KG:"#a98bc4", Kids:"#7fa66a", RTR:"#e0a33e", STB:"#cf8a54", MHN:"#c98aa6" };
-const catHue = (c) => CAT_HUE[c] || "#998a73";
+// Life-area categories. Editable in Settings (stored in config), with any category
+// already used on an item kept available so options stay valid across devices.
+const DEFAULT_CATEGORIES = ["CG","KG","Kids","RTR","STB","MHN"];
+function knownCategories(store){
+  const seed = (store.cfg.categories && store.cfg.categories.length) ? store.cfg.categories : DEFAULT_CATEGORIES;
+  const used = [];
+  ["todos","ideas","projects","goals"].forEach(f=>(store.data[f]||[]).forEach(x=>{ if(x.type) used.push(x.type); }));
+  return Array.from(new Set([...seed, ...used]));
+}
+// Stable color per category name (hash -> warm palette), so user-defined categories
+// get a consistent color without storing one.
+const CAT_PALETTE = ["#6f9bc4","#a98bc4","#7fa66a","#e0a33e","#cf8a54","#c98aa6","#8ab8a0","#d6a25e"];
+function catHue(c){
+  if(!c) return "#998a73";
+  let h=0; for(let i=0;i<c.length;i++) h=(h*31+c.charCodeAt(i))>>>0;
+  return CAT_PALETTE[h % CAT_PALETTE.length];
+}
+// Accent theming helpers (per-device, so one shared app can be re-colored per user).
+const DEFAULT_ACCENT = "#e0a33e";
+const isHex6 = (s) => typeof s==="string" && /^#[0-9a-fA-F]{6}$/.test(s);
+function lighten(hex, t){
+  if(!isHex6(hex)) hex = DEFAULT_ACCENT;
+  const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+  const mix=(v)=>Math.round(v+(255-v)*t).toString(16).padStart(2,"0");
+  return "#"+mix(r)+mix(g)+mix(b);
+}
+const ACCENT_PRESETS = ["#e0a33e","#6f9bc4","#7fa66a","#c98aa6","#a98bc4","#cf8a54","#5fb0a3","#d97b6c"];
+// Base palettes (background + text + lines). The accent color is chosen separately,
+// so any theme can pair with any accent. All per-device.
+const THEMES = {
+  espresso: { label:"Espresso", dark:true,  bg:"#1c1611", bg2:"#241c15", bg3:"#2e251c", bg4:"#3a2f23", line:"#3a2f2333", line2:"#4a3d2e", ink:"#f3ead9", ink2:"#cbbca4", ink3:"#998a73" },
+  onyx:     { label:"Onyx",     dark:true,  bg:"#0c0c0d", bg2:"#141417", bg3:"#1c1c20", bg4:"#27272d", line:"#ffffff10", line2:"#34343c", ink:"#f6f6f5", ink2:"#c6c6c9", ink3:"#86868c" },
+  paper:    { label:"Paper",    dark:false, bg:"#fbfaf7", bg2:"#f1efe9", bg3:"#ffffff", bg4:"#e8e5de", line:"#00000010", line2:"#e0dcd3", ink:"#211d18", ink2:"#5f584d", ink3:"#8d8676" },
+};
+const DEFAULT_THEME = "espresso";
 
 function useStore(){
-  const [cfg, setCfg] = useState(() => lsGet("cfg", { owner:"", repo:"", token:"", apiKey:"", model:"claude-sonnet-4-6", locations:DEFAULT_LOCATIONS, configured:false }));
+  const [cfg, setCfg] = useState(() => lsGet("cfg", { owner:"", repo:"", token:"", apiKey:"", model:"claude-sonnet-4-6", locations:DEFAULT_LOCATIONS, categories:DEFAULT_CATEGORIES, appName:"Tracker", accent:DEFAULT_ACCENT, theme:DEFAULT_THEME, configured:false }));
   const [data, setData] = useState(() => {
     const d = {}; FILES.forEach(f => d[f] = lsGet("cache:"+f, [])); return d;
   });
@@ -636,7 +666,28 @@ function useStore(){
     }
   }, [upsert, bulkAdd]);
 
-  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, bulkAdd, completeTodo, setSync, ghWriteTest };
+  // Rename a value across every item that uses it (e.g. category 'type' or 'location').
+  // This is what makes renaming a category/location in Settings actually relabel the
+  // items already tagged with the old name, instead of leaving them orphaned.
+  const relabel = useCallback((field, oldVal, newVal) => {
+    let touched = 0;
+    const nd = { ...dataRef.current };
+    FILES.forEach(f => {
+      const list = dataRef.current[f] || [];
+      let changed = false;
+      const next = list.map(x => {
+        if(x[field] === oldVal){ changed = true; touched++; return { ...x, [field]:newVal, updatedAt:nowISO() }; }
+        return x;
+      });
+      if(changed){ nd[f] = next; markDirty(f, next); }
+    });
+    dataRef.current = nd; setData(nd);
+    log("SAVE", "relabel "+field+" '"+oldVal+"' -> '"+newVal+"' ("+touched+" items)");
+    pushDirty();
+    return touched;
+  }, [markDirty, pushDirty]);
+
+  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, bulkAdd, completeTodo, relabel, setSync, ghWriteTest };
 }
 
 /* ============================================================
@@ -663,6 +714,7 @@ const Ic = {
   trash:   <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>,
   star:    <svg viewBox="0 0 24 24"><path d="M12 2l3 7 7 .5-5.3 4.5L18 21l-6-3.8L6 21l1.3-7L2 9.5 9 9z"/></svg>,
   clock:   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
+  close:   <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>,
 };
 function NavIc({d}){ return d; }
 
@@ -807,7 +859,7 @@ function TodoEditor({ store, todo, onClose, toast }){
           </select></div>
         <div className="field"><span className="label">Category</span>
           <select className="select" value={type} onChange={e=>setType(e.target.value)}>
-            <option value="">Uncategorized</option>{CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
+            <option value="">Uncategorized</option>{knownCategories(store).map(c=><option key={c} value={c}>{c}</option>)}</select></div>
       </div>
       {status==="waiting" &&
         <div className="field"><span className="label">Waiting on</span>
@@ -915,7 +967,7 @@ function IdeaEditor({ store, idea, onClose, toast }){
       <div className="row">
         <div className="field"><span className="label">Category</span>
           <select className="select" value={type} onChange={e=>setType(e.target.value)}>
-            <option value="">Uncategorized</option>{CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
+            <option value="">Uncategorized</option>{knownCategories(store).map(c=><option key={c} value={c}>{c}</option>)}</select></div>
         <div className="field"><span className="label">State</span>
           <select className="select" value={state} onChange={e=>setState(e.target.value)}>
             <option value="raw">Raw</option><option value="developing">Developing</option>
@@ -960,7 +1012,7 @@ function ProjectEditor({ store, project, onClose, toast }){
       <div className="row">
         <div className="field"><span className="label">Category</span>
           <select className="select" value={type} onChange={e=>setType(e.target.value)}>
-            <option value="">Uncategorized</option>{CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
+            <option value="">Uncategorized</option>{knownCategories(store).map(c=><option key={c} value={c}>{c}</option>)}</select></div>
         <div className="field"><span className="label">Status</span>
           <select className="select" value={status} onChange={e=>setStatus(e.target.value)}>
             <option value="active">Active</option><option value="onhold">On hold</option>
@@ -1005,7 +1057,7 @@ function GoalEditor({ store, goal, onClose, toast }){
       <div className="row">
         <div className="field"><span className="label">Category</span>
           <select className="select" value={type} onChange={e=>setType(e.target.value)}>
-            <option value="">Uncategorized</option>{CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
+            <option value="">Uncategorized</option>{knownCategories(store).map(c=><option key={c} value={c}>{c}</option>)}</select></div>
         <div className="field"><span className="label">Status</span>
           <select className="select" value={status} onChange={e=>setStatus(e.target.value)}>
             <option value="active">Active</option><option value="achieved">Achieved</option><option value="dropped">Dropped</option></select></div>
@@ -1311,7 +1363,7 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
         <div className="eyebrow">Organize</div><h1 className="title">To-Dos</h1>
       </div>
       <div className="pills">
-        {["all",...CATEGORIES].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
+        {["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
       </div>
       {locs.length>0 &&
         <div className="pills">
@@ -1344,7 +1396,7 @@ function MatrixView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLo
         <div className="subtle" style={{marginTop:2}}>Eisenhower: urgent x important</div>
       </div>
       <div className="pills">
-        {["all",...CATEGORIES].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
+        {["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
       </div>
       {locs.length>0 &&
         <div className="pills">
@@ -1404,7 +1456,7 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
         <div className="topbar-row"><div><div className="eyebrow">Outcomes</div><h1 className="title">Projects</h1></div>
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("project")}>{Ic.plus} New</button></div>
       </div>
-      <div className="pills">{["all",...CATEGORIES].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
+      <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {projects.length===0? <Empty glyph={"\u25A1"} title="No projects" sub="A project is any outcome needing more than one step."/> :
         <div className="list">{projects.map(p=>{
           const open = store.data.todos.filter(t=>t.projectId===p.id&&t.status!=="done").length;
@@ -1429,7 +1481,7 @@ function IdeasView({ store, openEditor, typeFilter, setTypeFilter }){
         <div className="topbar-row"><div><div className="eyebrow">Incubate</div><h1 className="title">Ideas</h1></div>
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("idea")}>{Ic.plus} New</button></div>
       </div>
-      <div className="pills">{["all",...CATEGORIES].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
+      <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {ideas.length===0? <Empty glyph={"\u273C"} title="No ideas yet" sub="Capture a raw thought and let it sit."/> :
         <div className="list">{ideas.map(i=>
           <div key={i.id} className="item" onClick={()=>openEditor("idea",i)} style={i.state==="discarded"?{opacity:.5}:null}>
@@ -1454,7 +1506,7 @@ function GoalsView({ store, openEditor, typeFilter, setTypeFilter }){
         <div className="topbar-row"><div><div className="eyebrow">Horizon</div><h1 className="title">Goals</h1></div>
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("goal")}>{Ic.plus} New</button></div>
       </div>
-      <div className="pills">{["all",...CATEGORIES].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
+      <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {goals.length===0? <Empty glyph={"\u25CE"} title="No goals" sub="Set a longer-term objective for projects to roll up to."/> :
         <div className="list">{goals.map(g=>{
           const projs = store.data.projects.filter(p=>p.goalId===g.id);
@@ -1597,6 +1649,36 @@ function SettingsForm({ store, toast, onConnected }){
 }
 
 /* ============================================================
+   EDITABLE LABEL ROW (shared by Locations + Categories editors)
+   - Edits in a local buffer; commits on blur / Enter (so a rename is one
+     deliberate change, not one per keystroke).
+   - Commit cascades: every item tagged with the old value is relabeled.
+   - Delete is an explicit X, and asks before removing.
+   ============================================================ */
+function EditableLabelRow({ value, color, count, onCommit, onRemove }){
+  const [v,setV]=useState(value);
+  const [confirm,setConfirm]=useState(false);
+  useEffect(()=>{ setV(value); },[value]);
+  const commit=()=>{ const t=v.trim(); if(!t || t===value){ setV(value); return; } onCommit(t); };
+  return (
+    <div className="row" style={{marginBottom:8,alignItems:"center"}}>
+      {color && <span className="chip" style={{flex:"0 0 auto",background:color+"22",color,border:"1px solid "+color+"55"}}>{value||"?"}</span>}
+      <input className="input" value={v} style={{flex:3}} onChange={e=>setV(e.target.value)} onBlur={commit}
+        onKeyDown={e=>{ if(e.key==="Enter") e.target.blur(); }}/>
+      <button className="btn btn-ghost btn-sm" style={{flex:0,padding:"0 12px"}} aria-label="Delete" onClick={()=>setConfirm(true)}>{Ic.close}</button>
+      {confirm && <Confirm
+        text={count>0 ? ("Delete \""+value+"\"? "+count+" item"+(count===1?"":"s")+" currently use it - they keep the label, but it won't be offered for new items.")
+                      : ("Delete \""+value+"\"?")}
+        confirmLabel="Delete" onConfirm={()=>{ onRemove(); setConfirm(false); }} onCancel={()=>setConfirm(false)}/>}
+    </div>
+  );
+}
+// How many items currently carry a given category(type)/location value.
+function countUses(store, field, val){
+  let n=0; FILES.forEach(f=>(store.data[f]||[]).forEach(x=>{ if(x[field]===val) n++; })); return n;
+}
+
+/* ============================================================
    LOCATIONS EDITOR (manage GTD contexts, saved in config)
    ============================================================ */
 function LocationsEditor({ store, toast }){
@@ -1608,21 +1690,87 @@ function LocationsEditor({ store, toast }){
     if(list.includes(v)){ toast("Already in the list"); return; }
     persist([...list, v]); setAdding(""); log("NAV","location added");
   }
-  function rename(i, v){ const next=list.slice(); next[i]=v; persist(next); }
+  function commit(i, v){
+    if(list.includes(v)){ toast("Already in the list"); return; }
+    const old = list[i]; const next=list.slice(); next[i]=v; persist(next);
+    const n = store.relabel("location", old, v);
+    toast(n>0 ? ("Renamed - updated "+n+" item"+(n===1?"":"s")) : "Renamed");
+  }
   function remove(i){ persist(list.filter((_,j)=>j!==i)); }
   return (
     <div>
       {list.map((l,i)=>
-        <div className="row" key={i} style={{marginBottom:8}}>
-          <input className="input" value={l} style={{flex:3}} onChange={e=>rename(i,e.target.value)}/>
-          <button className="btn btn-ghost btn-sm" style={{flex:0,padding:"0 14px"}} onClick={()=>remove(i)}>{Ic.trash}</button>
-        </div>)}
+        <EditableLabelRow key={l+i} value={l} count={countUses(store,"location",l)}
+          onCommit={v=>commit(i,v)} onRemove={()=>remove(i)}/>)}
       <div className="row" style={{marginTop:6}}>
         <input className="input" value={adding} onChange={e=>setAdding(e.target.value)} placeholder="Add a place / context"
           onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:3}} autoCapitalize="words"/>
         <button className="btn btn-ghost btn-sm" onClick={add} style={{flex:1}}>Add</button>
       </div>
-      <p className="hint" style={{marginTop:6}}>Renaming here does not relabel todos already tagged with the old name. These are per-device; they sync implicitly through the todos that use them.</p>
+      <p className="hint" style={{marginTop:6}}>Renaming a place relabels every todo that uses it. Tap the X to remove one.</p>
+    </div>
+  );
+}
+
+function CategoriesEditor({ store, toast }){
+  const list = (store.cfg.categories && store.cfg.categories.length) ? store.cfg.categories : DEFAULT_CATEGORIES;
+  const [adding,setAdding]=useState("");
+  function persist(next){ store.saveCfg({ ...store.cfg, categories: next }); }
+  function add(){
+    const v = adding.trim(); if(!v) return;
+    if(list.includes(v)){ toast("Already in the list"); return; }
+    persist([...list, v]); setAdding(""); log("NAV","category added");
+  }
+  function commit(i, v){
+    if(list.includes(v)){ toast("Already in the list"); return; }
+    const old = list[i]; const next=list.slice(); next[i]=v; persist(next);
+    const n = store.relabel("type", old, v);
+    toast(n>0 ? ("Renamed - updated "+n+" item"+(n===1?"":"s")) : "Renamed");
+  }
+  function remove(i){ persist(list.filter((_,j)=>j!==i)); }
+  return (
+    <div>
+      {list.map((l,i)=>
+        <EditableLabelRow key={l+i} value={l} color={catHue(l)} count={countUses(store,"type",l)}
+          onCommit={v=>commit(i,v)} onRemove={()=>remove(i)}/>)}
+      <div className="row" style={{marginTop:6}}>
+        <input className="input" value={adding} onChange={e=>setAdding(e.target.value)} placeholder="Add a category"
+          onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:3}} autoCapitalize="characters"/>
+        <button className="btn btn-ghost btn-sm" onClick={add} style={{flex:1}}>Add</button>
+      </div>
+      <p className="hint" style={{marginTop:6}}>Renaming a category relabels every item that uses it. Tap the X to remove one. Colors are assigned automatically.</p>
+    </div>
+  );
+}
+
+function AppearanceEditor({ store }){
+  const accent = isHex6(store.cfg.accent) ? store.cfg.accent : DEFAULT_ACCENT;
+  const name = store.cfg.appName || "Tracker";
+  const theme = THEMES[store.cfg.theme] ? store.cfg.theme : DEFAULT_THEME;
+  function save(patch){ store.saveCfg({ ...store.cfg, ...patch }); }
+  return (
+    <div>
+      <span className="label">App name</span>
+      <input className="input" value={name} maxLength={24} placeholder="Tracker"
+        onChange={e=>save({ appName:e.target.value })} style={{marginBottom:14}}/>
+      <span className="label">Theme</span>
+      <div className="pills" style={{marginTop:6,marginBottom:14}}>
+        {Object.entries(THEMES).map(([k,t])=>
+          <button key={k} className={"pill"+(theme===k?" on":"")} onClick={()=>save({ theme:k })}>
+            <span style={{display:"inline-block",width:12,height:12,borderRadius:"50%",background:t.bg,
+              border:"1px solid "+t.line2,marginRight:7,verticalAlign:"-1px"}}></span>{t.label}</button>)}
+      </div>
+      <span className="label">Accent color</span>
+      <div className="row" style={{marginTop:6,alignItems:"center"}}>
+        <input type="color" value={accent} onChange={e=>save({ accent:e.target.value })}
+          style={{flex:"0 0 auto",width:50,height:40,padding:2,border:"1px solid var(--line-2)",borderRadius:10,background:"transparent"}}/>
+        <div className="pills" style={{flex:1,marginTop:0}}>
+          {ACCENT_PRESETS.map(c=>
+            <button key={c} aria-label={c} onClick={()=>save({ accent:c })} style={{width:28,height:28,borderRadius:"50%",
+              background:c, border: accent.toLowerCase()===c.toLowerCase() ? "2px solid var(--ink)" : "2px solid var(--line-2)"}}/>)}
+        </div>
+      </div>
+      <p className="hint" style={{marginTop:8}}>Saved on this device only - the name and color don't affect anyone else's copy of the app.</p>
     </div>
   );
 }
@@ -1634,30 +1782,20 @@ function LocationsEditor({ store, toast }){
    VIEW: EXPORT (reachable from More)
    ============================================================ */
 function ExportView({ store, toast, back }){
+  const appName = (store.cfg.appName||"Tracker");
+  const fname = (ext) => (appName.replace(/[^a-z0-9]+/ig,"-").replace(/^-+|-+$/g,"").toLowerCase() || "tracker")+"-export."+ext;
   function download(name, text, mime){
     const blob = new Blob([text],{type:mime});
     const a = document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
   }
-  // Prefer the native share sheet (so it can go straight into Notes/Mail/Messages as
-  // body text); fall back to a file download on desktop or where share is unsupported.
-  async function shareOrDownload(name, text){
-    if(navigator.share){
-      try { await navigator.share({ title:"Tracker export", text }); log("NAV","shared text"); return; }
-      catch(e){ if(e.name==="AbortError") return; log("ERROR","share: "+e.message); } // user cancel is fine
-    }
-    download(name, text, "text/plain"); log("NAV","downloaded text");
-  }
-  function exportData(){
-    download("tracker-export.json", JSON.stringify(store.data,null,2), "application/json");
-    log("NAV","export json");
-  }
-  // Human-readable plain-text export. ASCII checkboxes, grouped for reading/printing.
-  function exportText(){
-    const d = store.data;
-    const projName = {}; (d.projects||[]).forEach(p=>{ projName[p.id]=p.name; });
-    const L = [];
-    L.push("TRACKER EXPORT");
-    L.push(new Date().toString());
+  function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+  const projName = () => { const m={}; (store.data.projects||[]).forEach(p=>{ m[p.id]=p.name; }); return m; };
+
+  // ---- builders (one per format) ----------------------------------
+  function buildText(){
+    const d = store.data; const pn = projName(); const L = [];
+    L.push(appName.toUpperCase()+" EXPORT"); L.push(new Date().toString());
     const todoLine = (t)=>{
       const bits = [];
       if(t.type) bits.push(t.type);
@@ -1665,7 +1803,7 @@ function ExportView({ store, toast, back }){
       if(t.due) bits.push("due "+t.due);
       if(t.defer) bits.push("defer "+t.defer);
       if(t.location) bits.push("@"+t.location);
-      if(t.projectId && projName[t.projectId]) bits.push("project: "+projName[t.projectId]);
+      if(t.projectId && pn[t.projectId]) bits.push("project: "+pn[t.projectId]);
       if(t.waitingOn) bits.push("waiting: "+t.waitingOn);
       const tags = (t.tags||[]).map(x=>"#"+x).join(" ");
       const meta = (bits.length||tags) ? "  ("+[bits.join(", "), tags].filter(Boolean).join("; ")+")" : "";
@@ -1702,9 +1840,141 @@ function ExportView({ store, toast, back }){
       if(g.why) L.push("    Why: "+g.why.replace(/\n/g," "));
       if(projs.length) L.push("    Projects: "+projs.join(", "));
     });
-    shareOrDownload("tracker-export.txt", L.join("\n"));
-    log("NAV","export text");
+    return L.join("\n");
   }
+
+  function buildMarkdown(){
+    const d = store.data; const pn = projName();
+    const L = ["# "+appName+" export","","_"+new Date().toLocaleString()+"_"];
+    const line = (t)=>{
+      const bits = [];
+      if(t.type) bits.push(t.type);
+      if(t.quad && QUADRANTS[t.quad]) bits.push(QUADRANTS[t.quad].label);
+      if(t.due) bits.push("due "+t.due);
+      if(t.defer) bits.push("defer "+t.defer);
+      if(t.location) bits.push("@"+t.location);
+      if(t.projectId && pn[t.projectId]) bits.push("project: "+pn[t.projectId]);
+      if(t.waitingOn) bits.push("waiting: "+t.waitingOn);
+      const tags = (t.tags||[]).map(x=>"#"+x).join(" ");
+      const meta = (bits.length||tags) ? " _("+[bits.join(", "), tags].filter(Boolean).join("; ")+")_" : "";
+      let s = "- ["+(t.status==="done"?"x":" ")+"] "+t.title+meta;
+      (t.subtasks||[]).forEach(st=>{ s += "\n  - ["+(st.done?"x":" ")+"] "+st.title; });
+      return s;
+    };
+    L.push(""); L.push("## Todos");
+    STATUS_ORDER.forEach(st=>{
+      const rows = (d.todos||[]).filter(t=>t.status===st);
+      if(!rows.length) return;
+      L.push(""); L.push("### "+st.toUpperCase()+" ("+rows.length+")");
+      rows.forEach(t=>L.push(line(t)));
+    });
+    if((d.projects||[]).length){ L.push(""); L.push("## Projects");
+      (d.projects||[]).forEach(p=>{
+        L.push(""); L.push("### "+p.name);
+        L.push("_"+[p.type, p.status, p.deadline?("due "+p.deadline):""].filter(Boolean).join(" - ")+"_");
+        if(p.outcome) L.push("**Outcome:** "+p.outcome);
+        if(p.description) L.push(p.description);
+        (d.todos||[]).filter(t=>t.projectId===p.id).forEach(t=>L.push("- ["+(t.status==="done"?"x":" ")+"] "+t.title));
+      });
+    }
+    if((d.ideas||[]).length){ L.push(""); L.push("## Ideas");
+      (d.ideas||[]).forEach(i=>L.push("- **"+i.title+"** _("+[i.type,i.state].filter(Boolean).join(", ")+")_"+(i.body?"  \n  "+i.body.replace(/\n/g," "):"")));
+    }
+    if((d.goals||[]).length){ L.push(""); L.push("## Goals");
+      (d.goals||[]).forEach(g=>{
+        const projs = (d.projects||[]).filter(p=>p.goalId===g.id).map(p=>p.name);
+        L.push("- **"+g.name+"** _("+[g.type,g.status,g.target?("target "+g.target):""].filter(Boolean).join(", ")+")_"
+          +(g.why?"  \n  Why: "+g.why.replace(/\n/g," "):"")+(projs.length?"  \n  Projects: "+projs.join(", "):""));
+      });
+    }
+    return L.join("\n");
+  }
+
+  function buildCSV(){
+    const d = store.data; const pn = projName();
+    const cell = (v)=>{ v=(v==null?"":String(v)); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; };
+    const rows = [["Kind","Title","Category","Status","Priority","Due","Defer","Location","Project","Tags","Notes"]];
+    (d.todos||[]).forEach(t=>rows.push(["Todo",t.title,t.type,t.status,
+      (t.quad&&QUADRANTS[t.quad]?QUADRANTS[t.quad].label:""),t.due,t.defer,t.location,
+      (t.projectId?pn[t.projectId]:""),(t.tags||[]).join(" "),t.notes]));
+    (d.ideas||[]).forEach(i=>rows.push(["Idea",i.title,i.type,i.state,"","","","","",(i.tags||[]).join(" "),i.body]));
+    (d.projects||[]).forEach(p=>rows.push(["Project",p.name,p.type,p.status,"",p.deadline,"","","","",
+      (p.outcome?("Outcome: "+p.outcome+(p.description?" | "+p.description:"")):(p.description||""))]));
+    (d.goals||[]).forEach(g=>rows.push(["Goal",g.name,g.type,g.status,"",g.target,"","","","",g.why]));
+    return rows.map(r=>r.map(cell).join(",")).join("\r\n");
+  }
+
+  function buildPrintHTML(){
+    const d = store.data; const pn = projName();
+    let h = "<h1>"+esc(appName)+" export</h1><p class=date>"+esc(new Date().toLocaleString())+"</p>";
+    h += "<h2>Todos</h2>";
+    let any=false;
+    STATUS_ORDER.forEach(st=>{
+      const rows=(d.todos||[]).filter(t=>t.status===st); if(!rows.length) return; any=true;
+      h += "<h3>"+esc(st.toUpperCase())+" ("+rows.length+")</h3><ul>";
+      rows.forEach(t=>{
+        const bits=[]; if(t.type)bits.push(t.type); if(t.quad&&QUADRANTS[t.quad])bits.push(QUADRANTS[t.quad].label);
+        if(t.due)bits.push("due "+t.due); if(t.location)bits.push("@"+t.location);
+        if(t.projectId&&pn[t.projectId])bits.push(pn[t.projectId]);
+        const meta = bits.length ? " <span class=meta>("+esc(bits.join(", "))+")</span>" : "";
+        h += "<li>"+(t.status==="done"?"&#9745; ":"&#9744; ")+esc(t.title)+meta;
+        if((t.subtasks||[]).length){ h+="<ul>"; t.subtasks.forEach(s=>h+="<li>"+(s.done?"&#9745; ":"&#9744; ")+esc(s.title)+"</li>"); h+="</ul>"; }
+        h += "</li>";
+      });
+      h += "</ul>";
+    });
+    if(!any) h += "<p class=meta>No todos.</p>";
+    if((d.projects||[]).length){ h+="<h2>Projects</h2>";
+      (d.projects||[]).forEach(p=>{ h+="<h3>"+esc(p.name)+"</h3><p class=meta>"+esc([p.type,p.status,p.deadline?("due "+p.deadline):""].filter(Boolean).join(" - "))+"</p>";
+        if(p.outcome)h+="<p><b>Outcome:</b> "+esc(p.outcome)+"</p>"; if(p.description)h+="<p>"+esc(p.description)+"</p>"; }); }
+    if((d.ideas||[]).length){ h+="<h2>Ideas</h2><ul>";
+      (d.ideas||[]).forEach(i=>h+="<li><b>"+esc(i.title)+"</b> <span class=meta>("+esc([i.type,i.state].filter(Boolean).join(", "))+")</span>"+(i.body?"<br>"+esc(i.body):"")+"</li>"); h+="</ul>"; }
+    if((d.goals||[]).length){ h+="<h2>Goals</h2><ul>";
+      (d.goals||[]).forEach(g=>h+="<li><b>"+esc(g.name)+"</b> <span class=meta>("+esc([g.type,g.status,g.target?("target "+g.target):""].filter(Boolean).join(", "))+")</span>"+(g.why?"<br>"+esc(g.why):"")+"</li>"); h+="</ul>"; }
+    return "<!doctype html><html><head><meta charset=utf-8><title>"+esc(appName)+" export</title><style>"
+      +"body{font:14px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1a1a1a;max-width:760px;margin:32px auto;padding:0 22px;}"
+      +"h1{font-size:24px;margin:0 0 2px;}.date{color:#888;margin:0 0 18px;}"
+      +"h2{margin:24px 0 6px;border-bottom:1px solid #ddd;padding-bottom:4px;font-size:18px;}"
+      +"h3{margin:14px 0 4px;font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.05em;}"
+      +"ul{margin:4px 0 10px;padding-left:22px;}li{margin:3px 0;}.meta{color:#999;font-size:12px;}"
+      +"@media print{body{margin:0;}a{color:inherit;}}</style></head><body>"+h+"</body></html>";
+  }
+
+  // ---- actions ----------------------------------------------------
+  async function copyText(){
+    const text = buildText();
+    try{
+      await navigator.clipboard.writeText(text);
+      toast("Copied to clipboard"); log("NAV","copied text "+text.length+" chars");
+    }catch(e){
+      log("ERROR","clipboard: "+(e.message||e)); download(fname("txt"), text, "text/plain");
+      toast("Clipboard blocked - downloaded instead");
+    }
+  }
+  // Mobile-friendly: native share sheet (Notes/Mail/Messages); desktop falls back to a download.
+  async function shareText(){
+    const text = buildText();
+    if(navigator.share){
+      try { await navigator.share({ title:appName+" export", text }); log("NAV","shared text"); return; }
+      catch(e){ if(e.name==="AbortError") return; log("ERROR","share: "+e.message); }
+    }
+    download(fname("txt"), text, "text/plain"); log("NAV","downloaded text");
+  }
+  function exportMarkdown(){ download(fname("md"), buildMarkdown(), "text/markdown"); toast("Markdown downloaded"); log("NAV","export md"); }
+  function exportCSV(){ download(fname("csv"), buildCSV(), "text/csv"); toast("CSV downloaded"); log("NAV","export csv"); }
+  function exportData(){ download(fname("json"), JSON.stringify(store.data,null,2), "application/json"); toast("JSON downloaded"); log("NAV","export json"); }
+  function printDoc(){
+    const w = window.open("", "_blank");
+    if(!w){ toast("Allow pop-ups to print / save as PDF"); log("ERROR","print: popup blocked"); return; }
+    w.document.open(); w.document.write(buildPrintHTML()); w.document.close(); w.focus();
+    setTimeout(()=>{ try{ w.print(); }catch(e){ log("ERROR","print: "+e.message); } }, 350);
+    log("NAV","print");
+  }
+
+  const Row = ({ic,b,s,onClick}) => (
+    <button className="act-row" onClick={onClick}>
+      <span className="act-ic">{ic}</span><span className="act-txt"><b>{b}</b><span>{s}</span></span></button>
+  );
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
@@ -1712,10 +1982,16 @@ function ExportView({ store, toast, back }){
         <h1 className="title" style={{marginTop:8}}>Export</h1>
       </div>
       <p className="hint" style={{marginTop:8}}>Get your data out anytime. This reads only what is on this device.</p>
-      <button className="act-row" onClick={exportText}>
-        <span className="act-ic">{Ic.lists}</span><span className="act-txt"><b>Export as text</b><span>Share to Notes, Mail, Messages</span></span></button>
-      <button className="act-row" onClick={exportData}>
-        <span className="act-ic">{Ic.project}</span><span className="act-txt"><b>Export data (JSON)</b><span>Full machine-readable backup</span></span></button>
+
+      <span className="label" style={{marginTop:14,display:"block"}}>Read &amp; share</span>
+      <Row ic={Ic.lists}   b="Copy to clipboard"     s="Readable text - paste anywhere" onClick={copyText}/>
+      <Row ic={Ic.review}  b="Share / save as text"  s="Phone share sheet, or .txt on desktop" onClick={shareText}/>
+      <Row ic={Ic.idea}    b="Download as Markdown"   s="Formatted .md for Notion, Obsidian, docs" onClick={exportMarkdown}/>
+      <Row ic={Ic.today}   b="Print / Save as PDF"    s="Opens a clean printable page" onClick={printDoc}/>
+
+      <span className="label" style={{marginTop:18,display:"block"}}>Spreadsheet &amp; backup</span>
+      <Row ic={Ic.matrix}  b="Download as CSV"        s="Open in Excel, Numbers, or Sheets" onClick={exportCSV}/>
+      <Row ic={Ic.project} b="Download data (JSON)"   s="Full machine-readable backup" onClick={exportData}/>
     </div>
   );
 }
@@ -1733,6 +2009,12 @@ function SettingsView({ store, toast, go }){
       <div className="divider"></div>
       <h3 style={{fontSize:17,marginBottom:12}}>Connection</h3>
       <SettingsForm store={store} toast={toast} onConnected={()=>{ store.pull(); }}/>
+      <div className="divider"></div>
+      <h3 style={{fontSize:17,marginBottom:12}}>Appearance</h3>
+      <AppearanceEditor store={store}/>
+      <div className="divider"></div>
+      <h3 style={{fontSize:17,marginBottom:12}}>Categories</h3>
+      <CategoriesEditor store={store} toast={toast}/>
       <div className="divider"></div>
       <h3 style={{fontSize:17,marginBottom:12}}>Locations / contexts</h3>
       <LocationsEditor store={store} toast={toast}/>
@@ -1871,6 +2153,25 @@ function App(){
   const openEditor = useCallback((kind, entity)=>{ setEditor({kind, entity}); log("NAV","editor "+kind); },[]);
   const openTodo = useCallback((t)=>setEditor({kind:"todo", entity:t}),[]);
   const go = useCallback((k)=>{ setSub(k); log("NAV","go "+k); },[]);
+
+  // Apply the per-device theme (accent color + app name) live. Because this is
+  // device config (not code), one shared app file can look different for each user.
+  useEffect(()=>{
+    const root = document.documentElement.style;
+    const a = isHex6(store.cfg.accent) ? store.cfg.accent : DEFAULT_ACCENT;
+    root.setProperty("--amber", a);
+    root.setProperty("--amber-2", lighten(a, 0.24));
+    root.setProperty("--amber-dim", a+"22");
+    root.setProperty("--amber-line", a+"55");
+    const th = THEMES[store.cfg.theme] || THEMES[DEFAULT_THEME];
+    root.setProperty("--bg", th.bg);   root.setProperty("--bg-2", th.bg2); root.setProperty("--bg-3", th.bg3); root.setProperty("--bg-4", th.bg4);
+    root.setProperty("--line", th.line); root.setProperty("--line-2", th.line2);
+    root.setProperty("--ink", th.ink); root.setProperty("--ink-2", th.ink2); root.setProperty("--ink-3", th.ink3);
+    const name = (store.cfg.appName||"").trim() || "Tracker";
+    document.title = name;
+    const t1 = document.querySelector('meta[name="apple-mobile-web-app-title"]'); if(t1) t1.setAttribute("content", name);
+    const t2 = document.querySelector('meta[name="theme-color"]'); if(t2) t2.setAttribute("content", th.bg);
+  }, [store.cfg.accent, store.cfg.appName, store.cfg.theme]);
 
   if(!store.cfg.configured) return <div><Setup store={store} toast={toast}/><Toast msg={toastMsg}/></div>;
 
