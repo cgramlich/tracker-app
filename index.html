@@ -279,6 +279,32 @@ function fmtDate(iso){
 function isOverdue(due){ return due && due < TODAY(); }
 function isToday(due){ return due && due === TODAY(); }
 
+// Recurrence: advance a date string by one interval.
+function addInterval(dateStr, recur){
+  const d = dateStr ? new Date(dateStr+"T00:00:00") : new Date();
+  if(recur==="daily") d.setDate(d.getDate()+1);
+  else if(recur==="weekly") d.setDate(d.getDate()+7);
+  else if(recur==="monthly"){
+    // Avoid the Jan-31 -> Mar-3 overflow: change month on the 1st, then clamp the
+    // day to the new month's length (so the 31st becomes the 28th in February, etc.).
+    const day = d.getDate();
+    d.setDate(1);
+    d.setMonth(d.getMonth()+1);
+    const lastDay = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+    d.setDate(Math.min(day, lastDay));
+  }
+  return todayKey(d);
+}
+// Next occurrence's due date, always strictly after today, so completing an item
+// (even a very overdue one) never re-spawns it on the same day or in the past.
+function nextDue(due, recur){
+  let n = addInterval(due || TODAY(), recur);
+  let guard = 0;
+  while(n <= TODAY() && guard < 500){ n = addInterval(n, recur); guard++; }
+  return n;
+}
+const RECUR_LABEL = { daily:"Repeats daily", weekly:"Repeats weekly", monthly:"Repeats monthly" };
+
 // UTF-8 safe base64 (btoa breaks on multibyte). Used for GitHub Contents API.
 function utf8ToB64(str){
   try { return btoa(String.fromCharCode(...new TextEncoder().encode(str))); }
@@ -587,7 +613,25 @@ function useStore(){
     log("SAVE", file+" bulkAdd "+rows.length); pushDirty();
   }, [markDirty, pushDirty]);
 
-  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, bulkAdd, setSync, ghWriteTest };
+  // Complete a todo. If it recurs, mark this instance done AND spawn the next
+  // occurrence with the due date rolled forward. Centralized so every "done" path
+  // (row checkbox, Now view) behaves the same.
+  const completeTodo = useCallback((todo) => {
+    upsert("todos", { id:todo.id, status:"done", completedAt:nowISO() });
+    if(todo.recur && todo.recur!=="none"){
+      const clone = { ...todo };
+      delete clone.id;                                  // bulkAdd assigns a fresh id
+      clone.status = "next";
+      clone.completedAt = null;
+      clone.starredToday = false;
+      clone.due = nextDue(todo.due, todo.recur);
+      clone.subtasks = (todo.subtasks||[]).map(s => ({ ...s, id:uid(), done:false })); // reset checklist
+      bulkAdd("todos", [clone]);
+      log("SAVE", "recurring "+todo.recur+" -> next due "+clone.due);
+    }
+  }, [upsert, bulkAdd]);
+
+  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, bulkAdd, completeTodo, setSync, ghWriteTest };
 }
 
 /* ============================================================
@@ -607,6 +651,7 @@ const Ic = {
   goal:    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/></svg>,
   review:  <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 4v5h-5"/></svg>,
   now:     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
+  search:  <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>,
   gear:    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1l-.4-2.5H9.6L9.2 5a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.4 2.5h4.8l.4-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6a7 7 0 0 0 .1-1z"/></svg>,
   check:   <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>,
   back:    <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>,
@@ -667,6 +712,7 @@ function TodoEditor({ store, todo, onClose, toast }){
   const [quad,setQuad]=useState(t.quad||"");
   const [due,setDue]=useState(t.due||"");
   const [defer,setDefer]=useState(t.defer||"");
+  const [recur,setRecur]=useState(t.recur||"none");
   const [tags,setTags]=useState((t.tags||[]).join(", "));
   const [projectId,setProjectId]=useState(t.projectId||"");
   const [url,setUrl]=useState(t.url||"");
@@ -693,7 +739,9 @@ function TodoEditor({ store, todo, onClose, toast }){
         finalProjectId = "";   // chose "new" but typed nothing -> leave unlinked
       }
     }
-    store.upsert("todos",{ id:t.id, title:title.trim(), status, type, quad, due, defer,
+    // A recurring todo needs an anchor; if none given, start it today.
+    const dueAnchored = (recur!=="none" && !due) ? TODAY() : due;
+    store.upsert("todos",{ id:t.id, title:title.trim(), status, type, quad, due:dueAnchored, defer, recur,
       tags: tags.split(",").map(s=>s.trim()).filter(Boolean), projectId:finalProjectId, url:url.trim(), notes, location,
       waitingOn: status==="waiting"?waitingOn:"", subtasks,
       starredToday: t.starredToday||false, completedAt: t.completedAt||null });
@@ -728,6 +776,14 @@ function TodoEditor({ store, todo, onClose, toast }){
         <div className="field"><span className="label">Defer until</span>
           <input className="input" type="date" value={defer} onChange={e=>setDefer(e.target.value)}/></div>
       </div>
+      <div className="field"><span className="label">Repeat</span>
+        <select className="select" value={recur} onChange={e=>setRecur(e.target.value)}>
+          <option value="none">Does not repeat</option>
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+        </select>
+        {recur!=="none" && <p className="hint">Starts on the due date{!due?" (today, since none set)":""}. Completing it creates the next one automatically.</p>}</div>
       <div className="field"><span className="label">Project (optional)</span>
         <select className="select" value={projectId} onChange={e=>setProjectId(e.target.value)}>
           <option value="">None</option>
@@ -921,7 +977,8 @@ function TodoRow({ store, todo, onOpen }){
   const project = store.data.projects.find(p=>p.id===todo.projectId);
   const subDone = (todo.subtasks||[]).filter(s=>s.done).length;
   function toggle(){
-    store.upsert("todos",{ id:todo.id, status: done?"next":"done", completedAt: done?null:nowISO() });
+    if(!done){ store.completeTodo(todo); }       // completing: spawns next if recurring
+    else { store.upsert("todos",{ id:todo.id, status:"next", completedAt:null }); } // un-completing: no spawn
   }
   return (
     <div className={"item"+(done?" done":"")}>
@@ -938,6 +995,7 @@ function TodoRow({ store, todo, onOpen }){
           {todo.waitingOn && <span className="chip blue">waiting: {todo.waitingOn}</span>}
           {todo.location && <span className="chip green">{todo.location}</span>}
           {project && <span className="chip">{project.name}</span>}
+          {todo.recur && todo.recur!=="none" && <span className="chip violet">{Ic.review} {todo.recur}</span>}
           {(todo.subtasks||[]).length>0 && <span className="chip">{subDone}/{todo.subtasks.length}</span>}
           {(todo.tags||[]).map(t=><span key={t} className="chip">#{t}</span>)}
         </div>
@@ -1118,7 +1176,7 @@ function sortTodos(a,b){
 /* ============================================================
    VIEW: TODAY  (+ entry to Now/Focus)
    ============================================================ */
-function TodayView({ store, onOpen, goNow, typeFilter }){
+function TodayView({ store, onOpen, goNow, onSearch, typeFilter }){
   let items = todayItems(store.data.todos).filter(t=>typeFilter==="all"||t.type===typeFilter).sort(sortTodos);
   const staleIdeas = store.data.ideas.filter(i=>{
     if(i.state==="promoted"||i.state==="discarded") return false;
@@ -1131,7 +1189,10 @@ function TodayView({ store, onOpen, goNow, typeFilter }){
       <div className="topbar" style={{padding:0,position:"static"}}>
         <div className="eyebrow">{d.toLocaleDateString(undefined,{weekday:"long"})}</div>
         <div className="topbar-row"><h1 className="title">Today</h1>
-          <button className="btn btn-ghost btn-sm" onClick={goNow}>{Ic.now} Focus</button></div>
+          <div style={{display:"flex",gap:8}}>
+            <button className="btn btn-ghost btn-sm" onClick={onSearch} aria-label="Search">{Ic.search}</button>
+            <button className="btn btn-ghost btn-sm" onClick={goNow}>{Ic.now} Focus</button>
+          </div></div>
         <div className="subtle" style={{marginTop:2}}>{d.toLocaleDateString(undefined,{month:"long",day:"numeric"})}</div>
       </div>
       {staleIdeas.length>0 &&
@@ -1168,7 +1229,7 @@ function NowView({ store, onOpen, back }){
             {t.notes && <p className="hint" style={{marginTop:10}}>{t.notes}</p>}
           </div>
           <button className="btn btn-primary btn-block" style={{marginTop:18}}
-            onClick={()=>{ store.upsert("todos",{id:t.id,status:"done",completedAt:nowISO()}); setIdx(0); }}>Mark done</button>
+            onClick={()=>{ store.completeTodo(t); setIdx(0); }}>Mark done</button>
           <div className="row" style={{marginTop:10}}>
             <button className="btn btn-ghost" onClick={()=>setIdx((idx+1)%candidates.length)}>Skip</button>
             <button className="btn btn-ghost" onClick={()=>onOpen(t)}>Edit</button>
@@ -1183,21 +1244,23 @@ function NowView({ store, onOpen, back }){
    VIEW: LISTS  (GTD statuses, filterable)
    ============================================================ */
 function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLocFilter }){
-  const [tab,setTab]=useState("inbox");
+  const TABS = ["all", ...STATUS_ORDER];     // "all" = every active to-do in one list
+  const [tab,setTab]=useState("all");
   const locs = knownLocations(store);
   // A location filter shows that place's items PLUS "anywhere" (blank) items - GTD contexts.
   const matchLoc = (t) => locFilter==="all" || !t.location || t.location===locFilter;
   const passType = (t) => typeFilter==="all"||t.type===typeFilter;
   const counts = {};
+  counts.all = store.data.todos.filter(t=>t.status!=="done"&&passType(t)&&matchLoc(t)&&!isDeferredAway(t)).length;
   STATUS_ORDER.forEach(s=>{ counts[s]=store.data.todos.filter(t=>t.status===s&&passType(t)&&matchLoc(t)).length; });
   let items = store.data.todos
-    .filter(t=>t.status===tab && passType(t) && matchLoc(t))
-    .filter(t=>tab==="someday"||tab==="done"||!isDeferredAway(t))
+    .filter(t=> (tab==="all" ? t.status!=="done" : t.status===tab) && passType(t) && matchLoc(t))
+    .filter(t=> (tab==="someday"||tab==="done") ? true : !isDeferredAway(t))
     .sort(sortTodos);
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
-        <div className="eyebrow">Organize</div><h1 className="title">Lists</h1>
+        <div className="eyebrow">Organize</div><h1 className="title">To-Dos</h1>
       </div>
       <div className="pills">
         {["all",...CATEGORIES].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
@@ -1208,10 +1271,10 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
           {locs.map(l=><button key={l} className={"pill"+(locFilter===l?" on":"")} onClick={()=>setLocFilter(l)}>{l}</button>)}
         </div>}
       <div className="tabs">
-        {STATUS_ORDER.map(s=><button key={s} className={"tab"+(tab===s?" on":"")} onClick={()=>setTab(s)}>{s[0].toUpperCase()+s.slice(1)} {counts[s]>0&&<span style={{opacity:.6}}>{counts[s]}</span>}</button>)}
+        {TABS.map(s=><button key={s} className={"tab"+(tab===s?" on":"")} onClick={()=>setTab(s)}>{s[0].toUpperCase()+s.slice(1)} {counts[s]>0&&<span style={{opacity:.6}}>{counts[s]}</span>}</button>)}
       </div>
       {locFilter!=="all" && <p className="hint" style={{marginTop:8}}>Showing {locFilter} + any-place items.</p>}
-      {items.length===0 ? <Empty glyph={"\u2014"} title={"No "+tab+" items"} sub={tab==="inbox"?"Capture with the + button.":"Move items here as you organize."}/> :
+      {items.length===0 ? <Empty glyph={"\u2014"} title={tab==="all"?"No to-dos yet":"No "+tab+" items"} sub={tab==="inbox"||tab==="all"?"Capture with the + button.":"Move items here as you organize."}/> :
         <div className="list">{items.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div>}
     </div>
   );
@@ -1521,10 +1584,76 @@ function LocationsEditor({ store, toast }){
    ============================================================ */
 function SettingsView({ store, toast, go }){
   const [confirmClear,setConfirmClear]=useState(false);
+  function download(name, text, mime){
+    const blob = new Blob([text],{type:mime});
+    const a = document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; a.click();
+  }
+  // Prefer the native share sheet (so it can go straight into Notes/Mail/Messages as
+  // body text); fall back to a file download on desktop or where share is unsupported.
+  async function shareOrDownload(name, text){
+    if(navigator.share){
+      try { await navigator.share({ title:"Tracker export", text }); log("NAV","shared text"); return; }
+      catch(e){ if(e.name==="AbortError") return; log("ERROR","share: "+e.message); } // user cancel is fine
+    }
+    download(name, text, "text/plain"); log("NAV","downloaded text");
+  }
   function exportData(){
-    const blob = new Blob([JSON.stringify(store.data,null,2)],{type:"application/json"});
-    const a = document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="tracker-export.json"; a.click();
-    log("NAV","export data");
+    download("tracker-export.json", JSON.stringify(store.data,null,2), "application/json");
+    log("NAV","export json");
+  }
+  // Human-readable plain-text export. ASCII checkboxes, grouped for reading/printing.
+  function exportText(){
+    const d = store.data;
+    const projName = {}; (d.projects||[]).forEach(p=>{ projName[p.id]=p.name; });
+    const L = [];
+    L.push("TRACKER EXPORT");
+    L.push(new Date().toString());
+    const todoLine = (t)=>{
+      const bits = [];
+      if(t.type) bits.push(t.type);
+      if(t.quad && QUADRANTS[t.quad]) bits.push(QUADRANTS[t.quad].label);
+      if(t.due) bits.push("due "+t.due);
+      if(t.defer) bits.push("defer "+t.defer);
+      if(t.location) bits.push("@"+t.location);
+      if(t.projectId && projName[t.projectId]) bits.push("project: "+projName[t.projectId]);
+      if(t.waitingOn) bits.push("waiting: "+t.waitingOn);
+      const tags = (t.tags||[]).map(x=>"#"+x).join(" ");
+      const meta = (bits.length||tags) ? "  ("+[bits.join(", "), tags].filter(Boolean).join("; ")+")" : "";
+      let s = "  ["+(t.status==="done"?"x":" ")+"] "+t.title+meta;
+      (t.subtasks||[]).forEach(st=>{ s += "\n      - ["+(st.done?"x":" ")+"] "+st.title; });
+      return s;
+    };
+    L.push(""); L.push("== TODOS ==");
+    STATUS_ORDER.forEach(st=>{
+      const rows = (d.todos||[]).filter(t=>t.status===st);
+      if(!rows.length) return;
+      L.push(""); L.push("-- "+st.toUpperCase()+" ("+rows.length+") --");
+      rows.forEach(t=>L.push(todoLine(t)));
+    });
+    L.push(""); L.push("== PROJECTS ==");
+    (d.projects||[]).forEach(p=>{
+      L.push("");
+      L.push("* "+p.name+"  ("+[p.type, p.status, p.deadline?("due "+p.deadline):""].filter(Boolean).join(", ")+")");
+      if(p.outcome) L.push("    Outcome: "+p.outcome);
+      if(p.description) L.push("    "+p.description.replace(/\n/g," "));
+      (d.todos||[]).filter(t=>t.projectId===p.id).forEach(t=>L.push("    ["+(t.status==="done"?"x":" ")+"] "+t.title));
+    });
+    L.push(""); L.push("== IDEAS ==");
+    (d.ideas||[]).forEach(i=>{
+      L.push("");
+      L.push("* "+i.title+"  ("+[i.type, i.state].filter(Boolean).join(", ")+")");
+      if(i.body) L.push("    "+i.body.replace(/\n/g," "));
+    });
+    L.push(""); L.push("== GOALS ==");
+    (d.goals||[]).forEach(g=>{
+      const projs = (d.projects||[]).filter(p=>p.goalId===g.id).map(p=>p.name);
+      L.push("");
+      L.push("* "+g.name+"  ("+[g.type, g.status, g.target?("target "+g.target):""].filter(Boolean).join(", ")+")");
+      if(g.why) L.push("    Why: "+g.why.replace(/\n/g," "));
+      if(projs.length) L.push("    Projects: "+projs.join(", "));
+    });
+    shareOrDownload("tracker-export.txt", L.join("\n"));
+    log("NAV","export text");
   }
   return (
     <div className="screen">
@@ -1543,8 +1672,10 @@ function SettingsView({ store, toast, go }){
       <div className="divider"></div>
       <button className="act-row" onClick={()=>go("diagnostics")}>
         <span className="act-ic">{Ic.gear}</span><span className="act-txt"><b>Diagnostics</b><span>View the activity log</span></span></button>
+      <button className="act-row" onClick={exportText}>
+        <span className="act-ic">{Ic.lists}</span><span className="act-txt"><b>Export as text</b><span>Share to Notes, Mail, Messages</span></span></button>
       <button className="act-row" onClick={exportData}>
-        <span className="act-ic">{Ic.project}</span><span className="act-txt"><b>Export data</b><span>Download a JSON backup</span></span></button>
+        <span className="act-ic">{Ic.project}</span><span className="act-txt"><b>Export data (JSON)</b><span>Full machine-readable backup</span></span></button>
       <button className="act-row" onClick={()=>store.pull()}>
         <span className="act-ic">{Ic.review}</span><span className="act-txt"><b>Force sync now</b><span>Pull from GitHub</span></span></button>
       <div className="divider"></div>
@@ -1561,10 +1692,57 @@ function SettingsView({ store, toast, go }){
 }
 
 /* ============================================================
+   VIEW: SEARCH (across all four entities)
+   ============================================================ */
+function SearchView({ store, openEditor, back }){
+  const [q,setQ]=useState("");
+  const term = q.trim().toLowerCase();
+  const has = (...vals) => vals.filter(Boolean).some(v=>String(v).toLowerCase().includes(term));
+  let todos=[], ideas=[], projects=[], goals=[];
+  if(term){
+    todos    = store.data.todos.filter(t=>has(t.title, t.notes, (t.tags||[]).join(" "), t.location, t.waitingOn));
+    projects = store.data.projects.filter(p=>has(p.name, p.outcome, p.description));
+    ideas    = store.data.ideas.filter(i=>has(i.title, i.body, (i.tags||[]).join(" ")));
+    goals    = store.data.goals.filter(g=>has(g.name, g.why));
+  }
+  const total = todos.length+projects.length+ideas.length+goals.length;
+  const Section = ({title, rows, kind, label, sub}) => rows.length ? (
+    <div style={{marginTop:18}}>
+      <div className="eyebrow">{title} ({rows.length})</div>
+      <div className="list">{rows.map(r=>
+        <div key={r.id} className="item" onClick={()=>openEditor(kind, r)}>
+          <div className="item-body"><div className="item-title">{label(r)}</div>
+            <div className="item-meta"><TypeChip type={r.type}/>{sub(r)}</div></div>
+        </div>)}</div>
+    </div>
+  ) : null;
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <button className="btn btn-ghost btn-sm" onClick={back}>{Ic.back} Back</button>
+        <h1 className="title" style={{marginTop:8}}>Search</h1>
+      </div>
+      <input className="input" style={{marginTop:14}} value={q} onChange={e=>setQ(e.target.value)}
+        placeholder="Search todos, ideas, projects, goals..." autoFocus/>
+      {term && total===0 && <Empty glyph={"\u2014"} title="No matches" sub="Try a different word."/>}
+      {todos.length>0 &&
+        <div style={{marginTop:18}}>
+          <div className="eyebrow">Todos ({todos.length})</div>
+          <div className="list">{todos.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>openEditor("todo", t)}/>)}</div>
+        </div>}
+      <Section title="Projects" rows={projects} kind="project" label={r=>r.name}  sub={r=><span className="chip">{r.status}</span>}/>
+      <Section title="Ideas"    rows={ideas}    kind="idea"    label={r=>r.title} sub={r=><span className="chip">{r.state}</span>}/>
+      <Section title="Goals"    rows={goals}    kind="goal"    label={r=>r.name}  sub={r=><span className="chip">{r.status}</span>}/>
+    </div>
+  );
+}
+
+/* ============================================================
    VIEW: MORE (hub)
    ============================================================ */
 function MoreView({ store, go }){
   const rows = [
+    { k:"search",   ic:Ic.search,  b:"Search", s:"Find any todo, idea, project, or goal" },
     { k:"projects", ic:Ic.project, b:"Projects", s:store.data.projects.filter(p=>p.status==="active").length+" active" },
     { k:"ideas",    ic:Ic.idea,    b:"Ideas",    s:store.data.ideas.filter(i=>i.state!=="discarded"&&i.state!=="promoted").length+" open" },
     { k:"goals",    ic:Ic.goal,    b:"Goals",    s:store.data.goals.filter(g=>g.status==="active").length+" active" },
@@ -1641,12 +1819,13 @@ function App(){
   else if(sub==="goals") subView=<GoalsView store={store} openEditor={openEditor} typeFilter={typeFilter} setTypeFilter={setTypeFilter}/>;
   else if(sub==="review") subView=<WeeklyReview store={store} back={()=>setSub(null)} go={go}/>;
   else if(sub==="now") subView=<NowView store={store} onOpen={openTodo} back={()=>setSub(null)}/>;
+  else if(sub==="search") subView=<SearchView store={store} openEditor={openEditor} back={()=>setSub(null)}/>;
   else if(sub==="settings") subView=<SettingsView store={store} toast={toast} go={go}/>;
   else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
 
   let main;
   if(sub && sub!=="more") main=subView;
-  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter}/>;
+  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} onSearch={()=>setSub("search")} typeFilter={typeFilter}/>;
   else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(tab==="matrix") main=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(tab==="more") main=<MoreView store={store} go={go}/>;
@@ -1667,7 +1846,7 @@ function App(){
       {/* bottom nav */}
       <div className="nav">
         <button className={"nav-btn"+(tab==="today"&&!sub?" on":"")} onClick={()=>navTo("today")}><NavIc d={Ic.today}/>Today</button>
-        <button className={"nav-btn"+(tab==="lists"&&!sub?" on":"")} onClick={()=>navTo("lists")}><NavIc d={Ic.lists}/>Lists</button>
+        <button className={"nav-btn"+(tab==="lists"&&!sub?" on":"")} onClick={()=>navTo("lists")}><NavIc d={Ic.lists}/>To-Dos</button>
         <button className="nav-btn nav-fab" onClick={()=>setCapture(true)}><span className="fab">{Ic.plus}</span></button>
         <button className={"nav-btn"+(tab==="matrix"&&!sub?" on":"")} onClick={()=>navTo("matrix")}><NavIc d={Ic.matrix}/>Matrix</button>
         <button className={"nav-btn"+(tab==="more"||sub?" on":"")} onClick={()=>navTo("more")}><NavIc d={Ic.more}/>More</button>
