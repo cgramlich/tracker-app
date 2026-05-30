@@ -459,7 +459,7 @@ const QUADRANTS = {
 // GTD contexts / locations. Seeded with the user's places; editable in Settings.
 // A todo's location is stored as a plain label string so it travels with the data
 // and syncs across devices without an id->label map.
-const DEFAULT_LOCATIONS = ["Office - 656 River Way", "6821 Merrilee Ln", "Car"];
+const DEFAULT_LOCATIONS = ["Office", "656", "6821", "Car"];
 function knownLocations(store){
   const seed = (store.cfg.locations && store.cfg.locations.length) ? store.cfg.locations : DEFAULT_LOCATIONS;
   const used = (store.data.todos || []).map(t=>t.location).filter(Boolean);
@@ -741,14 +741,14 @@ function TodoEditor({ store, todo, onClose, toast }){
       <div className="field"><span className="label">Location / context</span>
         <select className="select" value={locCustom?"__custom":location}
           onChange={e=>{ if(e.target.value==="__custom"){ setLocCustom(true); setLocation(""); } else { setLocCustom(false); setLocation(e.target.value); } }}>
-          <option value="">Anywhere</option>
+          <option value="">Any place</option>
           {locs.map(l=><option key={l} value={l}>{l}</option>)}
           <option value="__custom">Other (type a place)</option>
         </select>
         {locCustom &&
           <input className="input" style={{marginTop:8}} value={location} onChange={e=>setLocation(e.target.value)}
             placeholder="e.g. Hardware store" autoCapitalize="words"/>}
-        <p className="hint">"Anywhere" shows up no matter where you filter. Manage your saved places in Settings.</p></div>
+        <p className="hint">"Any place" shows up no matter where you filter. Manage your saved places in Settings.</p></div>
       <div className="field"><span className="label">Tags (comma separated)</span>
         <input className="input" value={tags} onChange={e=>setTags(e.target.value)} placeholder="errand, finance"/></div>
       <div className="field"><span className="label">Link (optional)</span>
@@ -1210,7 +1210,7 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
       <div className="tabs">
         {STATUS_ORDER.map(s=><button key={s} className={"tab"+(tab===s?" on":"")} onClick={()=>setTab(s)}>{s[0].toUpperCase()+s.slice(1)} {counts[s]>0&&<span style={{opacity:.6}}>{counts[s]}</span>}</button>)}
       </div>
-      {locFilter!=="all" && <p className="hint" style={{marginTop:8}}>Showing {locFilter} + anywhere items.</p>}
+      {locFilter!=="all" && <p className="hint" style={{marginTop:8}}>Showing {locFilter} + any-place items.</p>}
       {items.length===0 ? <Empty glyph={"\u2014"} title={"No "+tab+" items"} sub={tab==="inbox"?"Capture with the + button.":"Move items here as you organize."}/> :
         <div className="list">{items.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div>}
     </div>
