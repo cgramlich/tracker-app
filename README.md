@@ -13,7 +13,8 @@ Eisenhower matrix: prioritize by urgent x important
 Today view: due-today + deferred-arrived + manually starred
 Now / Focus: one next action at a time
 Weekly Review: a lightweight guided checklist (the GTD keystone habit)
-Search: a search bar at the top of the Today screen finds any todo, idea, project, or goal
+Search: a search bar at the top of every screen finds any todo, idea, project, or goal
+Convert: turn any item into a different type (todo <-> idea <-> project <-> goal) from its editor
 Categories: tag everything CG / KG / Kids / RTR / STB / MHN and filter by them
 Locations / contexts: tag todos by place (Office, 656, 6821, Car, Any place)
 and filter "what can I do here"
