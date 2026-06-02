@@ -126,9 +126,24 @@ a{color:var(--amber);}
 .field{margin-bottom:14px;}
 .label{display:block;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px;font-weight:600;}
 .input,.textarea,.select{width:100%;background:var(--bg-3);border:1px solid var(--line-2);border-radius:var(--radius-sm);
-  padding:12px 13px;color:var(--ink);outline:none;transition:.18s;}
+  padding:12px 13px;color:var(--ink);outline:none;transition:.18s;font-size:16px;}
 .input:focus,.textarea:focus,.select:focus{border-color:var(--amber-line);background:var(--bg-4);}
 .textarea{resize:vertical;min-height:84px;line-height:1.5;}
+/* drag-to-reorder: a grip column to the left of each list row */
+.drag-row{display:flex;align-items:stretch;}
+.drag-row.dragging{opacity:.55;}
+.drag-handle{flex:0 0 auto;display:flex;align-items:center;justify-content:center;width:32px;margin-right:2px;
+  color:var(--ink-3);background:none;border:none;touch-action:none;-webkit-user-select:none;user-select:none;}
+.drag-handle:active{color:var(--amber);}
+.drag-handle svg{width:18px;height:18px;stroke:currentColor;stroke-width:2.4;fill:none;}
+.drag-row-body{flex:1;min-width:0;}
+/* Hero title field - the primary "what is this" input, made obvious and easy to tap. */
+.title-field{margin-bottom:18px;}
+.title-field .label{color:var(--amber);}
+.title-input{width:100%;background:var(--bg-3);border:1.5px solid var(--amber-line);border-radius:var(--radius);
+  padding:16px 15px;color:var(--ink);outline:none;transition:.18s;font-size:20px;font-weight:600;line-height:1.3;}
+.title-input::placeholder{color:var(--ink-3);font-weight:500;}
+.title-input:focus{border-color:var(--amber);background:var(--bg-4);box-shadow:0 0 0 3px var(--amber-dim);}
 .select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%23998a73' stroke-width='2'%3E%3Cpath d='M1 1l5 5 5-5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:34px;}
 .row{display:flex;gap:10px;}
 .row>*{flex:1;}
@@ -188,7 +203,12 @@ a{color:var(--amber);}
   padding:8px 18px calc(24px + env(safe-area-inset-bottom));}
 @keyframes slideup{from{transform:translateY(100%);}to{transform:none;}}
 .sheet-grip{width:38px;height:4px;border-radius:999px;background:var(--line-2);margin:8px auto 14px;}
-.sheet-title{font-size:21px;margin-bottom:4px;}
+.sheet-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px;}
+.sheet-title{font-size:21px;margin-bottom:0;}
+.sheet-x{flex:0 0 auto;width:38px;height:38px;border-radius:50%;background:var(--bg-3);border:1px solid var(--line-2);
+  display:flex;align-items:center;justify-content:center;color:var(--ink-2);}
+.sheet-x:active{background:var(--bg-4);}
+.sheet-x svg{width:18px;height:18px;stroke:currentColor;stroke-width:2;fill:none;}
 .sheet h4{font-size:17px;}
 
 /* action sheet rows */
@@ -484,7 +504,7 @@ const QUADRANTS = {
   q1:{label:"Do First", hint:"Urgent + Important", cls:"q1"},
   q2:{label:"Schedule", hint:"Important, Not Urgent", cls:"q2"},
   q3:{label:"Do Quick", hint:"Urgent, Not Important", cls:"q3"},
-  q4:{label:"Drop?", hint:"Neither", cls:"q4"}
+  q4:{label:"Not Right Now", hint:"Not urgent or important", cls:"q4"}
 };
 
 // GTD contexts / locations. Seeded with the user's places; editable in Settings.
@@ -580,6 +600,23 @@ function useStore(){
     }
   }, []);
 
+  // One-time: make sure every item has a numeric manual `order` (for drag-to-reorder).
+  // Seeds from each file's natural sort so the list looks identical until you drag.
+  const ensureOrders = useCallback(() => {
+    let wrote = false; const nd = { ...dataRef.current };
+    FILES.forEach(f => {
+      const list = dataRef.current[f] || [];
+      if(list.length && list.some(x => typeof x.order !== "number")){
+        const sorted = list.slice().sort(NAT_CMP[f] || (()=>0));
+        const ord = {}; sorted.forEach((x,idx)=>{ ord[x.id] = idx*1000; });
+        const nextList = list.map(x => typeof x.order==="number" ? x : { ...x, order:ord[x.id] });
+        nd[f] = nextList; markDirty(f, nextList); wrote = true;
+        log("INIT","seeded manual order for "+f+" ("+nextList.length+" items)");
+      }
+    });
+    if(wrote){ dataRef.current = nd; setData(nd); pushDirty(); }
+  }, [markDirty, pushDirty]);
+
   // pull from GitHub (only overwrites files that are NOT locally dirty)
   const pull = useCallback(async () => {
     const c = cfgRef.current;
@@ -597,9 +634,10 @@ function useStore(){
       shaRef.current = nextSha; setSha(nextSha); lsSet("sha", nextSha);
       setSync(FILES.some(f=>dirtyRef.current[f])?"pending":"idle"); setSyncMsg("");
       log("SYNC","pull complete");
+      ensureOrders();
       await pushDirty();
     }catch(e){ setSync("error"); setSyncMsg(e.message||"Sync failed"); log("ERROR","pull: "+e.message); }
-  }, [pushDirty]);
+  }, [pushDirty, ensureOrders]);
 
   // online/offline listeners
   useEffect(() => {
@@ -611,6 +649,9 @@ function useStore(){
 
   // initial pull on mount if configured
   useEffect(() => { if(cfgRef.current.configured){ pull(); } /* else first-run setup */ }, [pull]);
+
+  // seed manual order for whatever is already cached (covers offline launches)
+  useEffect(() => { ensureOrders(); }, [ensureOrders]);
 
   // periodic retry while dirty
   useEffect(() => {
@@ -624,7 +665,11 @@ function useStore(){
     const i = list.findIndex(x => x.id === row.id);
     let next;
     if(i>=0){ next = list.slice(); next[i] = { ...next[i], ...row, updatedAt:nowISO() }; }
-    else { next = [{ ...row, id: row.id||uid(), createdAt:nowISO(), updatedAt:nowISO() }, ...list]; }
+    else {
+      const os = list.filter(x=>typeof x.order==="number").map(x=>x.order);
+      const ord = typeof row.order==="number" ? row.order : (os.length?Math.min(...os):0) - 1000;
+      next = [{ ...row, order:ord, id: row.id||uid(), createdAt:nowISO(), updatedAt:nowISO() }, ...list];
+    }
     const nd = { ...dataRef.current, [file]:next }; dataRef.current = nd; setData(nd);
     markDirty(file, next);
     log("SAVE", file+" upsert "+(row.title||row.name||row.id||"").slice(0,40));
@@ -641,7 +686,10 @@ function useStore(){
 
   // bulk add (used by AI capture review)
   const bulkAdd = useCallback((file, rows) => {
-    const stamped = rows.map(r => ({ ...r, id:uid(), createdAt:nowISO(), updatedAt:nowISO() }));
+    const os = (dataRef.current[file]||[]).filter(x=>typeof x.order==="number").map(x=>x.order);
+    const minO = os.length?Math.min(...os):0;
+    const stamped = rows.map((r,k) => ({ ...r, order: typeof r.order==="number"?r.order:(minO-1000*(rows.length-k)),
+      id:uid(), createdAt:nowISO(), updatedAt:nowISO() }));
     const next = [...stamped, ...(dataRef.current[file]||[])];
     const nd = { ...dataRef.current, [file]:next }; dataRef.current = nd; setData(nd);
     markDirty(file, next);
@@ -715,6 +763,7 @@ const Ic = {
   star:    <svg viewBox="0 0 24 24"><path d="M12 2l3 7 7 .5-5.3 4.5L18 21l-6-3.8L6 21l1.3-7L2 9.5 9 9z"/></svg>,
   clock:   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
   close:   <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>,
+  grip:    <svg viewBox="0 0 24 24" strokeLinecap="round"><path d="M9 6v.01M9 12v.01M9 18v.01M15 6v.01M15 12v.01M15 18v.01"/></svg>,
 };
 function NavIc({d}){ return d; }
 
@@ -728,7 +777,10 @@ function Sheet({ title, onClose, children }){
       <div className="scrim" onClick={onClose}></div>
       <div className="sheet" role="dialog">
         <div className="sheet-grip"></div>
-        {title && <h3 className="sheet-title">{title}</h3>}
+        <div className="sheet-head">
+          {title && <h3 className="sheet-title">{title}</h3>}
+          <button className="sheet-x" onClick={onClose} aria-label="Cancel">{Ic.close}</button>
+        </div>
         {children}
       </div>
     </div>
@@ -850,8 +902,8 @@ function TodoEditor({ store, todo, onClose, toast }){
 
   return (
     <Sheet title={t.id?"Edit todo":"New todo"} onClose={onClose}>
-      <div className="field"><span className="label">Title</span>
-        <input className="input" value={title} onChange={e=>setTitle(e.target.value)} placeholder="What needs doing?" autoFocus/></div>
+      <div className="title-field"><span className="label">Title</span>
+        <input className="title-input" value={title} onChange={e=>setTitle(e.target.value)} placeholder="What needs doing?" autoFocus/></div>
       <div className="row">
         <div className="field"><span className="label">Status</span>
           <select className="select" value={status} onChange={e=>setStatus(e.target.value)}>
@@ -960,8 +1012,8 @@ function IdeaEditor({ store, idea, onClose, toast }){
   }
   return (
     <Sheet title={t.id?"Edit idea":"New idea"} onClose={onClose}>
-      <div className="field"><span className="label">Idea</span>
-        <input className="input" value={title} onChange={e=>setTitle(e.target.value)} placeholder="A raw thought..." autoFocus/></div>
+      <div className="title-field"><span className="label">Idea</span>
+        <input className="title-input" value={title} onChange={e=>setTitle(e.target.value)} placeholder="A raw thought..." autoFocus/></div>
       <div className="field"><span className="label">Body</span>
         <textarea className="textarea" value={body} onChange={e=>setBody(e.target.value)} placeholder="Flesh it out, or leave it to sit."/></div>
       <div className="row">
@@ -1005,8 +1057,8 @@ function ProjectEditor({ store, project, onClose, toast }){
   }
   return (
     <Sheet title={t.id?"Edit project":"New project"} onClose={onClose}>
-      <div className="field"><span className="label">Name (as an outcome)</span>
-        <input className="input" value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Submit final tech pack" autoFocus/></div>
+      <div className="title-field"><span className="label">Name (as an outcome)</span>
+        <input className="title-input" value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Submit final tech pack" autoFocus/></div>
       <div className="field"><span className="label">Outcome - what does done look like?</span>
         <textarea className="textarea" value={outcome} onChange={e=>setOutcome(e.target.value)} placeholder="The project is done when..."/></div>
       <div className="row">
@@ -1050,8 +1102,8 @@ function GoalEditor({ store, goal, onClose, toast }){
   }
   return (
     <Sheet title={t.id?"Edit goal":"New goal"} onClose={onClose}>
-      <div className="field"><span className="label">Goal</span>
-        <input className="input" value={name} onChange={e=>setName(e.target.value)} placeholder="A longer-term objective" autoFocus/></div>
+      <div className="title-field"><span className="label">Goal</span>
+        <input className="title-input" value={name} onChange={e=>setName(e.target.value)} placeholder="A longer-term objective" autoFocus/></div>
       <div className="field"><span className="label">Why it matters</span>
         <textarea className="textarea" value={why} onChange={e=>setWhy(e.target.value)} placeholder="The motivation behind it"/></div>
       <div className="row">
@@ -1075,6 +1127,45 @@ function GoalEditor({ store, goal, onClose, toast }){
 /* ============================================================
    TODO ROW (shared display)
    ============================================================ */
+/* ============================================================
+   DRAG-TO-REORDER list. Handle-based (grip), pointer events for touch+mouse.
+   Persists one moved item via onReorder(movedId, newIdsInOrder).
+   ============================================================ */
+function DragList({ items, getId, onReorder, render }){
+  const [order,setOrder] = useState(items);
+  const dragId = useRef(null);
+  const cont = useRef(null);
+  // resync from source unless mid-drag
+  useEffect(() => { if(dragId.current==null) setOrder(items); }, [items]);
+  function down(e, id){ dragId.current = id; try{ e.currentTarget.setPointerCapture(e.pointerId); }catch(_){} setOrder(items.slice()); }
+  function move(e){
+    if(dragId.current==null || !cont.current) return;
+    const rows = [...cont.current.querySelectorAll("[data-drag-row]")];
+    const y = e.clientY;
+    let target = rows.findIndex(r => { const b=r.getBoundingClientRect(); return y < b.top + b.height/2; });
+    if(target===-1) target = order.length-1;
+    const from = order.findIndex(x => getId(x)===dragId.current);
+    if(from<0 || target<0 || from===target) return;
+    const next = order.slice(); const [m] = next.splice(from,1); next.splice(target,0,m); setOrder(next);
+  }
+  function up(){
+    if(dragId.current==null) return;
+    const moved = dragId.current; dragId.current = null;
+    const newIds = order.map(getId), oldIds = items.map(getId);
+    if(newIds.join("|") !== oldIds.join("|")) onReorder(moved, newIds);  // skip stray taps
+  }
+  return (
+    <div className="list" ref={cont} onPointerMove={move} onPointerUp={up} onPointerCancel={up}>
+      {order.map(it => (
+        <div className={"drag-row"+(dragId.current===getId(it)?" dragging":"")} data-drag-row key={getId(it)}>
+          <button className="drag-handle" aria-label="Drag to reorder" onPointerDown={e=>down(e, getId(it))}>{Ic.grip}</button>
+          <div className="drag-row-body">{render(it)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TodoRow({ store, todo, onOpen }){
   const done = todo.status==="done";
   const project = store.data.projects.find(p=>p.id===todo.projectId);
@@ -1275,6 +1366,31 @@ function sortTodos(a,b){
   if(a.due && b.due) return a.due<b.due?-1:1; if(a.due) return -1; if(b.due) return 1;
   return 0;
 }
+// Natural (pre-manual) sorts, used once to seed each item's manual `order`.
+function sortIdeas(a,b){ return (b.capturedAt||"").localeCompare(a.capturedAt||""); }
+const PROJ_STATUS_ORDER = { active:0, onhold:1, someday:2, done:3, archived:4 };
+function sortProjects(a,b){ return (PROJ_STATUS_ORDER[a.status]||0)-(PROJ_STATUS_ORDER[b.status]||0); }
+function sortGoals(a,b){ return 0; }  // keep existing array order
+const NAT_CMP = { todos:sortTodos, ideas:sortIdeas, projects:sortProjects, goals:sortGoals };
+// Manual order: what drag-to-reorder controls. All items get a numeric `order` (seeded once).
+function byOrder(a,b){ return (a.order==null?0:a.order)-(b.order==null?0:b.order); }
+// Persist a single moved item's new position as the midpoint between its new neighbors.
+function reorderItem(store, file, movedId, idsInOrder, items){
+  const byId = {}; items.forEach(x=>{ byId[x.id]=x; });
+  const idx = idsInOrder.indexOf(movedId);
+  if(idx<0) return;
+  const prev = idx>0 ? byId[idsInOrder[idx-1]] : null;
+  const next = idx<idsInOrder.length-1 ? byId[idsInOrder[idx+1]] : null;
+  const po = prev && typeof prev.order==="number" ? prev.order : null;
+  const no = next && typeof next.order==="number" ? next.order : null;
+  let ord;
+  if(po!=null && no!=null) ord = (po+no)/2;
+  else if(po!=null) ord = po+1000;
+  else if(no!=null) ord = no-1000;
+  else ord = 0;
+  store.upsert(file, { id:movedId, order:ord });
+  log("SAVE","reorder "+file+" -> order "+ord);
+}
 
 /* ============================================================
    VIEW: TODAY  (+ entry to Now/Focus)
@@ -1356,7 +1472,7 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
   let items = store.data.todos
     .filter(t=> (tab==="all" ? t.status!=="done" : t.status===tab) && passType(t) && matchLoc(t))
     .filter(t=> (tab==="someday"||tab==="done") ? true : !isDeferredAway(t))
-    .sort(sortTodos);
+    .sort(byOrder);
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
@@ -1375,7 +1491,8 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
       </div>
       {locFilter!=="all" && <p className="hint" style={{marginTop:8}}>Showing {locFilter} + any-place items.</p>}
       {items.length===0 ? <Empty glyph={"\u2014"} title={tab==="all"?"No to-dos yet":"No "+tab+" items"} sub={tab==="inbox"||tab==="all"?"Capture with the + button.":"Move items here as you organize."}/> :
-        <div className="list">{items.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div>}
+        <DragList items={items} getId={t=>t.id} onReorder={(id,ids)=>reorderItem(store,"todos",id,ids,items)}
+          render={t=><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/>}/>}
     </div>
   );
 }
@@ -1422,9 +1539,7 @@ function MatrixView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLo
    ============================================================ */
 function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, onOpenTodo }){
   const [active,setActive]=useState(null); // project detail
-  const projects = store.data.projects.filter(p=>(typeFilter==="all"||p.type===typeFilter)).sort((a,b)=>{
-    const order={active:0,onhold:1,someday:2,done:3,archived:4}; return (order[a.status]||0)-(order[b.status]||0);
-  });
+  const projects = store.data.projects.filter(p=>(typeFilter==="all"||p.type===typeFilter)).sort(byOrder);
   if(active){
     const p = store.data.projects.find(x=>x.id===active.id)||active;
     const todos = store.data.todos.filter(t=>t.projectId===p.id).sort(sortTodos);
@@ -1458,13 +1573,14 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
       </div>
       <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {projects.length===0? <Empty glyph={"\u25A1"} title="No projects" sub="A project is any outcome needing more than one step."/> :
-        <div className="list">{projects.map(p=>{
+        <DragList items={projects} getId={p=>p.id} onReorder={(id,ids)=>reorderItem(store,"projects",id,ids,projects)}
+          render={p=>{
           const open = store.data.todos.filter(t=>t.projectId===p.id&&t.status!=="done").length;
-          return <div key={p.id} className="item" onClick={()=>setActive(p)}>
+          return <div className="item" onClick={()=>setActive(p)}>
             <div className="item-body"><div className="item-title">{p.name}</div>
               <div className="item-meta"><TypeChip type={p.type}/><span className="chip">{p.status}</span>
                 <span className="chip">{open} open</span>{p.deadline&&<span className="chip amber">{fmtDate(p.deadline)}</span>}</div></div></div>;
-        })}</div>}
+        }}/>}
     </div>
   );
 }
@@ -1473,7 +1589,7 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
    VIEW: IDEAS
    ============================================================ */
 function IdeasView({ store, openEditor, typeFilter, setTypeFilter }){
-  const ideas = store.data.ideas.filter(i=>(typeFilter==="all"||i.type===typeFilter)).sort((a,b)=>(b.capturedAt||"").localeCompare(a.capturedAt||""));
+  const ideas = store.data.ideas.filter(i=>(typeFilter==="all"||i.type===typeFilter)).sort(byOrder);
   const stateChip = {raw:"",developing:"blue",promoted:"green",discarded:""};
   return (
     <div className="screen">
@@ -1483,14 +1599,15 @@ function IdeasView({ store, openEditor, typeFilter, setTypeFilter }){
       </div>
       <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {ideas.length===0? <Empty glyph={"\u273C"} title="No ideas yet" sub="Capture a raw thought and let it sit."/> :
-        <div className="list">{ideas.map(i=>
-          <div key={i.id} className="item" onClick={()=>openEditor("idea",i)} style={i.state==="discarded"?{opacity:.5}:null}>
+        <DragList items={ideas} getId={i=>i.id} onReorder={(id,ids)=>reorderItem(store,"ideas",id,ids,ideas)}
+          render={i=>
+          <div className="item" onClick={()=>openEditor("idea",i)} style={i.state==="discarded"?{opacity:.5}:null}>
             <div className="item-body"><div className="item-title">{i.title}</div>
               {i.body && <p className="hint" style={{marginTop:4,whiteSpace:"pre-wrap"}}>{i.body.slice(0,120)}{i.body.length>120?"...":""}</p>}
               <div className="item-meta"><TypeChip type={i.type}/>
                 <span className={"chip "+(stateChip[i.state]||"")}>{i.state}</span>
                 <span className="chip">{fmtDate(i.capturedAt)}</span>
-                {(i.tags||[]).map(t=><span key={t} className="chip">#{t}</span>)}</div></div></div>)}</div>}
+                {(i.tags||[]).map(t=><span key={t} className="chip">#{t}</span>)}</div></div></div>}/>}
     </div>
   );
 }
@@ -1499,7 +1616,7 @@ function IdeasView({ store, openEditor, typeFilter, setTypeFilter }){
    VIEW: GOALS
    ============================================================ */
 function GoalsView({ store, openEditor, typeFilter, setTypeFilter }){
-  const goals = store.data.goals.filter(g=>(typeFilter==="all"||g.type===typeFilter));
+  const goals = store.data.goals.filter(g=>(typeFilter==="all"||g.type===typeFilter)).sort(byOrder);
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
@@ -1508,15 +1625,16 @@ function GoalsView({ store, openEditor, typeFilter, setTypeFilter }){
       </div>
       <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {goals.length===0? <Empty glyph={"\u25CE"} title="No goals" sub="Set a longer-term objective for projects to roll up to."/> :
-        <div className="list">{goals.map(g=>{
+        <DragList items={goals} getId={g=>g.id} onReorder={(id,ids)=>reorderItem(store,"goals",id,ids,goals)}
+          render={g=>{
           const projs = store.data.projects.filter(p=>p.goalId===g.id);
-          return <div key={g.id} className="item" onClick={()=>openEditor("goal",g)} style={g.status!=="active"?{opacity:.6}:null}>
+          return <div className="item" onClick={()=>openEditor("goal",g)} style={g.status!=="active"?{opacity:.6}:null}>
             <div className="item-body"><div className="item-title">{g.name}</div>
               {g.why && <p className="hint" style={{marginTop:4}}>{g.why.slice(0,110)}</p>}
               <div className="item-meta"><TypeChip type={g.type}/><span className="chip">{g.status}</span>
                 <span className="chip">{projs.length} project{projs.length===1?"":"s"}</span>
                 {g.target&&<span className="chip amber">{fmtDate(g.target)}</span>}</div></div></div>;
-        })}</div>}
+        }}/>}
     </div>
   );
 }
