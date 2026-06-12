@@ -376,13 +376,25 @@ async function ghRead(cfg, file){
 }
 
 // Write one entity file. sha required for updates (null for create).
+// If GitHub rejects the write with a stale-SHA conflict (409/422) - which happens when
+// the file changed on the server since we last read it (e.g. the app was open in two
+// places) - re-read the current SHA and retry once. A queued local change is the source
+// of truth, so this resolves the conflict instead of stranding the change.
 async function ghWrite(cfg, file, data, sha){
   const url = ghPath(cfg, file);
   log("GITHUB","PUT "+file+" ("+data.length+" rows)");
-  try{
+  const doPut = (useSha) => {
     const body = { message:"update "+file+" "+nowISO(), content: utf8ToB64(JSON.stringify(data,null,2)) };
-    if(sha) body.sha = sha;
-    const r = await fetch(url, { method:"PUT", headers:{...ghHeaders(cfg.token),"Content-Type":"application/json"}, body:JSON.stringify(body) });
+    if(useSha) body.sha = useSha;
+    return fetch(url, { method:"PUT", headers:{...ghHeaders(cfg.token),"Content-Type":"application/json"}, body:JSON.stringify(body) });
+  };
+  try{
+    let r = await doPut(sha);
+    if(r.status===409 || r.status===422){
+      log("GITHUB","PUT "+file+" "+r.status+" (stale sha) - refetch + retry");
+      const cur = await ghRead(cfg, file);   // get the current sha
+      r = await doPut(cur.sha);
+    }
     if(!r.ok){ const t=await r.text(); log("ERROR","PUT "+file+" "+r.status+" "+t.slice(0,160)); throw new Error("GitHub write "+r.status); }
     const j = await r.json();
     log("GITHUB","PUT "+file+" ok");
