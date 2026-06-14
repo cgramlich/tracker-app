@@ -137,6 +137,26 @@ a{color:var(--amber);}
 .drag-handle:active{color:var(--amber);}
 .drag-handle svg{width:18px;height:18px;stroke:currentColor;stroke-width:2.4;fill:none;}
 .drag-row-body{flex:1;min-width:0;}
+/* swipe-to-delete on list rows */
+.swipe-wrap{position:relative;overflow:hidden;border-radius:14px;}
+.swipe-del{position:absolute;top:0;right:0;bottom:0;width:88px;border:none;background:#b23b29;color:#fff;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:12px;font-weight:700;}
+.swipe-del svg{width:18px;height:18px;stroke:#fff;stroke-width:2;fill:none;}
+.swipe-body{position:relative;background:var(--bg);touch-action:pan-y;will-change:transform;}
+/* AI organizer chat */
+.chat-scroll{display:flex;flex-direction:column;gap:10px;padding:6px 0 16px;}
+.bubble{max-width:88%;padding:11px 13px;border-radius:16px;font-size:15px;line-height:1.45;white-space:pre-wrap;word-break:break-word;}
+.bubble.user{align-self:flex-end;background:var(--amber-dim);border:1px solid var(--amber-line);border-bottom-right-radius:5px;}
+.bubble.ai{align-self:flex-start;background:var(--bg-3);border:1px solid var(--line-2);border-bottom-left-radius:5px;}
+.bubble.sys{align-self:center;background:none;color:var(--ink-3);font-size:12.5px;padding:2px 4px;}
+.plan-card{align-self:stretch;background:var(--bg-3);border:1px solid var(--amber-line);border-radius:14px;padding:12px 12px 10px;}
+.plan-op{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line);cursor:pointer;}
+.plan-op:first-child{border-top:none;}
+.plan-op.off{opacity:.4;}
+.plan-ck{flex:0 0 auto;width:20px;height:20px;border-radius:6px;border:1.5px solid var(--line-2);display:flex;align-items:center;justify-content:center;margin-top:1px;color:#241a0c;background:var(--bg-4);}
+.plan-op:not(.off) .plan-ck{background:var(--amber);border-color:var(--amber);}
+.plan-op .pl-k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);}
+.chat-bar{position:sticky;top:0;z-index:5;background:var(--bg);padding-bottom:10px;display:flex;gap:8px;align-items:flex-end;}
 /* Hero title field - the primary "what is this" input, made obvious and easy to tap. */
 .title-field{margin-bottom:18px;}
 .title-field .label{color:var(--amber);}
@@ -481,6 +501,80 @@ async function claudeExtract(cfg, content){
   }catch(e){ log("ERROR","claudeExtract: "+e.message); throw e; }
 }
 
+// ---- AI ORGANIZER (conversational, proposes a reviewable plan) ----------------
+const ORGANIZE_SYSTEM =
+`You are the organizing assistant inside a personal GTD + Eisenhower task app.
+The user talks or types to you; you help turn messy input into organized items, and you
+help organize what already exists (their inbox, projects, etc.).
+
+You DO NOT change anything directly. You PROPOSE a plan of operations that the user reviews
+and approves. Always reply conversationally AND include a structured plan.
+
+Return ONLY a JSON object (no markdown, no prose outside it) of the exact shape:
+{
+  "reply": "a short conversational message to the user",
+  "plan": [ ...operations... ]
+}
+
+Operations (use only these; omit any field you don't need):
+- {"op":"create_project","tmpId":"p1","name":"...","type":"<category>","status":"active","outcome":"...","deadline":"YYYY-MM-DD","description":"...","goalId":"<existing goal id>"}
+- {"op":"create_todo","title":"...","status":"inbox|next|waiting|someday","type":"<category>","quad":"q1|q2|q3|q4","due":"YYYY-MM-DD","defer":"YYYY-MM-DD","location":"<place>","projectId":"<existing project id or a tmpId>","tags":["..."],"notes":"...","subtasks":[{"title":"..."}]}
+- {"op":"create_idea","title":"...","body":"...","type":"<category>","tags":["..."]}
+- {"op":"create_goal","name":"...","why":"...","type":"<category>","target":"YYYY-MM-DD"}
+- {"op":"update_todo","id":"<existing todo id>","status":"...","type":"...","quad":"...","due":"...","defer":"...","location":"...","projectId":"...","tags":["..."],"notes":"..."}
+
+Rules:
+- Eisenhower quadrants: q1 Do First (urgent+important), q2 Schedule (important, not urgent),
+  q3 Do Quick (urgent, not important), q4 Not Right Now (neither).
+- To organize EXISTING inbox/todos, use update_todo with that item's real id (from CURRENT DATA).
+- To create a project and put new todos under it in one step, give the project a tmpId and set
+  each todo's projectId to that tmpId.
+- Prefer the user's EXISTING categories and locations (listed in CURRENT DATA). Only use a new
+  category/location if the user clearly asks for one.
+- NEVER delete anything. There is no delete operation.
+- If the request is ambiguous, ask in "reply" and return an empty "plan" (or only the parts
+  you're confident about).
+- Keep "reply" brief and friendly. Summarize what the plan will do.`;
+
+async function claudeChat(cfg, system, messages){
+  if(!cfg.apiKey) throw new Error("No Claude API key set (Settings).");
+  log("AI","chat request model="+cfg.model+" turns="+messages.length);
+  try{
+    const r = await fetch(ANTHROPIC_URL,{
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "x-api-key":cfg.apiKey,
+        "anthropic-version":"2023-06-01",
+        "anthropic-dangerous-direct-browser-access":"true"
+      },
+      body:JSON.stringify({ model: cfg.model || "claude-sonnet-4-6", max_tokens: 4096, system, messages })
+    });
+    if(!r.ok){ const t=await r.text(); log("ERROR","claudeChat "+r.status+" "+t.slice(0,200));
+      if(r.status===401) throw new Error("Claude key rejected (401). Check the API key in Settings.");
+      throw new Error("Claude API error "+r.status+"."); }
+    const j = await r.json();
+    if(j.stop_reason === "max_tokens"){ log("AI","chat truncated"); }
+    const text = (j.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
+    log("AI","chat raw len="+text.length);
+    return text;
+  }catch(e){ log("ERROR","claudeChat: "+e.message); throw e; }
+}
+
+// Build a compact snapshot of current data for the organizer's context.
+function organizeSnapshot(store){
+  const d = store.data;
+  const todo = (d.todos||[]).filter(t=>t.status!=="done").map(t=>({ id:t.id, title:t.title, status:t.status, type:t.type||"", quad:t.quad||"", due:t.due||"", projectId:t.projectId||"", location:t.location||"" }));
+  const projects = (d.projects||[]).map(p=>({ id:p.id, name:p.name, status:p.status, type:p.type||"" }));
+  const goals = (d.goals||[]).map(g=>({ id:g.id, name:g.name }));
+  const ideas = (d.ideas||[]).map(i=>({ id:i.id, title:i.title, state:i.state }));
+  return JSON.stringify({
+    categories: knownCategories(store),
+    locations: (store.cfg.locations&&store.cfg.locations.length)?store.cfg.locations:DEFAULT_LOCATIONS,
+    todos: todo, projects, goals, ideas
+  });
+}
+
 // Resize an image File to <=1568px long edge, JPEG q0.82 (keeps OCR accurate, cuts tokens).
 function resizeImage(file){
   return new Promise((resolve,reject)=>{
@@ -747,7 +841,45 @@ function useStore(){
     return touched;
   }, [markDirty, pushDirty]);
 
-  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, bulkAdd, completeTodo, relabel, setSync, ghWriteTest };
+  // Apply an approved AI plan as ONE batched change (creates + updates), then one push.
+  const applyPlan = useCallback((plan) => {
+    const d = {}; FILES.forEach(f => { d[f] = (dataRef.current[f]||[]).slice(); });
+    const tmp = {}; let created = 0, updated = 0; const touched = new Set();
+    const minOrder = (file) => { const os = d[file].filter(x=>typeof x.order==="number").map(x=>x.order); return os.length?Math.min(...os):0; };
+    const addTop = (file, row) => {
+      const id = row.id || uid();
+      d[file] = [{ ...row, id, order:minOrder(file)-1000, createdAt:nowISO(), updatedAt:nowISO() }, ...d[file]];
+      created++; touched.add(file); return id;
+    };
+    (plan||[]).filter(o=>o.op==="create_project").forEach(o=>{
+      const id = addTop("projects", { name:o.name||"Untitled project", type:o.type||"", status:o.status||"active",
+        outcome:o.outcome||"", description:o.description||"", deadline:o.deadline||"", goalId:o.goalId||null });
+      if(o.tmpId) tmp[o.tmpId] = id;
+    });
+    (plan||[]).filter(o=>o.op==="create_goal").forEach(o=>addTop("goals", { name:o.name||"Untitled goal", type:o.type||"", why:o.why||"", status:"active", target:o.target||"" }));
+    (plan||[]).filter(o=>o.op==="create_idea").forEach(o=>addTop("ideas", { title:o.title||"Untitled", body:o.body||"", type:o.type||"", state:"raw", capturedAt:nowISO(), tags:o.tags||[] }));
+    (plan||[]).filter(o=>o.op==="create_todo").forEach(o=>{
+      let pid = o.projectId||null; if(pid && tmp[pid]) pid = tmp[pid];
+      addTop("todos", { title:o.title||"Untitled", status:o.status||"inbox", type:o.type||"", quad:o.quad||"", due:o.due||"",
+        defer:o.defer||"", location:o.location||"", projectId:pid, tags:o.tags||[], notes:o.notes||"",
+        subtasks:(o.subtasks||[]).map(s=>({ id:uid(), title:(typeof s==="string"?s:(s.title||"")), done:false })) });
+    });
+    (plan||[]).filter(o=>o.op==="update_todo").forEach(o=>{
+      if(!o.id) return; const i = d.todos.findIndex(t=>t.id===o.id); if(i<0) return;
+      const patch = {};
+      ["status","type","quad","due","defer","location","notes"].forEach(k=>{ if(o[k]!==undefined) patch[k]=o[k]; });
+      if(o.projectId!==undefined) patch.projectId = tmp[o.projectId] || o.projectId;
+      if(o.tags!==undefined) patch.tags = o.tags;
+      d.todos[i] = { ...d.todos[i], ...patch, updatedAt:nowISO() }; updated++; touched.add("todos");
+    });
+    dataRef.current = d; setData(d);
+    touched.forEach(f => markDirty(f, d[f]));
+    log("AI","applied plan: "+created+" created, "+updated+" updated, files="+[...touched].join(","));
+    pushDirty();
+    return { created, updated };
+  }, [markDirty, pushDirty]);
+
+  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, bulkAdd, completeTodo, relabel, applyPlan, setSync, ghWriteTest };
 }
 
 /* ============================================================
@@ -770,6 +902,7 @@ const Ic = {
   search:  <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>,
   gear:    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1l-.4-2.5H9.6L9.2 5a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.4 2.5h4.8l.4-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6a7 7 0 0 0 .1-1z"/></svg>,
   check:   <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>,
+  sparkle: <svg viewBox="0 0 24 24"><path d="M12 3l1.7 4.8L18.5 9.5l-4.8 1.7L12 16l-1.7-4.8L5.5 9.5l4.8-1.7zM18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8z"/></svg>,
   back:    <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>,
   trash:   <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>,
   star:    <svg viewBox="0 0 24 24"><path d="M12 2l3 7 7 .5-5.3 4.5L18 21l-6-3.8L6 21l1.3-7L2 9.5 9 9z"/></svg>,
@@ -1139,11 +1272,36 @@ function GoalEditor({ store, goal, onClose, toast }){
 /* ============================================================
    TODO ROW (shared display)
    ============================================================ */
+/* Swipe a row left to reveal a Delete action. Horizontal-only, so vertical scroll and
+   the reorder handle are unaffected; a swipe suppresses the row's open-on-tap. */
+function SwipeRow({ onDelete, children }){
+  const [dx,setDx] = useState(0);
+  const st = useRef(null); const moved = useRef(false);
+  function down(e){ st.current = { x:e.clientX, y:e.clientY, base:dx }; moved.current = false; try{ e.currentTarget.setPointerCapture(e.pointerId); }catch(_){} }
+  function move(e){
+    if(!st.current) return;
+    const ddx = e.clientX - st.current.x, ddy = e.clientY - st.current.y;
+    if(Math.abs(ddx) > 8 && Math.abs(ddx) > Math.abs(ddy)) moved.current = true;
+    if(moved.current){ setDx(Math.max(-96, Math.min(0, st.current.base + ddx))); }
+  }
+  function end(){ if(!st.current) return; st.current = null; setDx(d => { const nd = d <= -48 ? -84 : 0; if(nd===0) moved.current = false; return nd; }); }
+  function clickCapture(e){ if(moved.current || dx !== 0){ e.stopPropagation(); e.preventDefault(); moved.current = false; setDx(0); } }
+  return (
+    <div className="swipe-wrap">
+      <button className="swipe-del" onClick={(e)=>{ e.stopPropagation(); setDx(0); onDelete(); }}>{Ic.trash}<span>Delete</span></button>
+      <div className="swipe-body" style={{ transform:`translateX(${dx}px)`, transition: st.current ? "none" : "transform .18s" }}
+        onPointerDown={down} onPointerMove={move} onPointerUp={end} onPointerCancel={end} onClickCapture={clickCapture}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================
    DRAG-TO-REORDER list. Handle-based (grip), pointer events for touch+mouse.
    Persists one moved item via onReorder(movedId, newIdsInOrder).
    ============================================================ */
-function DragList({ items, getId, onReorder, render }){
+function DragList({ items, getId, onReorder, onDelete, render }){
   const [order,setOrder] = useState(items);
   const dragId = useRef(null);
   const cont = useRef(null);
@@ -1171,7 +1329,7 @@ function DragList({ items, getId, onReorder, render }){
       {order.map(it => (
         <div className={"drag-row"+(dragId.current===getId(it)?" dragging":"")} data-drag-row key={getId(it)}>
           <button className="drag-handle" aria-label="Drag to reorder" onPointerDown={e=>down(e, getId(it))}>{Ic.grip}</button>
-          <div className="drag-row-body">{render(it)}</div>
+          <div className="drag-row-body">{onDelete ? <SwipeRow onDelete={()=>onDelete(it)}>{render(it)}</SwipeRow> : render(it)}</div>
         </div>
       ))}
     </div>
@@ -1213,7 +1371,7 @@ function TodoRow({ store, todo, onOpen }){
 /* ============================================================
    CAPTURE - action sheet + quick add + AI flows
    ============================================================ */
-function CaptureSheet({ store, onClose, toast, openEditor }){
+function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
   // Resume an unsaved review draft if one was left behind (survives close + reload).
   const initialPending = lsGet("pendingReview", []) || [];
   const [mode,setMode]=useState(initialPending.length ? "review" : "menu"); // menu | quick | brain | photo | review
@@ -1284,12 +1442,21 @@ function CaptureSheet({ store, onClose, toast, openEditor }){
           <span className="act-txt"><b>Resume your review</b><span>{results.length} item{results.length===1?"":"s"} waiting - nothing saved yet</span></span>
         </button>}
       <div className="field" style={{marginTop:6}}>
+        <span className="label" style={{color:"var(--amber)"}}>Brain-dump to AI</span>
+        <textarea className="textarea" value={brain} onChange={e=>setBrain(e.target.value)} style={{minHeight:92}} autoFocus
+          placeholder="Talk or type everything on your mind - I'll turn it into todos, projects, and ideas, and help file your inbox..."/>
+        <button className="btn btn-primary btn-block" style={{marginTop:8,display:"flex",alignItems:"center",justifyContent:"center",gap:8}}
+          onClick={()=>{ const t=brain.trim(); if(t) lsSet("aiSeed", t); openAI(); }}>
+          <span style={{width:18,height:18,display:"inline-flex"}}>{Ic.sparkle}</span> Organize with AI</button>
+      </div>
+      <div className="divider"></div>
+      <div className="field">
         <div className="row">
-          <input className="input" value={quick} onChange={e=>setQuick(e.target.value)} placeholder="Quick add to Inbox..."
-            onKeyDown={e=>e.key==="Enter"&&quickAdd()} autoFocus style={{flex:3}}/>
+          <input className="input" value={quick} onChange={e=>setQuick(e.target.value)} placeholder="Or quick-add one to Inbox..."
+            onKeyDown={e=>e.key==="Enter"&&quickAdd()} style={{flex:3}}/>
           <button className="btn btn-primary btn-sm" onClick={quickAdd} style={{flex:1}}>Add</button>
         </div>
-        <p className="hint">Type or dictate. Triage from the Inbox later.</p>
+        <p className="hint">Type or dictate a single item. Triage from the Inbox later.</p>
       </div>
       <div className="divider"></div>
       <button className="act-row" onClick={()=>{ onClose(); openEditor("todo"); }}>
@@ -1301,8 +1468,6 @@ function CaptureSheet({ store, onClose, toast, openEditor }){
       <button className="act-row" onClick={()=>{ onClose(); openEditor("goal"); }}>
         <span className="act-ic">{Ic.goal}</span><span className="act-txt"><b>New goal</b><span>Longer-term objective</span></span></button>
       <div className="divider"></div>
-      <button className="act-row" onClick={()=>setMode("brain")}>
-        <span className="act-ic">{Ic.bolt}</span><span className="act-txt"><b>Brain dump</b><span>Paste a paragraph, AI structures it</span></span></button>
       <button className="act-row" onClick={()=>fileRef.current && fileRef.current.click()}>
         <span className="act-ic">{Ic.camera}</span><span className="act-txt"><b>Photo / scan</b><span>Read tasks from a picture</span></span></button>
       <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}}
@@ -1503,7 +1668,7 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
       </div>
       {locFilter!=="all" && <p className="hint" style={{marginTop:8}}>Showing {locFilter} + any-place items.</p>}
       {items.length===0 ? <Empty glyph={"\u2014"} title={tab==="all"?"No to-dos yet":"No "+tab+" items"} sub={tab==="inbox"||tab==="all"?"Capture with the + button.":"Move items here as you organize."}/> :
-        <DragList items={items} getId={t=>t.id} onReorder={(id,ids)=>reorderItem(store,"todos",id,ids,items)}
+        <DragList items={items} getId={t=>t.id} onReorder={(id,ids)=>reorderItem(store,"todos",id,ids,items)} onDelete={t=>store.remove("todos",t.id)}
           render={t=><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/>}/>}
     </div>
   );
@@ -1585,7 +1750,7 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
       </div>
       <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {projects.length===0? <Empty glyph={"\u25A1"} title="No projects" sub="A project is any outcome needing more than one step."/> :
-        <DragList items={projects} getId={p=>p.id} onReorder={(id,ids)=>reorderItem(store,"projects",id,ids,projects)}
+        <DragList items={projects} getId={p=>p.id} onReorder={(id,ids)=>reorderItem(store,"projects",id,ids,projects)} onDelete={p=>store.remove("projects",p.id)}
           render={p=>{
           const open = store.data.todos.filter(t=>t.projectId===p.id&&t.status!=="done").length;
           return <div className="item" onClick={()=>setActive(p)}>
@@ -1611,7 +1776,7 @@ function IdeasView({ store, openEditor, typeFilter, setTypeFilter }){
       </div>
       <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {ideas.length===0? <Empty glyph={"\u273C"} title="No ideas yet" sub="Capture a raw thought and let it sit."/> :
-        <DragList items={ideas} getId={i=>i.id} onReorder={(id,ids)=>reorderItem(store,"ideas",id,ids,ideas)}
+        <DragList items={ideas} getId={i=>i.id} onReorder={(id,ids)=>reorderItem(store,"ideas",id,ids,ideas)} onDelete={i=>store.remove("ideas",i.id)}
           render={i=>
           <div className="item" onClick={()=>openEditor("idea",i)} style={i.state==="discarded"?{opacity:.5}:null}>
             <div className="item-body"><div className="item-title">{i.title}</div>
@@ -1637,7 +1802,7 @@ function GoalsView({ store, openEditor, typeFilter, setTypeFilter }){
       </div>
       <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {goals.length===0? <Empty glyph={"\u25CE"} title="No goals" sub="Set a longer-term objective for projects to roll up to."/> :
-        <DragList items={goals} getId={g=>g.id} onReorder={(id,ids)=>reorderItem(store,"goals",id,ids,goals)}
+        <DragList items={goals} getId={g=>g.id} onReorder={(id,ids)=>reorderItem(store,"goals",id,ids,goals)} onDelete={g=>store.remove("goals",g.id)}
           render={g=>{
           const projs = store.data.projects.filter(p=>p.goalId===g.id);
           return <div className="item" onClick={()=>openEditor("goal",g)} style={g.status!=="active"?{opacity:.6}:null}>
@@ -1901,6 +2066,140 @@ function AppearanceEditor({ store }){
         </div>
       </div>
       <p className="hint" style={{marginTop:8}}>Saved on this device only - the name and color don't affect anyone else's copy of the app.</p>
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: AI ORGANIZER (conversational; proposes a plan you approve)
+   ============================================================ */
+function AIChat({ store, toast, back }){
+  const [messages,setMessages] = useState(() => lsGet("aiChat", []));   // {role:'user'|'assistant'|'system', text}
+  const [plan,setPlan] = useState(() => lsGet("aiPlan", null));         // { ops:[...], excluded:[i,...] }
+  const [input,setInput] = useState("");
+  const [busy,setBusy] = useState(false);
+  const [err,setErr] = useState("");
+  const endRef = useRef(null);
+  useEffect(() => { lsSet("aiChat", messages); }, [messages]);
+  useEffect(() => { if(plan) lsSet("aiPlan", plan); else lsDel("aiPlan"); }, [plan]);
+  useEffect(() => { if(endRef.current) endRef.current.scrollIntoView({block:"end"}); }, [messages, plan, busy]);
+  // If we arrived here from the + brain-dump box, it left the text in 'aiSeed'. Send it.
+  useEffect(() => {
+    const seed = lsGet("aiSeed", ""); if(seed){ lsDel("aiSeed"); send(seed); }
+  }, []); // eslint-disable-line
+
+  async function send(textArg){
+    const text = (typeof textArg==="string" ? textArg : input).trim(); if(!text || busy) return;
+    if(!store.cfg.apiKey){ setErr("Add your Claude API key in Settings first."); return; }
+    setErr(""); setInput("");
+    const history = [...messages, { role:"user", text }];
+    setMessages(history); setBusy(true);
+    try{
+      const system = ORGANIZE_SYSTEM + "\n\nCURRENT DATA (JSON):\n" + organizeSnapshot(store);
+      // only user/assistant turns go to the API (skip our local 'system' confirmations)
+      const apiMessages = history.filter(m=>m.role==="user"||m.role==="assistant").map(m=>({ role:m.role, content:m.text }));
+      const raw = await claudeChat(store.cfg, system, apiMessages);
+      let parsed = null; const cleaned = stripFences(raw);
+      try{ parsed = JSON.parse(cleaned); }
+      catch(e){
+        const a = cleaned.indexOf("{"), b = cleaned.lastIndexOf("}");   // tolerate stray prose around the JSON
+        if(a>=0 && b>a){ try{ parsed = JSON.parse(cleaned.slice(a,b+1)); }catch(_){ parsed = null; } }
+      }
+      if(!parsed || typeof parsed!=="object"){
+        setMessages(m=>[...m, { role:"assistant", text: raw || "(no response)" }]); setPlan(null);
+      }else{
+        const reply = parsed.reply || "Here's what I can do.";
+        const ops = Array.isArray(parsed.plan) ? parsed.plan : [];
+        setMessages(m=>[...m, { role:"assistant", text: reply }]);
+        setPlan(ops.length ? { ops, excluded:[] } : null);
+      }
+    }catch(e){
+      setErr(e.message || "Something went wrong.");
+      setMessages(m=>[...m, { role:"system", text:"(error: "+(e.message||"failed")+")" }]);
+    }
+    setBusy(false);
+  }
+
+  function toggleOp(i){
+    setPlan(p => { if(!p) return p; const ex = p.excluded.includes(i) ? p.excluded.filter(x=>x!==i) : [...p.excluded, i]; return { ...p, excluded:ex }; });
+  }
+  function applyPlan(){
+    if(!plan) return;
+    let included = plan.ops.filter((_,i)=>!plan.excluded.includes(i));
+    const liveTmp = new Set(included.filter(o=>o.op==="create_project"&&o.tmpId).map(o=>o.tmpId));
+    // if a project was excluded, don't leave its todos pointing at a dead tmpId
+    included = included.map(o=>{
+      if(o.op==="create_todo" && o.projectId && plan.ops.some(x=>x.op==="create_project"&&x.tmpId===o.projectId) && !liveTmp.has(o.projectId))
+        return { ...o, projectId:null };
+      return o;
+    });
+    if(!included.length){ toast("Nothing selected"); return; }
+    const res = store.applyPlan(included);
+    setPlan(null);
+    setMessages(m=>[...m, { role:"system", text:"Applied: "+res.created+" created"+(res.updated?", "+res.updated+" updated":"")+"." }]);
+    toast("Plan applied");
+  }
+  function clearChat(){ setMessages([]); setPlan(null); setErr(""); lsDel("aiChat"); lsDel("aiPlan"); }
+
+  function opLabel(o){
+    if(o.op==="create_project") return ["New project", o.name||"(untitled)"];
+    if(o.op==="create_goal")    return ["New goal", o.name||"(untitled)"];
+    if(o.op==="create_idea")    return ["New idea", o.title||"(untitled)"];
+    if(o.op==="create_todo"){
+      const bits=[ (o.status&&o.status!=="inbox")?o.status:null, o.type||null,
+        (o.quad&&QUADRANTS[o.quad])?QUADRANTS[o.quad].label:null, o.due?("due "+o.due):null,
+        o.location?("@"+o.location):null, o.projectId?"in project":null ].filter(Boolean);
+      return ["New todo", (o.title||"(untitled)") + (bits.length?"  ("+bits.join(", ")+")":"")];
+    }
+    if(o.op==="update_todo"){
+      const t = store.data.todos.find(x=>x.id===o.id); const name = t?t.title:("#"+o.id);
+      const ch=[]; ["status","type","due","location"].forEach(k=>{ if(o[k]!==undefined) ch.push(k+"="+o[k]); });
+      if(o.quad!==undefined) ch.push("priority="+(QUADRANTS[o.quad]?QUADRANTS[o.quad].label:o.quad));
+      if(o.projectId!==undefined) ch.push("project");
+      if(o.tags!==undefined) ch.push("tags");
+      return ["Update", name + (ch.length?"  ("+ch.join(", ")+")":"")];
+    }
+    return [o.op, ""];
+  }
+
+  const empty = messages.length===0;
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <button className="btn btn-ghost btn-sm" onClick={back}>{Ic.back} Back</button>
+        {messages.length>0 && <button className="btn btn-ghost btn-sm" onClick={clearChat} style={{marginLeft:"auto"}}>Clear</button>}
+        <h1 className="title" style={{marginTop:8,width:"100%"}}>Organize with AI</h1>
+      </div>
+
+      <div className="chat-bar">
+        <textarea className="textarea" value={input} onChange={e=>setInput(e.target.value)}
+          placeholder="Talk or type a brain-dump... e.g. 'Start a kitchen reno project and add these todos...'"
+          style={{minHeight:54,flex:1}} onKeyDown={e=>{ if(e.key==="Enter"&&(e.metaKey||e.ctrlKey)){ e.preventDefault(); send(); } }}/>
+        <button className="btn btn-primary" onClick={send} disabled={busy} style={{flex:"0 0 auto"}}>{busy?"...":"Send"}</button>
+      </div>
+      {err && <p className="hint" style={{color:"var(--danger,#d9744f)",marginTop:2}}>{err}</p>}
+
+      {empty &&
+        <p className="hint" style={{marginTop:10}}>Dump whatever's on your mind. I'll suggest todos, projects, and how to file your inbox - then you approve before anything is saved. Nothing changes until you tap Apply.</p>}
+
+      <div className="chat-scroll">
+        {messages.map((m,i)=> <div key={i} className={"bubble "+(m.role==="user"?"user":m.role==="assistant"?"ai":"sys")}>{m.text}</div>)}
+        {busy && <div className="bubble ai" style={{color:"var(--ink-3)"}}>Thinking...</div>}
+        {plan && plan.ops.length>0 &&
+          <div className="plan-card">
+            <div className="label" style={{marginBottom:6}}>Proposed plan - tap to include/exclude</div>
+            {plan.ops.map((o,i)=>{ const [k,txt]=opLabel(o); const off=plan.excluded.includes(i);
+              return <div key={i} className={"plan-op"+(off?" off":"")} onClick={()=>toggleOp(i)}>
+                <span className="plan-ck">{!off && Ic.check}</span>
+                <span style={{flex:1}}><span className="pl-k">{k}</span><br/>{txt}</span>
+              </div>; })}
+            <div style={{display:"flex",gap:8,marginTop:10}}>
+              <button className="btn btn-primary btn-block" onClick={applyPlan}>Apply</button>
+              <button className="btn btn-ghost" onClick={()=>setPlan(null)}>Dismiss</button>
+            </div>
+          </div>}
+        <div ref={endRef}></div>
+      </div>
     </div>
   );
 }
@@ -2217,6 +2516,7 @@ function SearchView({ store, openEditor, back }){
    ============================================================ */
 function MoreView({ store, go }){
   const rows = [
+    { k:"aichat",   ic:Ic.sparkle, b:"Organize with AI", s:"Brain-dump, then approve a plan" },
     { k:"matrix",   ic:Ic.matrix,  b:"Matrix", s:"Eisenhower priorities" },
     { k:"goals",    ic:Ic.goal,    b:"Goals", s:store.data.goals.filter(g=>g.status==="active").length+" active" },
     { k:"review",   ic:Ic.review,  b:"Weekly Review", s:"Run the GTD checklist" },
@@ -2315,6 +2615,7 @@ function App(){
   else if(sub==="search") subView=<SearchView store={store} openEditor={openEditor} back={()=>setSub(null)}/>;
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(sub==="export") subView=<ExportView store={store} toast={toast} back={()=>setSub(null)}/>;
+  else if(sub==="aichat") subView=<AIChat store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="settings") subView=<SettingsView store={store} toast={toast} go={go}/>;
   else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
 
@@ -2354,7 +2655,7 @@ function App(){
       </div>
 
       {/* capture sheet */}
-      {capture && <CaptureSheet store={store} toast={toast} onClose={()=>setCapture(false)} openEditor={openEditor}/>}
+      {capture && <CaptureSheet store={store} toast={toast} onClose={()=>setCapture(false)} openEditor={openEditor} openAI={()=>{ setCapture(false); setSub("aichat"); }}/>}
 
       {/* editors */}
       {editor && editor.kind==="todo" && <TodoEditor store={store} todo={editor.entity} toast={toast} onClose={()=>setEditor(null)}/>}
