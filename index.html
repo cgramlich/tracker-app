@@ -314,7 +314,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-15.5";
+const BUILD = "2026-06-15.7";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -817,6 +817,21 @@ function useStore(){
     log("SAVE", file+" restore "+item.id); pushDirty();
   }, [markDirty, pushDirty]);
 
+  // Put a field value back onto specific items in one write. Used to UNDO a category/place
+  // delete (which had cleared that label off N items).
+  const restoreLabel = useCallback((field, entries, value) => {
+    const d = {}; FILES.forEach(f => d[f] = (dataRef.current[f]||[]).slice());
+    const touched = new Set();
+    (entries||[]).forEach(({file,id}) => {
+      const i = d[file].findIndex(x => x.id===id);
+      if(i>=0){ d[file][i] = { ...d[file][i], [field]:value, updatedAt:nowISO() }; touched.add(file); }
+    });
+    dataRef.current = d; setData(d);
+    touched.forEach(f => markDirty(f, d[f]));
+    log("SAVE","restoreLabel "+field+"='"+value+"' on "+(entries?entries.length:0)+" items");
+    pushDirty();
+  }, [markDirty, pushDirty]);
+
   // bulk add (used by AI capture review)
   const bulkAdd = useCallback((file, rows) => {
     const os = (dataRef.current[file]||[]).filter(x=>typeof x.order==="number").map(x=>x.order);
@@ -906,7 +921,7 @@ function useStore(){
     return { created, updated };
   }, [markDirty, pushDirty]);
 
-  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, restore, bulkAdd, completeTodo, relabel, applyPlan, setSync, ghWriteTest };
+  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync, ghWriteTest };
 }
 
 /* ============================================================
@@ -1998,11 +2013,15 @@ function EditableLabelRow({ value, color, count, onCommit, onRemove }){
   useEffect(()=>{ setV(value); },[value]);
   const commit=()=>{ const t=v.trim(); if(!t || t===value){ setV(value); return; } onCommit(t); };
   return (
-    <div className="row" style={{marginBottom:8,alignItems:"center"}}>
-      {color && <span className="chip" style={{flex:"0 0 auto",background:color+"22",color,border:"1px solid "+color+"55"}}>{value||"?"}</span>}
-      <input className="input" value={v} style={{flex:3}} onChange={e=>setV(e.target.value)} onBlur={commit}
-        onKeyDown={e=>{ if(e.key==="Enter") e.target.blur(); }}/>
-      <button className="btn btn-ghost btn-sm" style={{flex:0,padding:"0 12px"}} aria-label="Delete" onClick={()=>setConfirm(true)}>{Ic.close}</button>
+    <div style={{marginBottom:8}}>
+      <SwipeRow onDelete={()=>setConfirm(true)}>
+        <div className="row" style={{alignItems:"center",background:"var(--bg)"}}>
+          {color && <span className="chip" style={{flex:"0 0 auto",background:color+"22",color,border:"1px solid "+color+"55"}}>{value||"?"}</span>}
+          <input className="input" value={v} style={{flex:3}} onChange={e=>setV(e.target.value)} onBlur={commit}
+            onKeyDown={e=>{ if(e.key==="Enter") e.target.blur(); }}/>
+          <button className="btn btn-ghost btn-sm" style={{flex:0,padding:"0 12px"}} aria-label="Delete" onClick={()=>setConfirm(true)}>{Ic.close}</button>
+        </div>
+      </SwipeRow>
       {confirm && <Confirm
         text={count>0 ? ("Delete \""+value+"\"? It will be cleared from "+count+" item"+(count===1?"":"s")+" (they become uncategorized).")
                       : ("Delete \""+value+"\"?")}
@@ -2018,7 +2037,7 @@ function countUses(store, field, val){
 /* ============================================================
    LOCATIONS EDITOR (manage GTD contexts, saved in config)
    ============================================================ */
-function LocationsEditor({ store, toast }){
+function LocationsEditor({ store, toast, toastUndo }){
   const list = knownLocations(store);   // union: configured + any in use, so the editor matches the filter pills
   const cfgList = (store.cfg.locations && store.cfg.locations.length) ? store.cfg.locations : DEFAULT_LOCATIONS;
   const [adding,setAdding]=useState("");
@@ -2036,9 +2055,14 @@ function LocationsEditor({ store, toast }){
     toast(n>0 ? ("Renamed - updated "+n+" item"+(n===1?"":"s")) : "Renamed");
   }
   function remove(val){
+    const prevCfg = store.cfg;
+    const affected = []; FILES.forEach(f => (store.data[f]||[]).forEach(x => { if(x.location===val) affected.push({file:f,id:x.id}); }));
     persist(cfgList.filter(x=>x!==val));
-    const n = store.relabel("location", val, "");   // clear it off every item so it stops appearing as a pill
-    toast(n>0 ? ("Removed - cleared "+n+" item"+(n===1?"":"s")) : "Removed");
+    const n = store.relabel("location", val, "");
+    toastUndo("Deleted \""+val+"\""+(n?(" - cleared "+n+" item"+(n===1?"":"s")):""), ()=>{
+      store.saveCfg(prevCfg);
+      if(affected.length) store.restoreLabel("location", affected, val);
+    });
   }
   return (
     <div>
@@ -2050,12 +2074,12 @@ function LocationsEditor({ store, toast }){
           onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:3}} autoCapitalize="words"/>
         <button className="btn btn-ghost btn-sm" onClick={add} style={{flex:1}}>Add</button>
       </div>
-      <p className="hint" style={{marginTop:6}}>This list matches your place filters. Renaming relabels every todo that uses it; deleting clears it off them. Tap the X to remove one.</p>
+      <p className="hint" style={{marginTop:6}}>This list matches your place filters. Renaming relabels every todo that uses it; deleting clears it off them. Swipe a row left (or tap the X) to delete.</p>
     </div>
   );
 }
 
-function CategoriesEditor({ store, toast }){
+function CategoriesEditor({ store, toast, toastUndo }){
   const list = knownCategories(store);   // union: configured + any in use (e.g. one the AI coined), matches the filter pills
   const cfgList = (store.cfg.categories && store.cfg.categories.length) ? store.cfg.categories : DEFAULT_CATEGORIES;
   const [adding,setAdding]=useState("");
@@ -2073,9 +2097,14 @@ function CategoriesEditor({ store, toast }){
     toast(n>0 ? ("Renamed - updated "+n+" item"+(n===1?"":"s")) : "Renamed");
   }
   function remove(val){
+    const prevCfg = store.cfg;                       // snapshot for undo
+    const affected = []; FILES.forEach(f => (store.data[f]||[]).forEach(x => { if(x.type===val) affected.push({file:f,id:x.id}); }));
     persist(cfgList.filter(x=>x!==val));
-    const n = store.relabel("type", val, "");   // clear it off every item so it stops appearing as a pill
-    toast(n>0 ? ("Removed - cleared "+n+" item"+(n===1?"":"s")) : "Removed");
+    const n = store.relabel("type", val, "");        // clear it off every item
+    toastUndo("Deleted \""+val+"\""+(n?(" - cleared "+n+" item"+(n===1?"":"s")):""), ()=>{
+      store.saveCfg(prevCfg);                         // put the category back...
+      if(affected.length) store.restoreLabel("type", affected, val);   // ...and re-tag exactly those items
+    });
   }
   return (
     <div>
@@ -2087,7 +2116,7 @@ function CategoriesEditor({ store, toast }){
           onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:3}} autoCapitalize="characters"/>
         <button className="btn btn-ghost btn-sm" onClick={add} style={{flex:1}}>Add</button>
       </div>
-      <p className="hint" style={{marginTop:6}}>This list matches your category filters - including any the AI created. Renaming relabels every item that uses it; deleting clears it off them. Colors are automatic.</p>
+      <p className="hint" style={{marginTop:6}}>This list matches your category filters - including any the AI created. Renaming relabels every item that uses it; deleting clears it off them. Swipe a row left (or tap the X) to delete. Colors are automatic.</p>
     </div>
   );
 }
@@ -2479,7 +2508,7 @@ function ExportView({ store, toast, back }){
   );
 }
 
-function SettingsView({ store, toast, go }){
+function SettingsView({ store, toast, toastUndo, go }){
   const [confirmClear,setConfirmClear]=useState(false);
   return (
     <div className="screen">
@@ -2497,10 +2526,10 @@ function SettingsView({ store, toast, go }){
       <AppearanceEditor store={store}/>
       <div className="divider"></div>
       <h3 style={{fontSize:17,marginBottom:12}}>Categories</h3>
-      <CategoriesEditor store={store} toast={toast}/>
+      <CategoriesEditor store={store} toast={toast} toastUndo={toastUndo}/>
       <div className="divider"></div>
       <h3 style={{fontSize:17,marginBottom:12}}>Locations / contexts</h3>
-      <LocationsEditor store={store} toast={toast}/>
+      <LocationsEditor store={store} toast={toast} toastUndo={toastUndo}/>
       <div className="divider"></div>
       <button className="act-row" onClick={()=>go("diagnostics")}>
         <span className="act-ic">{Ic.gear}</span><span className="act-txt"><b>Diagnostics</b><span>View the activity log</span></span></button>
@@ -2678,7 +2707,7 @@ function App(){
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(sub==="export") subView=<ExportView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="aichat") subView=<AIChat store={store} toast={toast} back={()=>setSub(null)}/>;
-  else if(sub==="settings") subView=<SettingsView store={store} toast={toast} go={go}/>;
+  else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go}/>;
   else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
 
   let main;
