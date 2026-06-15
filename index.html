@@ -285,10 +285,15 @@ a{color:var(--amber);}
 .center{text-align:center;}
 .spin{width:20px;height:20px;border:2px solid var(--amber-line);border-top-color:var(--amber);border-radius:50%;animation:spin .7s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg);}}
-.toast{position:fixed;bottom:calc(var(--nav-h) + 24px);left:50%;transform:translateX(-50%);z-index:80;
+.toast{position:fixed;bottom:calc(var(--nav-h) + 24px);left:50%;transform:translateX(-50%);z-index:90;
   background:var(--bg-4);border:1px solid var(--line-2);color:var(--ink);padding:9px 10px 9px 18px;border-radius:999px;font-size:13.5px;font-weight:500;box-shadow:var(--shadow-lg);animation:fade .2s;max-width:90%;
   display:flex;align-items:center;gap:12px;}
-.toast-act{flex:0 0 auto;background:var(--amber);color:#241a0c;border:none;border-radius:999px;padding:6px 16px;font-size:13px;font-weight:800;letter-spacing:.02em;}
+/* Action toasts (e.g. Undo) read as a distinct full-width bar that clears the list rows. */
+.toast.toast-bar{left:16px;right:16px;transform:none;max-width:none;border-radius:16px;border-color:var(--amber-line);
+  padding:14px 14px 14px 18px;font-size:14px;font-weight:600;justify-content:space-between;
+  box-shadow:0 14px 38px rgba(0,0,0,.62);}
+.toast.toast-bar::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--amber);}
+.toast-act{flex:0 0 auto;background:var(--amber);color:#241a0c;border:none;border-radius:999px;padding:8px 18px;font-size:13px;font-weight:800;letter-spacing:.02em;}
 .subtasks{margin-top:8px;display:flex;flex-direction:column;gap:5px;}
 .subtask{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink-2);}
 .subtask .mini{width:16px;height:16px;border-radius:5px;border:1.5px solid var(--line-2);flex-shrink:0;}
@@ -309,7 +314,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-15.3";
+const BUILD = "2026-06-15.5";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -955,7 +960,7 @@ function Sheet({ title, onClose, children }){
 }
 function Toast({ obj, onClose }){
   if(!obj) return null;
-  return <div className="toast">
+  return <div className={"toast"+(obj.fn?" toast-bar":"")}>
     <span>{obj.msg}</span>
     {obj.fn && <button className="toast-act" onClick={()=>{ obj.fn(); onClose && onClose(); }}>{obj.label||"Undo"}</button>}
   </div>;
@@ -1999,7 +2004,7 @@ function EditableLabelRow({ value, color, count, onCommit, onRemove }){
         onKeyDown={e=>{ if(e.key==="Enter") e.target.blur(); }}/>
       <button className="btn btn-ghost btn-sm" style={{flex:0,padding:"0 12px"}} aria-label="Delete" onClick={()=>setConfirm(true)}>{Ic.close}</button>
       {confirm && <Confirm
-        text={count>0 ? ("Delete \""+value+"\"? "+count+" item"+(count===1?"":"s")+" currently use it - they keep the label, but it won't be offered for new items.")
+        text={count>0 ? ("Delete \""+value+"\"? It will be cleared from "+count+" item"+(count===1?"":"s")+" (they become uncategorized).")
                       : ("Delete \""+value+"\"?")}
         confirmLabel="Delete" onConfirm={()=>{ onRemove(); setConfirm(false); }} onCancel={()=>setConfirm(false)}/>}
     </div>
@@ -2014,63 +2019,75 @@ function countUses(store, field, val){
    LOCATIONS EDITOR (manage GTD contexts, saved in config)
    ============================================================ */
 function LocationsEditor({ store, toast }){
-  const list = (store.cfg.locations && store.cfg.locations.length) ? store.cfg.locations : DEFAULT_LOCATIONS;
+  const list = knownLocations(store);   // union: configured + any in use, so the editor matches the filter pills
+  const cfgList = (store.cfg.locations && store.cfg.locations.length) ? store.cfg.locations : DEFAULT_LOCATIONS;
   const [adding,setAdding]=useState("");
   function persist(next){ store.saveCfg({ ...store.cfg, locations: next }); }
   function add(){
     const v = adding.trim(); if(!v) return;
     if(list.includes(v)){ toast("Already in the list"); return; }
-    persist([...list, v]); setAdding(""); log("NAV","location added");
+    persist([...cfgList, v]); setAdding(""); log("NAV","location added");
   }
-  function commit(i, v){
+  function commit(old, v){
+    if(old===v) return;
     if(list.includes(v)){ toast("Already in the list"); return; }
-    const old = list[i]; const next=list.slice(); next[i]=v; persist(next);
+    persist(cfgList.includes(old) ? cfgList.map(x=>x===old?v:x) : [...cfgList, v]); // adopt in-use-but-unlisted names
     const n = store.relabel("location", old, v);
     toast(n>0 ? ("Renamed - updated "+n+" item"+(n===1?"":"s")) : "Renamed");
   }
-  function remove(i){ persist(list.filter((_,j)=>j!==i)); }
+  function remove(val){
+    persist(cfgList.filter(x=>x!==val));
+    const n = store.relabel("location", val, "");   // clear it off every item so it stops appearing as a pill
+    toast(n>0 ? ("Removed - cleared "+n+" item"+(n===1?"":"s")) : "Removed");
+  }
   return (
     <div>
-      {list.map((l,i)=>
-        <EditableLabelRow key={l+i} value={l} count={countUses(store,"location",l)}
-          onCommit={v=>commit(i,v)} onRemove={()=>remove(i)}/>)}
+      {list.map((l)=>
+        <EditableLabelRow key={l} value={l} count={countUses(store,"location",l)}
+          onCommit={v=>commit(l,v)} onRemove={()=>remove(l)}/>)}
       <div className="row" style={{marginTop:6}}>
         <input className="input" value={adding} onChange={e=>setAdding(e.target.value)} placeholder="Add a place / context"
           onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:3}} autoCapitalize="words"/>
         <button className="btn btn-ghost btn-sm" onClick={add} style={{flex:1}}>Add</button>
       </div>
-      <p className="hint" style={{marginTop:6}}>Renaming a place relabels every todo that uses it. Tap the X to remove one.</p>
+      <p className="hint" style={{marginTop:6}}>This list matches your place filters. Renaming relabels every todo that uses it; deleting clears it off them. Tap the X to remove one.</p>
     </div>
   );
 }
 
 function CategoriesEditor({ store, toast }){
-  const list = (store.cfg.categories && store.cfg.categories.length) ? store.cfg.categories : DEFAULT_CATEGORIES;
+  const list = knownCategories(store);   // union: configured + any in use (e.g. one the AI coined), matches the filter pills
+  const cfgList = (store.cfg.categories && store.cfg.categories.length) ? store.cfg.categories : DEFAULT_CATEGORIES;
   const [adding,setAdding]=useState("");
   function persist(next){ store.saveCfg({ ...store.cfg, categories: next }); }
   function add(){
     const v = adding.trim(); if(!v) return;
     if(list.includes(v)){ toast("Already in the list"); return; }
-    persist([...list, v]); setAdding(""); log("NAV","category added");
+    persist([...cfgList, v]); setAdding(""); log("NAV","category added");
   }
-  function commit(i, v){
+  function commit(old, v){
+    if(old===v) return;
     if(list.includes(v)){ toast("Already in the list"); return; }
-    const old = list[i]; const next=list.slice(); next[i]=v; persist(next);
+    persist(cfgList.includes(old) ? cfgList.map(x=>x===old?v:x) : [...cfgList, v]); // adopt in-use-but-unlisted names
     const n = store.relabel("type", old, v);
     toast(n>0 ? ("Renamed - updated "+n+" item"+(n===1?"":"s")) : "Renamed");
   }
-  function remove(i){ persist(list.filter((_,j)=>j!==i)); }
+  function remove(val){
+    persist(cfgList.filter(x=>x!==val));
+    const n = store.relabel("type", val, "");   // clear it off every item so it stops appearing as a pill
+    toast(n>0 ? ("Removed - cleared "+n+" item"+(n===1?"":"s")) : "Removed");
+  }
   return (
     <div>
-      {list.map((l,i)=>
-        <EditableLabelRow key={l+i} value={l} color={catHue(l)} count={countUses(store,"type",l)}
-          onCommit={v=>commit(i,v)} onRemove={()=>remove(i)}/>)}
+      {list.map((l)=>
+        <EditableLabelRow key={l} value={l} color={catHue(l)} count={countUses(store,"type",l)}
+          onCommit={v=>commit(l,v)} onRemove={()=>remove(l)}/>)}
       <div className="row" style={{marginTop:6}}>
         <input className="input" value={adding} onChange={e=>setAdding(e.target.value)} placeholder="Add a category"
           onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:3}} autoCapitalize="characters"/>
         <button className="btn btn-ghost btn-sm" onClick={add} style={{flex:1}}>Add</button>
       </div>
-      <p className="hint" style={{marginTop:6}}>Renaming a category relabels every item that uses it. Tap the X to remove one. Colors are assigned automatically.</p>
+      <p className="hint" style={{marginTop:6}}>This list matches your category filters - including any the AI created. Renaming relabels every item that uses it; deleting clears it off them. Colors are automatic.</p>
     </div>
   );
 }
