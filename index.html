@@ -280,7 +280,9 @@ a{color:var(--amber);}
 .spin{width:20px;height:20px;border:2px solid var(--amber-line);border-top-color:var(--amber);border-radius:50%;animation:spin .7s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg);}}
 .toast{position:fixed;bottom:calc(var(--nav-h) + 24px);left:50%;transform:translateX(-50%);z-index:80;
-  background:var(--bg-4);border:1px solid var(--line-2);color:var(--ink);padding:11px 18px;border-radius:999px;font-size:13.5px;font-weight:500;box-shadow:var(--shadow-lg);animation:fade .2s;max-width:90%;}
+  background:var(--bg-4);border:1px solid var(--line-2);color:var(--ink);padding:9px 10px 9px 18px;border-radius:999px;font-size:13.5px;font-weight:500;box-shadow:var(--shadow-lg);animation:fade .2s;max-width:90%;
+  display:flex;align-items:center;gap:12px;}
+.toast-act{flex:0 0 auto;background:var(--amber);color:#241a0c;border:none;border-radius:999px;padding:6px 16px;font-size:13px;font-weight:800;letter-spacing:.02em;}
 .subtasks{margin-top:8px;display:flex;flex-direction:column;gap:5px;}
 .subtask{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink-2);}
 .subtask .mini{width:16px;height:16px;border-radius:5px;border:1.5px solid var(--line-2);flex-shrink:0;}
@@ -301,7 +303,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-15.1";
+const BUILD = "2026-06-15.2";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -793,6 +795,17 @@ function useStore(){
     log("SAVE", file+" delete "+id); pushDirty();
   }, [markDirty, pushDirty]);
 
+  // Re-insert a previously-removed item exactly as it was (keeps id + order, so it
+  // returns to its original spot). Used by Undo after a swipe-delete.
+  const restore = useCallback((file, item) => {
+    const cur = dataRef.current[file] || [];
+    if(cur.some(x => x.id === item.id)){ log("SAVE","restore skipped, "+file+" "+item.id+" already present"); return; }
+    const next = [...cur, item];
+    const nd = { ...dataRef.current, [file]:next }; dataRef.current = nd; setData(nd);
+    markDirty(file, next);
+    log("SAVE", file+" restore "+item.id); pushDirty();
+  }, [markDirty, pushDirty]);
+
   // bulk add (used by AI capture review)
   const bulkAdd = useCallback((file, rows) => {
     const os = (dataRef.current[file]||[]).filter(x=>typeof x.order==="number").map(x=>x.order);
@@ -882,7 +895,7 @@ function useStore(){
     return { created, updated };
   }, [markDirty, pushDirty]);
 
-  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, bulkAdd, completeTodo, relabel, applyPlan, setSync, ghWriteTest };
+  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, restore, bulkAdd, completeTodo, relabel, applyPlan, setSync, ghWriteTest };
 }
 
 /* ============================================================
@@ -934,7 +947,13 @@ function Sheet({ title, onClose, children }){
     </div>
   );
 }
-function Toast({ msg }){ return msg ? <div className="toast">{msg}</div> : null; }
+function Toast({ obj, onClose }){
+  if(!obj) return null;
+  return <div className="toast">
+    <span>{obj.msg}</span>
+    {obj.fn && <button className="toast-act" onClick={()=>{ obj.fn(); onClose && onClose(); }}>{obj.label||"Undo"}</button>}
+  </div>;
+}
 function Empty({ glyph, title, sub }){
   return <div className="empty"><div className="glyph">{glyph||"\u2727"}</div><b style={{color:"var(--ink-2)",fontFamily:"Fraunces",fontSize:18}}>{title}</b><p>{sub}</p></div>;
 }
@@ -1639,7 +1658,7 @@ function NowView({ store, onOpen, back }){
 /* ============================================================
    VIEW: LISTS  (GTD statuses, filterable)
    ============================================================ */
-function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLocFilter }){
+function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLocFilter, del }){
   const TABS = ["all", ...STATUS_ORDER];     // "all" = every active to-do in one list
   const [tab,setTab]=useState("all");
   const locs = knownLocations(store);
@@ -1671,7 +1690,7 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
       </div>
       {locFilter!=="all" && <p className="hint" style={{marginTop:8}}>Showing {locFilter} + any-place items.</p>}
       {items.length===0 ? <Empty glyph={"\u2014"} title={tab==="all"?"No to-dos yet":"No "+tab+" items"} sub={tab==="inbox"||tab==="all"?"Capture with the + button.":"Move items here as you organize."}/> :
-        <DragList items={items} getId={t=>t.id} onReorder={(id,ids)=>reorderItem(store,"todos",id,ids,items)} onDelete={t=>store.remove("todos",t.id)}
+        <DragList items={items} getId={t=>t.id} onReorder={(id,ids)=>reorderItem(store,"todos",id,ids,items)} onDelete={t=>del("todos",t)}
           render={t=><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/>}/>}
     </div>
   );
@@ -1717,7 +1736,7 @@ function MatrixView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLo
 /* ============================================================
    VIEW: PROJECTS
    ============================================================ */
-function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, onOpenTodo }){
+function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, onOpenTodo, del }){
   const [active,setActive]=useState(null); // project detail
   const projects = store.data.projects.filter(p=>(typeFilter==="all"||p.type===typeFilter)).sort(byOrder);
   if(active){
@@ -1753,7 +1772,7 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
       </div>
       <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {projects.length===0? <Empty glyph={"\u25A1"} title="No projects" sub="A project is any outcome needing more than one step."/> :
-        <DragList items={projects} getId={p=>p.id} onReorder={(id,ids)=>reorderItem(store,"projects",id,ids,projects)} onDelete={p=>store.remove("projects",p.id)}
+        <DragList items={projects} getId={p=>p.id} onReorder={(id,ids)=>reorderItem(store,"projects",id,ids,projects)} onDelete={p=>del("projects",p)}
           render={p=>{
           const open = store.data.todos.filter(t=>t.projectId===p.id&&t.status!=="done").length;
           return <div className="item" onClick={()=>setActive(p)}>
@@ -1768,7 +1787,7 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
 /* ============================================================
    VIEW: IDEAS
    ============================================================ */
-function IdeasView({ store, openEditor, typeFilter, setTypeFilter }){
+function IdeasView({ store, openEditor, typeFilter, setTypeFilter, del }){
   const ideas = store.data.ideas.filter(i=>(typeFilter==="all"||i.type===typeFilter)).sort(byOrder);
   const stateChip = {raw:"",developing:"blue",promoted:"green",discarded:""};
   return (
@@ -1779,7 +1798,7 @@ function IdeasView({ store, openEditor, typeFilter, setTypeFilter }){
       </div>
       <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {ideas.length===0? <Empty glyph={"\u273C"} title="No ideas yet" sub="Capture a raw thought and let it sit."/> :
-        <DragList items={ideas} getId={i=>i.id} onReorder={(id,ids)=>reorderItem(store,"ideas",id,ids,ideas)} onDelete={i=>store.remove("ideas",i.id)}
+        <DragList items={ideas} getId={i=>i.id} onReorder={(id,ids)=>reorderItem(store,"ideas",id,ids,ideas)} onDelete={i=>del("ideas",i)}
           render={i=>
           <div className="item" onClick={()=>openEditor("idea",i)} style={i.state==="discarded"?{opacity:.5}:null}>
             <div className="item-body"><div className="item-title">{i.title}</div>
@@ -1795,7 +1814,7 @@ function IdeasView({ store, openEditor, typeFilter, setTypeFilter }){
 /* ============================================================
    VIEW: GOALS
    ============================================================ */
-function GoalsView({ store, openEditor, typeFilter, setTypeFilter }){
+function GoalsView({ store, openEditor, typeFilter, setTypeFilter, del }){
   const goals = store.data.goals.filter(g=>(typeFilter==="all"||g.type===typeFilter)).sort(byOrder);
   return (
     <div className="screen">
@@ -1805,7 +1824,7 @@ function GoalsView({ store, openEditor, typeFilter, setTypeFilter }){
       </div>
       <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
       {goals.length===0? <Empty glyph={"\u25CE"} title="No goals" sub="Set a longer-term objective for projects to roll up to."/> :
-        <DragList items={goals} getId={g=>g.id} onReorder={(id,ids)=>reorderItem(store,"goals",id,ids,goals)} onDelete={g=>store.remove("goals",g.id)}
+        <DragList items={goals} getId={g=>g.id} onReorder={(id,ids)=>reorderItem(store,"goals",id,ids,goals)} onDelete={g=>del("goals",g)}
           render={g=>{
           const projs = store.data.projects.filter(p=>p.goalId===g.id);
           return <div className="item" onClick={()=>openEditor("goal",g)} style={g.status!=="active"?{opacity:.6}:null}>
@@ -2565,6 +2584,7 @@ function Setup({ store, toast }){
           3. Add this page to your Home Screen and launch it from there.
         </p>
       </div>
+      <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>build {BUILD}</p>
     </div></div>
   );
 }
@@ -2578,11 +2598,17 @@ function App(){
   const [sub,setSub]=useState(null);           // sub-view within More (projects/ideas/etc)
   const [capture,setCapture]=useState(false);
   const [editor,setEditor]=useState(null);     // {kind, entity}
-  const [toastMsg,setToastMsg]=useState("");
+  const [toastObj,setToastObj]=useState(null);   // { msg, label?, fn? }
   const [typeFilter,setTypeFilter]=useState("all");
   const [locFilter,setLocFilter]=useState("all");
   const toastRef = useRef();
-  const toast = useCallback((m)=>{ setToastMsg(m); clearTimeout(toastRef.current); toastRef.current=setTimeout(()=>setToastMsg(""),2200); },[]);
+  const toast = useCallback((m)=>{ setToastObj({msg:m}); clearTimeout(toastRef.current); toastRef.current=setTimeout(()=>setToastObj(null),2200); },[]);
+  const toastUndo = useCallback((m, fn)=>{ setToastObj({msg:m, label:"Undo", fn}); clearTimeout(toastRef.current); toastRef.current=setTimeout(()=>setToastObj(null),6000); },[]);
+  // Swipe-delete routes through here so every deletion offers a few seconds to undo.
+  const deleteWithUndo = useCallback((file, item)=>{
+    store.remove(file, item.id);
+    toastUndo("Deleted "+(item.title||item.name||"item"), ()=>store.restore(file, item));
+  },[store, toastUndo]);
 
   const openEditor = useCallback((kind, entity)=>{ setEditor({kind, entity}); log("NAV","editor "+kind); },[]);
   const openTodo = useCallback((t)=>setEditor({kind:"todo", entity:t}),[]);
@@ -2607,13 +2633,13 @@ function App(){
     const t2 = document.querySelector('meta[name="theme-color"]'); if(t2) t2.setAttribute("content", th.bg);
   }, [store.cfg.accent, store.cfg.appName, store.cfg.theme]);
 
-  if(!store.cfg.configured) return <div><Setup store={store} toast={toast}/><Toast msg={toastMsg}/></div>;
+  if(!store.cfg.configured) return <div><Setup store={store} toast={toast}/><Toast obj={toastObj} onClose={()=>setToastObj(null)}/></div>;
 
   // sub-views launched from More / Today
   let subView = null;
-  if(sub==="projects") subView=<ProjectsView store={store} openEditor={openEditor} onOpenTodo={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter}/>;
-  else if(sub==="ideas") subView=<IdeasView store={store} openEditor={openEditor} typeFilter={typeFilter} setTypeFilter={setTypeFilter}/>;
-  else if(sub==="goals") subView=<GoalsView store={store} openEditor={openEditor} typeFilter={typeFilter} setTypeFilter={setTypeFilter}/>;
+  if(sub==="projects") subView=<ProjectsView store={store} openEditor={openEditor} onOpenTodo={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} del={deleteWithUndo}/>;
+  else if(sub==="ideas") subView=<IdeasView store={store} openEditor={openEditor} typeFilter={typeFilter} setTypeFilter={setTypeFilter} del={deleteWithUndo}/>;
+  else if(sub==="goals") subView=<GoalsView store={store} openEditor={openEditor} typeFilter={typeFilter} setTypeFilter={setTypeFilter} del={deleteWithUndo}/>;
   else if(sub==="review") subView=<WeeklyReview store={store} back={()=>setSub(null)} go={go}/>;
   else if(sub==="now") subView=<NowView store={store} onOpen={openTodo} back={()=>setSub(null)}/>;
   else if(sub==="search") subView=<SearchView store={store} openEditor={openEditor} back={()=>setSub(null)}/>;
@@ -2626,7 +2652,7 @@ function App(){
   let main;
   if(sub && sub!=="more") main=subView;
   else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter}/>;
-  else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
+  else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter} del={deleteWithUndo}/>;
   else if(tab==="more") main=<MoreView store={store} go={go}/>;
 
   function navTo(t){ setTab(t); setSub(null); }
@@ -2667,7 +2693,7 @@ function App(){
       {editor && editor.kind==="project" && <ProjectEditor store={store} project={editor.entity} toast={toast} onClose={()=>setEditor(null)}/>}
       {editor && editor.kind==="goal" && <GoalEditor store={store} goal={editor.entity} toast={toast} onClose={()=>setEditor(null)}/>}
 
-      <Toast msg={toastMsg}/>
+      <Toast obj={toastObj} onClose={()=>setToastObj(null)}/>
     </div>
   );
 }
