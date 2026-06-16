@@ -294,6 +294,10 @@ a{color:var(--amber);}
   box-shadow:0 14px 38px rgba(0,0,0,.62);}
 .toast.toast-bar::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--amber);}
 .toast-act{flex:0 0 auto;background:var(--amber);color:#241a0c;border:none;border-radius:999px;padding:8px 18px;font-size:13px;font-weight:800;letter-spacing:.02em;}
+/* PWA update banner (top of app) */
+.update-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;background:var(--amber);color:#241a0c;border:none;text-align:left;padding:calc(env(safe-area-inset-top) + 10px) 16px 10px;font-size:13.5px;font-weight:600;}
+.update-bar svg{width:15px;height:15px;vertical-align:-2px;margin-right:3px;stroke:#241a0c;}
+.update-go{flex:0 0 auto;background:#241a0c;color:var(--amber);border-radius:999px;padding:6px 15px;font-weight:800;font-size:12.5px;}
 .subtasks{margin-top:8px;display:flex;flex-direction:column;gap:5px;}
 .subtask{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink-2);}
 .subtask .mini{width:16px;height:16px;border-radius:5px;border:1.5px solid var(--line-2);flex-shrink:0;}
@@ -314,7 +318,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-15.8";
+const BUILD = "2026-06-15.10";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -339,6 +343,19 @@ function fmtDate(iso){
 }
 function isOverdue(due){ return due && due < TODAY(); }
 function isToday(due){ return due && due === TODAY(); }
+
+// "Waiting" follow-up nudges: how many whole days a to-do has sat in Waiting.
+// Uses the waitingSince stamp (set when it entered Waiting); falls back to updatedAt
+// for items that were already waiting before this was tracked.
+const DEFAULT_WAIT_DAYS = 7;
+function waitThreshold(store){ const n = parseInt(store.cfg.waitDays,10); return (n>0)?n:DEFAULT_WAIT_DAYS; }
+function waitingDays(todo){
+  if(!todo || todo.status!=="waiting") return null;
+  const since = todo.waitingSince || todo.updatedAt || todo.createdAt;
+  if(!since) return null;
+  const ms = Date.now() - new Date(since).getTime();
+  return isNaN(ms) ? null : Math.max(0, Math.floor(ms/86400000));
+}
 
 // Recurrence: advance a date string by one interval.
 function addInterval(dateStr, recur){
@@ -785,18 +802,25 @@ function useStore(){
   const upsert = useCallback((file, row) => {
     const list = dataRef.current[file] || [];
     const i = list.findIndex(x => x.id === row.id);
-    let next;
-    if(i>=0){ next = list.slice(); next[i] = { ...next[i], ...row, updatedAt:nowISO() }; }
+    let next, merged;
+    if(i>=0){ merged = { ...list[i], ...row, updatedAt:nowISO() }; }
     else {
       const os = list.filter(x=>typeof x.order==="number").map(x=>x.order);
       const ord = typeof row.order==="number" ? row.order : (os.length?Math.min(...os):0) - 1000;
-      next = [{ ...row, order:ord, id: row.id||uid(), createdAt:nowISO(), updatedAt:nowISO() }, ...list];
+      merged = { ...row, order:ord, id: row.id||uid(), createdAt:nowISO(), updatedAt:nowISO() };
     }
+    // Track when a to-do entered "waiting" so stale follow-ups can be nudged.
+    if(file==="todos"){
+      if(merged.status==="waiting"){ if(!merged.waitingSince) merged.waitingSince = nowISO(); }
+      else if(merged.waitingSince){ merged.waitingSince = null; }
+    }
+    if(i>=0){ next = list.slice(); next[i] = merged; }
+    else { next = [merged, ...list]; }
     const nd = { ...dataRef.current, [file]:next }; dataRef.current = nd; setData(nd);
     markDirty(file, next);
     log("SAVE", file+" upsert "+(row.title||row.name||row.id||"").slice(0,40));
     pushDirty();
-    return next.find(x => x.id === (row.id||next[0].id));
+    return next.find(x => x.id === (row.id||merged.id));
   }, [markDirty, pushDirty]);
 
   const remove = useCallback((file, id) => {
@@ -1388,6 +1412,8 @@ function TodoRow({ store, todo, onOpen }){
   const done = todo.status==="done";
   const project = store.data.projects.find(p=>p.id===todo.projectId);
   const subDone = (todo.subtasks||[]).filter(s=>s.done).length;
+  const dwait = todo.status==="waiting" ? waitingDays(todo) : null;            // days waiting (null if not waiting)
+  const waitStale = dwait!=null && dwait >= waitThreshold(store);              // past the follow-up threshold
   function toggle(){
     if(!done){ store.completeTodo(todo); }       // completing: spawns next if recurring
     else { store.upsert("todos",{ id:todo.id, status:"next", completedAt:null }); } // un-completing: no spawn
@@ -1400,7 +1426,8 @@ function TodoRow({ store, todo, onOpen }){
         <div className="item-meta">
           <TypeChip type={todo.type}/>
           {todo.starredToday && <span className="chip amber">{Ic.star}</span>}
-          {todo.status!=="done" && todo.status!=="next" && <span className="chip">{todo.status}</span>}
+          {todo.status!=="done" && todo.status!=="next" && todo.status!=="waiting" && <span className="chip">{todo.status}</span>}
+          {todo.status==="waiting" && <span className={"chip "+(waitStale?"red":"")}>{Ic.clock} Waiting{dwait!=null?" "+dwait+"d":""}</span>}
           {todo.quad && <span className="chip amber">{QUADRANTS[todo.quad].label}</span>}
           {todo.due && <span className={"chip "+(isOverdue(todo.due)?"red":isToday(todo.due)?"amber":"")}>{isOverdue(todo.due)?"Overdue ":""}{fmtDate(todo.due)}</span>}
           {todo.defer && todo.defer>TODAY() && <span className="chip blue">{Ic.clock} {fmtDate(todo.defer)}</span>}
@@ -1622,6 +1649,13 @@ function reorderItem(store, file, movedId, idsInOrder, items){
    ============================================================ */
 function TodayView({ store, onOpen, goNow, typeFilter }){
   let items = todayItems(store.data.todos).filter(t=>typeFilter==="all"||t.type===typeFilter).sort(sortTodos);
+  const thr = waitThreshold(store);
+  const followUps = store.data.todos
+    .filter(t=>t.status==="waiting" && (typeFilter==="all"||t.type===typeFilter))
+    .map(t=>({ t, d:waitingDays(t) }))
+    .filter(x=>x.d!=null && x.d>=thr)
+    .sort((a,b)=>b.d-a.d)
+    .map(x=>x.t);
   const staleIdeas = store.data.ideas.filter(i=>{
     if(i.state==="promoted"||i.state==="discarded") return false;
     const age = (Date.now()-new Date(i.capturedAt||i.createdAt||Date.now()))/86400000;
@@ -1636,6 +1670,11 @@ function TodayView({ store, onOpen, goNow, typeFilter }){
           <button className="btn btn-ghost btn-sm" onClick={goNow}>{Ic.now} Focus</button></div>
         <div className="subtle" style={{marginTop:2}}>{d.toLocaleDateString(undefined,{month:"long",day:"numeric"})}</div>
       </div>
+      {followUps.length>0 &&
+        <div style={{marginTop:14}}>
+          <div className="label" style={{display:"flex",alignItems:"center",gap:6}}>{Ic.clock} Follow up - waiting {thr}+ days</div>
+          <div className="list" style={{marginTop:8}}>{followUps.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div>
+        </div>}
       {staleIdeas.length>0 &&
         <div className="card" style={{marginTop:14,borderColor:"var(--amber-line)",background:"var(--amber-dim)"}}>
           <b style={{fontFamily:"Fraunces",fontSize:15}}>Revisit your ideas</b>
@@ -2541,7 +2580,7 @@ function ExportView({ store, toast, back }){
   );
 }
 
-function SettingsView({ store, toast, toastUndo, go }){
+function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, build }){
   const [confirmClear,setConfirmClear]=useState(false);
   return (
     <div className="screen">
@@ -2558,6 +2597,16 @@ function SettingsView({ store, toast, toastUndo, go }){
       <h3 style={{fontSize:17,marginBottom:12}}>Appearance</h3>
       <AppearanceEditor store={store}/>
       <div className="divider"></div>
+      <h3 style={{fontSize:17,marginBottom:12}}>Follow-up nudge</h3>
+      <div className="row" style={{alignItems:"center"}}>
+        <span style={{flex:1}}>Flag "Waiting" items after</span>
+        <select className="input" style={{flex:"0 0 auto",width:130}} value={String(waitThreshold(store))}
+          onChange={e=>store.saveCfg({ ...store.cfg, waitDays: parseInt(e.target.value,10) })}>
+          {[3,5,7,14,30].map(n=><option key={n} value={n}>{n} days</option>)}
+        </select>
+      </div>
+      <p className="hint" style={{marginTop:6}}>Older "Waiting" items show their age and surface in a Follow up list on Today.</p>
+      <div className="divider"></div>
       <h3 style={{fontSize:17,marginBottom:12}}>Categories</h3>
       <CategoriesEditor store={store} toast={toast} toastUndo={toastUndo}/>
       <div className="divider"></div>
@@ -2568,6 +2617,8 @@ function SettingsView({ store, toast, toastUndo, go }){
         <span className="act-ic">{Ic.gear}</span><span className="act-txt"><b>Diagnostics</b><span>View the activity log</span></span></button>
       <button className="act-row" onClick={()=>store.pull()}>
         <span className="act-ic">{Ic.review}</span><span className="act-txt"><b>Force sync now</b><span>Pull from GitHub</span></span></button>
+      <button className="act-row" onClick={()=>onCheckUpdate && onCheckUpdate(true)}>
+        <span className="act-ic">{Ic.sparkle}</span><span className="act-txt"><b>Check for updates</b><span>On build {build}</span></span></button>
       <div className="divider"></div>
       <div className="card" style={{borderColor:"var(--line-2)"}}>
         <b style={{fontFamily:"Fraunces",fontSize:15}}>One launch context</b>
@@ -2708,6 +2759,29 @@ function App(){
   const openTodo = useCallback((t)=>setEditor({kind:"todo", entity:t}),[]);
   const go = useCallback((k)=>{ setSub(k); log("NAV","go "+k); },[]);
 
+  // --- PWA self-update: detect a newer deployed build and offer a one-tap refresh ---
+  // Installed PWAs cache the HTML hard; this fetches the deployed file fresh, reads its
+  // BUILD stamp, and surfaces a banner when it differs from the running build.
+  const [update,setUpdate]=useState(null);   // deployed version string when it differs from BUILD
+  const checkUpdate = useCallback(async (announce=false)=>{
+    try{
+      const res = await fetch(location.pathname + "?_=" + Date.now(), { cache:"no-store" });
+      if(!res.ok){ log("UPDATE","check http "+res.status); if(announce) toast("Couldn't check for updates"); return; }
+      const html = await res.text();
+      const m = html.match(/const BUILD = "([^"]+)";/);
+      if(m && m[1] && m[1] !== BUILD){ log("UPDATE","new build available: "+m[1]); setUpdate(m[1]); }
+      else { log("UPDATE","up to date ("+BUILD+")"); if(announce) toast("You're on the latest (build "+BUILD+")"); }
+    }catch(e){ log("UPDATE","check failed: "+e.message); if(announce) toast("Update check failed"); }
+  },[toast]);
+  useEffect(()=>{
+    checkUpdate();
+    const onVis = ()=>{ if(document.visibilityState==="visible") checkUpdate(); };
+    document.addEventListener("visibilitychange", onVis);
+    return ()=>document.removeEventListener("visibilitychange", onVis);
+  },[checkUpdate]);
+  // Apply by navigating to a version-stamped URL so iOS can't serve the cached HTML.
+  function applyUpdate(){ log("UPDATE","applying -> "+update); window.location.replace(location.pathname + "?u=" + encodeURIComponent(update||String(Date.now()))); }
+
   // Apply the per-device theme (accent color + app name) live. Because this is
   // device config (not code), one shared app file can look different for each user.
   useEffect(()=>{
@@ -2740,7 +2814,7 @@ function App(){
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(sub==="export") subView=<ExportView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="aichat") subView=<AIChat store={store} toast={toast} back={()=>setSub(null)}/>;
-  else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go}/>;
+  else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go} onCheckUpdate={checkUpdate} build={BUILD}/>;
   else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
 
   let main;
@@ -2759,6 +2833,11 @@ function App(){
 
   return (
     <div className="app">
+      {update &&
+        <button className="update-bar" onClick={applyUpdate}>
+          <span>{Ic.sparkle} Update available - tap to refresh <b>(build {update})</b></span>
+          <span className="update-go">Refresh</span>
+        </button>}
       {/* global top bar - search on every page (hidden on the search view itself) + sync */}
       {sub!=="search" &&
         <div style={{padding:"calc(env(safe-area-inset-top) + 10px) 18px 0"}}>
