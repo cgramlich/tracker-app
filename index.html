@@ -318,7 +318,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-16.1";
+const BUILD = "2026-06-16.2";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -1408,6 +1408,28 @@ function DragList({ items, getId, onReorder, onDelete, render, reorderable=true 
   );
 }
 
+/* Shared "show completed to-dos" preference, used everywhere to-dos are listed
+   (the To-Dos view and inside a project) so behavior is consistent. The value is
+   persisted to localStorage, so the choice sticks between sessions and across both
+   surfaces. Each view keeps its own React state but reads/writes the same key; the
+   two views are never on screen at once, so this stays in sync without extra wiring. */
+function useShowDone(){
+  const [showDone,setShowDone]=useState(()=>lsGet("showDone",false));
+  useEffect(()=>{ lsSet("showDone", showDone); },[showDone]);  // persist on every change
+  return [showDone,setShowDone];
+}
+// Two-state Hide done | Show done control. n = number of completed items (shown as a count).
+function DoneToggle({ showDone, setShowDone, n }){
+  return (
+    <div className="sortrow">
+      <div className="seg">
+        <button className={"seg-b"+(!showDone?" on":"")} onClick={()=>setShowDone(false)}>Hide done</button>
+        <button className={"seg-b"+(showDone?" on":"")} onClick={()=>setShowDone(true)}>Show done</button>
+      </div>
+      <span className="sortlbl">{n>0 ? n+" completed" : "none completed"}</span>
+    </div>
+  );
+}
 function TodoRow({ store, todo, onOpen }){
   const done = todo.status==="done";
   const project = store.data.projects.find(p=>p.id===todo.projectId);
@@ -1728,6 +1750,7 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
   const [tab,setTab]=useState("all");
   const [sortMode,setSortMode]=useState(()=>lsGet("todoSort","manual")); // 'manual' = your drag order, 'smart' = priority/due
   useEffect(()=>{ lsSet("todoSort", sortMode); },[sortMode]);
+  const [showDone,setShowDone]=useShowDone();  // show/hide completed on the combined "all" list
   const locs = knownLocations(store);
   // A location filter shows that place's items PLUS "anywhere" (blank) items - GTD contexts.
   const matchLoc = (t) => locFilter==="all" || !t.location || t.location===locFilter;
@@ -1739,6 +1762,11 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
     .filter(t=> (tab==="all" ? t.status!=="done" : t.status===tab) && passType(t) && matchLoc(t))
     .filter(t=> (tab==="someday"||tab==="done") ? true : !isDeferredAway(t))
     .sort(sortMode==="smart" ? sortTodos : byOrder);
+  // Completed to-dos for the "all" list: counted always (drives the toggle label),
+  // but only rendered when "Show done" is on. Kept out of the DragList so completing
+  // an item never disturbs the manual drag order of active work.
+  const doneAll = store.data.todos.filter(t=>t.status==="done"&&passType(t)&&matchLoc(t)).sort(sortTodos);
+  const doneItems = (tab==="all" && showDone) ? doneAll : [];
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
@@ -1762,10 +1790,17 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
         </div>
         <span className="sortlbl">{sortMode==="manual" ? "Your drag order - hold the grip to reorder" : "Auto: priority, then due date"}</span>
       </div>
+      {tab==="all" && <DoneToggle showDone={showDone} setShowDone={setShowDone} n={doneAll.length}/>}
       {locFilter!=="all" && <p className="hint" style={{marginTop:8}}>Showing {locFilter} + any-place items.</p>}
-      {items.length===0 ? <Empty glyph={"\u2014"} title={tab==="all"?"No to-dos yet":"No "+tab+" items"} sub={tab==="inbox"||tab==="all"?"Capture with the + button.":"Move items here as you organize."}/> :
-        <DragList items={items} getId={t=>t.id} reorderable={sortMode==="manual"} onReorder={(id,ids)=>reorderItem(store,"todos",id,ids,items)} onDelete={t=>del("todos",t)}
-          render={t=><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/>}/>}
+      {items.length===0 && doneItems.length===0 ? <Empty glyph={"\u2014"} title={tab==="all"?"No to-dos yet":"No "+tab+" items"} sub={tab==="inbox"||tab==="all"?"Capture with the + button.":"Move items here as you organize."}/> :
+        <>
+          {items.length>0 && <DragList items={items} getId={t=>t.id} reorderable={sortMode==="manual"} onReorder={(id,ids)=>reorderItem(store,"todos",id,ids,items)} onDelete={t=>del("todos",t)}
+            render={t=><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/>}/>}
+          {doneItems.length>0 && <>
+            <div className="sortlbl" style={{margin:"16px 4px 8px"}}>Completed</div>
+            <div className="list">{doneItems.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div>
+          </>}
+        </>}
     </div>
   );
 }
@@ -1812,10 +1847,13 @@ function MatrixView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLo
    ============================================================ */
 function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, onOpenTodo, del }){
   const [active,setActive]=useState(null); // project detail
+  const [showDone,setShowDone]=useShowDone(); // reveal completed to-dos inside a project
   const projects = store.data.projects.filter(p=>(typeFilter==="all"||p.type===typeFilter)).sort(byOrder);
   if(active){
     const p = store.data.projects.find(x=>x.id===active.id)||active;
     const todos = store.data.todos.filter(t=>t.projectId===p.id).sort(sortTodos);
+    const doneTodos = todos.filter(t=>t.status==="done");                          // completed (hidden by default)
+    const visibleTodos = showDone ? todos : todos.filter(t=>t.status!=="done");     // active, plus done when toggled on
     const goal = store.data.goals.find(g=>g.id===p.goalId);
     return (
       <div className="screen">
@@ -1833,8 +1871,12 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
         {p.description && <p className="hint" style={{marginTop:12}}>{p.description}</p>}
         <div className="topbar-row" style={{marginTop:18}}><h3 style={{fontSize:17}}>Todos</h3>
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("todo",{projectId:p.id,type:p.type})}>{Ic.plus} Add</button></div>
-        {todos.length===0? <Empty glyph={"\u2014"} title="No todos yet" sub="Add the next action for this project."/> :
-          <div className="list">{todos.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpenTodo(t)}/>)}</div>}
+        {doneTodos.length>0 && <DoneToggle showDone={showDone} setShowDone={setShowDone} n={doneTodos.length}/>}
+        {todos.length===0
+          ? <Empty glyph={"\u2014"} title="No todos yet" sub="Add the next action for this project."/>
+          : visibleTodos.length===0
+            ? <p className="hint" style={{marginTop:12}}>All todos complete. Tap "Show done" to view them.</p>
+            : <div className="list">{visibleTodos.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpenTodo(t)}/>)}</div>}
       </div>
     );
   }
