@@ -1,0 +1,12 @@
+{
+  "name": "tracker-app-checks",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Dev-only compile gate for the single-file PWA. Not shipped to users; GitHub Pages serves index.html only.",
+  "scripts": {
+    "check": "node check.js"
+  },
+  "devDependencies": {
+    "@babel/standalone": "7.23.5"
+  }
+}
