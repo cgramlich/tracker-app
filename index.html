@@ -319,7 +319,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-24.1";
+const BUILD = "2026-06-24.2";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -795,6 +795,22 @@ function useStore(){
     log("AUTH","signed out");
   }, []);
 
+  // Self-serve signup. With email confirmation ON (Supabase setting), there is no
+  // session until the user clicks the emailed link, so data.session is null and we
+  // tell the UI to show a "check your email" state. emailRedirectTo brings the
+  // confirmation link back to THIS app (must be allow-listed in Supabase Auth URLs).
+  const signUp = useCallback(async (email, password) => {
+    const redirectTo = window.location.origin + window.location.pathname;
+    const { data, error } = await supa.auth.signUp({
+      email:(email||"").trim(), password:password||"",
+      options:{ emailRedirectTo: redirectTo }
+    });
+    if(error){ log("AUTH","sign-up failed: "+error.message); throw new Error(error.message); }
+    const needsConfirm = !data.session;   // true when email confirmation is required
+    log("AUTH","sign-up ok needsConfirm="+needsConfirm);
+    return { needsConfirm };
+  }, []);
+
   // Establish the session on mount, then subscribe to auth changes.
   useEffect(() => {
     let sub = null;
@@ -974,7 +990,7 @@ function useStore(){
     return { created, updated };
   }, [markDirty, pushDirty]);
 
-  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, authed, authEmail, authReady, signIn, signOut, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
+  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, authed, authEmail, authReady, signIn, signUp, signOut, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
 }
 
 /* ============================================================
@@ -2749,25 +2765,57 @@ function MoreView({ store, go }){
    FIRST-RUN SETUP
    ============================================================ */
 function Login({ store, toast }){
+  const [mode,setMode]=useState("signin");   // signin | signup
   const [email,setEmail]=useState("");
   const [password,setPassword]=useState("");
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
+  const [sent,setSent]=useState(false);       // signup confirmation email sent
+  const isSignup = mode==="signup";
   async function submit(){
     setErr("");
     if(!email.trim()||!password){ setErr("Email and password are required."); return; }
+    if(isSignup && password.length<6){ setErr("Password must be at least 6 characters."); return; }
     setBusy(true);
-    try{ await store.signIn(email, password); toast("Signed in"); }
-    catch(e){ setErr(e.message||"Sign-in failed."); }
+    try{
+      if(isSignup){
+        const { needsConfirm } = await store.signUp(email, password);
+        if(needsConfirm) setSent(true);          // email confirmation flow
+        else toast("Account created");           // (only if confirmation is off)
+      }else{
+        await store.signIn(email, password); toast("Signed in");
+      }
+    }catch(e){ setErr(e.message||"Something went wrong."); }
     finally{ setBusy(false); }
   }
+
+  // After signup with email confirmation on: tell them to go check their inbox.
+  if(sent){
+    return (
+      <div className="app"><div className="screen">
+        <div style={{paddingTop:"calc(env(safe-area-inset-top) + 40px)"}}>
+          <div className="eyebrow">Almost there</div>
+          <h1 className="title" style={{fontSize:30,marginTop:4}}>Check your email</h1>
+          <p className="hint" style={{marginTop:10,fontSize:14}}>
+            We sent a confirmation link to <b>{email.trim()}</b>. Tap it to activate your account,
+            then come back here and sign in.
+          </p>
+        </div>
+        <button className="btn btn-ghost btn-block" style={{marginTop:20}}
+          onClick={()=>{ setSent(false); setMode("signin"); setPassword(""); setErr(""); }}>Back to sign in</button>
+        <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>build {BUILD}</p>
+      </div></div>
+    );
+  }
+
   return (
     <div className="app"><div className="screen">
       <div style={{paddingTop:"calc(env(safe-area-inset-top) + 40px)"}}>
-        <div className="eyebrow">Welcome back</div>
+        <div className="eyebrow">{isSignup?"Get started":"Welcome back"}</div>
         <h1 className="title" style={{fontSize:34,marginTop:4}}>Your Tracker</h1>
         <p className="hint" style={{marginTop:8,fontSize:14}}>
-          Sign in to sync your todos, ideas, projects, and goals across your devices.
+          {isSignup ? "Create an account to sync your todos, ideas, projects, and goals across your devices."
+                    : "Sign in to sync your todos, ideas, projects, and goals across your devices."}
         </p>
       </div>
       <div className="card" style={{marginTop:20}}>
@@ -2777,12 +2825,15 @@ function Login({ store, toast }){
             onKeyDown={e=>{ if(e.key==="Enter") submit(); }}/></div>
         <div className="field"><span className="label">Password</span>
           <input className="input" type="password" value={password} autoCapitalize="off"
-            onChange={e=>setPassword(e.target.value)} placeholder="Your password"
+            onChange={e=>setPassword(e.target.value)} placeholder={isSignup?"At least 6 characters":"Your password"}
             onKeyDown={e=>{ if(e.key==="Enter") submit(); }}/></div>
         {err && <p className="hint danger-text">{err}</p>}
         <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={busy} onClick={submit}>
-          {busy? <span className="spin"></span> : "Sign in"}</button>
+          {busy? <span className="spin"></span> : (isSignup?"Create account":"Sign in")}</button>
       </div>
+      <button className="btn btn-ghost btn-block" style={{marginTop:12}} disabled={busy}
+        onClick={()=>{ setErr(""); setMode(isSignup?"signin":"signup"); }}>
+        {isSignup ? "Already have an account? Sign in" : "New here? Create an account"}</button>
       <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>build {BUILD}</p>
     </div></div>
   );
