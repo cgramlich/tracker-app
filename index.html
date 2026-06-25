@@ -14,6 +14,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 /* ============================================================
    THEME TOKENS - dark espresso editorial, golden amber accent
@@ -318,7 +319,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-16.3";
+const BUILD = "2026-06-24.1";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -405,84 +406,75 @@ const lsDel = (k) => { try { localStorage.removeItem(NS+k); } catch(e){} };
 const FILES = ["todos","ideas","projects","goals"]; // one JSON file per entity
 
 /* ============================================================
-   GITHUB CONTENTS API
-   Fine-grained PAT scoped to the private data repo, Contents R/W.
+   BACKEND + AUTH CONFIG
+   All three values are PUBLIC-SAFE and intentionally shipped in the browser:
+   - the Supabase anon key is designed to be public (it only permits auth, not
+     data access; real data goes through our backend),
+   - the API base is just a URL.
+   The real secrets (Supabase service-role key, Anthropic key) live ONLY on the
+   Railway backend, never here.
    ============================================================ */
-function ghHeaders(token){
-  return { "Authorization":"Bearer "+token, "Accept":"application/vnd.github+json", "X-GitHub-Api-Version":"2022-11-28" };
-}
-function ghPath(cfg, file){ return "https://api.github.com/repos/"+cfg.owner+"/"+cfg.repo+"/contents/data/"+file+".json"; }
+const SUPABASE_URL = "https://mtazdrtvsvlcyyzpausr.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im10YXpkcnR2c3ZsY3l5enBhdXNyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMzI1OTIsImV4cCI6MjA5NzkwODU5Mn0.IQ0kV_mN6A5bAzh0SB6JUrE8KZYEJz7aU6cQD7sp6xM";
+const API_BASE = "https://web-production-f0353.up.railway.app";
 
-// Read one entity file -> { data:[], sha } | { data:[], sha:null } if missing.
-async function ghRead(cfg, file){
-  const url = ghPath(cfg, file);
-  log("GITHUB","GET "+file);
-  try{
-    const r = await fetch(url, { headers: ghHeaders(cfg.token) });
-    if(r.status === 404){ log("GITHUB",file+" not found (new file)"); return { data:[], sha:null }; }
-    if(!r.ok){ const t=await r.text(); log("ERROR","GET "+file+" "+r.status+" "+t.slice(0,120)); throw new Error("GitHub "+r.status); }
-    const j = await r.json();
-    const parsed = JSON.parse(b64ToUtf8(j.content));
-    log("GITHUB","GET "+file+" ok ("+(parsed.length||0)+" rows)");
-    return { data: Array.isArray(parsed)?parsed:[], sha: j.sha };
-  }catch(e){ log("ERROR","ghRead "+file+": "+e.message); throw e; }
-}
+// Supabase client - used for AUTH ONLY (login, session, token refresh). Data and
+// AI never touch it; they go through our backend with the user's access token.
+const supa = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, storage: window.localStorage, storageKey: "tracker-auth" }
+});
 
-// Write one entity file. sha required for updates (null for create).
-// If GitHub rejects the write with a stale-SHA conflict (409/422) - which happens when
-// the file changed on the server since we last read it (e.g. the app was open in two
-// places) - re-read the current SHA and retry once. A queued local change is the source
-// of truth, so this resolves the conflict instead of stranding the change.
-async function ghWrite(cfg, file, data, sha){
-  const url = ghPath(cfg, file);
-  log("GITHUB","PUT "+file+" ("+data.length+" rows)");
-  const doPut = (useSha) => {
-    const body = { message:"update "+file+" "+nowISO(), content: utf8ToB64(JSON.stringify(data,null,2)) };
-    if(useSha) body.sha = useSha;
-    return fetch(url, { method:"PUT", headers:{...ghHeaders(cfg.token),"Content-Type":"application/json"}, body:JSON.stringify(body) });
-  };
-  try{
-    let r = await doPut(sha);
-    if(r.status===409 || r.status===422){
-      log("GITHUB","PUT "+file+" "+r.status+" (stale sha) - refetch + retry");
-      const cur = await ghRead(cfg, file);   // get the current sha
-      r = await doPut(cur.sha);
-    }
-    if(!r.ok){ const t=await r.text(); log("ERROR","PUT "+file+" "+r.status+" "+t.slice(0,160)); throw new Error("GitHub write "+r.status); }
-    const j = await r.json();
-    log("GITHUB","PUT "+file+" ok");
-    return j.content.sha;
-  }catch(e){ log("ERROR","ghWrite "+file+": "+e.message); throw e; }
-}
-
-// SETUP WRITE-TEST: PUT then DELETE a sentinel so a bad/under-scoped token
-// fails LOUDLY at setup, not on the first real save (Dining Log lesson).
-async function ghWriteTest(cfg){
-  const url = "https://api.github.com/repos/"+cfg.owner+"/"+cfg.repo+"/contents/data/.write-test";
-  log("SETUP","write-test begin");
-  try{
-    const put = await fetch(url,{method:"PUT",headers:{...ghHeaders(cfg.token),"Content-Type":"application/json"},
-      body:JSON.stringify({message:"write-test",content:utf8ToB64("ok "+nowISO())})});
-    if(!put.ok){ const t=await put.text(); log("ERROR","write-test PUT "+put.status+" "+t.slice(0,160));
-      if(put.status===404) throw new Error("Repo not found or token lacks access. Check owner/repo and that the PAT is scoped to this repo.");
-      if(put.status===403||put.status===401) throw new Error("Token rejected (need Contents: Read and write on the data repo).");
-      throw new Error("Write test failed ("+put.status+")."); }
-    const j = await put.json();
-    const del = await fetch(url,{method:"DELETE",headers:{...ghHeaders(cfg.token),"Content-Type":"application/json"},
-      body:JSON.stringify({message:"write-test cleanup",sha:j.content.sha})});
-    if(!del.ok) log("SYNC","write-test cleanup non-fatal "+del.status);
-    log("SETUP","write-test passed");
-    return true;
-  }catch(e){ log("ERROR","write-test: "+e.message); throw e; }
+// Current access token for the signed-in user, or null. Attached as a Bearer on
+// every backend call. getSession() is cheap: it reads local storage and refreshes
+// the token in the background when it is near expiry.
+async function authToken(){
+  try{ const { data } = await supa.auth.getSession(); return data.session ? data.session.access_token : null; }
+  catch(e){ log("ERROR","authToken: "+e.message); return null; }
 }
 
 /* ============================================================
-   CLAUDE API - direct browser call with the user's own key.
-   Used for: (1) brain-dump text -> structured items,
-             (2) photo OCR -> structured items.
-   NOTE: key lives in localStorage on this device only.
+   BACKEND COLLECTIONS API (replaces the GitHub Contents API)
+   GET  /api/collection/<name> -> the whole array (todos/ideas/projects/goals)
+   PUT  /api/collection/<name> -> replace the whole array
+   Whole-collection load/save, same contract the app already used. No SHA/conflict
+   dance: the backend stores per-record rows and the PUT replaces wholesale.
    ============================================================ */
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
+async function collGet(file){
+  const token = await authToken();
+  if(!token) throw new Error("Not signed in");
+  log("API","GET "+file);
+  const r = await fetch(API_BASE + "/api/collection/" + file, { headers: { "Authorization":"Bearer "+token } });
+  if(!r.ok){ const t=await r.text(); log("ERROR","GET "+file+" "+r.status+" "+t.slice(0,160));
+    if(r.status===401) throw new Error("Session expired - sign in again.");
+    throw new Error("Load failed ("+r.status+")"); }
+  const j = await r.json();
+  const arr = Array.isArray(j) ? j : [];
+  log("API","GET "+file+" ok ("+arr.length+" rows)");
+  return arr;
+}
+async function collPut(file, data){
+  const token = await authToken();
+  if(!token) throw new Error("Not signed in");
+  log("API","PUT "+file+" ("+data.length+" rows)");
+  const r = await fetch(API_BASE + "/api/collection/" + file, {
+    method:"PUT",
+    headers:{ "Authorization":"Bearer "+token, "Content-Type":"application/json" },
+    body: JSON.stringify(data)
+  });
+  if(!r.ok){ const t=await r.text(); log("ERROR","PUT "+file+" "+r.status+" "+t.slice(0,160));
+    if(r.status===401) throw new Error("Session expired - sign in again.");
+    throw new Error("Save failed ("+r.status+")"); }
+  log("API","PUT "+file+" ok");
+  return true;
+}
+
+/* ============================================================
+   AI - routed through our backend relay (POST /api/ai/relay) so the Anthropic
+   key lives server-side, calls are authenticated, and usage is metered + capped.
+   Used for: (1) brain-dump text -> structured items, (2) photo OCR -> items.
+   The relay returns the SAME shape Anthropic does ({content, stop_reason, model}),
+   so the parsing below is unchanged from the direct-call version.
+   ============================================================ */
 const EXTRACT_SYSTEM =
   "You convert messy input into a clean list of actionable items for a GTD tracker. "+
   "Return ONLY a JSON array, no prose, no markdown fences. Each element: "+
@@ -495,29 +487,31 @@ const EXTRACT_SYSTEM =
 
 function stripFences(s){ return String(s).replace(/```json/gi,"").replace(/```/g,"").trim(); }
 
-async function claudeExtract(cfg, content){
+async function claudeExtract(content){
   // content is the messages[0].content array (text and/or image blocks)
-  log("AI","extract request model="+cfg.model);
-  if(!cfg.apiKey) throw new Error("No Claude API key set (Settings).");
+  log("AI","extract request (relay)");
+  const token = await authToken();
+  if(!token) throw new Error("Not signed in.");
   try{
-    const r = await fetch(ANTHROPIC_URL,{
+    const r = await fetch(API_BASE + "/api/ai/relay",{
       method:"POST",
       headers:{
         "Content-Type":"application/json",
-        "x-api-key":cfg.apiKey,
-        "anthropic-version":"2023-06-01",
-        "anthropic-dangerous-direct-browser-access":"true"
+        "Authorization":"Bearer "+token
       },
       body:JSON.stringify({
-        model: cfg.model || "claude-sonnet-4-6",
+        task: "extract",                   // server routes the model for this task
+        model: "claude-sonnet-4-6",        // advisory; server has the final say
         max_tokens: 16000,                 // generous: OCR output can be large (Dining Log lesson)
         system: EXTRACT_SYSTEM,
         messages:[{ role:"user", content }]
       })
     });
-    if(!r.ok){ const t=await r.text(); log("ERROR","claude "+r.status+" "+t.slice(0,200));
-      if(r.status===401) throw new Error("Claude key rejected (401). Check the API key in Settings.");
-      throw new Error("Claude API error "+r.status+"."); }
+    if(!r.ok){ const t=await r.text(); log("ERROR","relay extract "+r.status+" "+t.slice(0,200));
+      if(r.status===401) throw new Error("Session expired - sign in again.");
+      if(r.status===429) throw new Error("AI is at its limit for now. Try again later.");
+      if(r.status===503) throw new Error("AI is temporarily unavailable.");
+      throw new Error("AI error "+r.status+"."); }
     const j = await r.json();
     if(j.stop_reason === "max_tokens"){ // truncated -> guide user instead of JSON parse crash
       log("AI","stop_reason max_tokens (truncated)");
@@ -569,23 +563,24 @@ Rules:
   you're confident about).
 - Keep "reply" brief and friendly. Summarize what the plan will do.`;
 
-async function claudeChat(cfg, system, messages){
-  if(!cfg.apiKey) throw new Error("No Claude API key set (Settings).");
-  log("AI","chat request model="+cfg.model+" turns="+messages.length);
+async function claudeChat(system, messages){
+  log("AI","chat request (relay) turns="+messages.length);
+  const token = await authToken();
+  if(!token) throw new Error("Not signed in.");
   try{
-    const r = await fetch(ANTHROPIC_URL,{
+    const r = await fetch(API_BASE + "/api/ai/relay",{
       method:"POST",
       headers:{
         "Content-Type":"application/json",
-        "x-api-key":cfg.apiKey,
-        "anthropic-version":"2023-06-01",
-        "anthropic-dangerous-direct-browser-access":"true"
+        "Authorization":"Bearer "+token
       },
-      body:JSON.stringify({ model: cfg.model || "claude-sonnet-4-6", max_tokens: 4096, system, messages })
+      body:JSON.stringify({ task:"organize", model:"claude-sonnet-4-6", max_tokens: 4096, system, messages })
     });
-    if(!r.ok){ const t=await r.text(); log("ERROR","claudeChat "+r.status+" "+t.slice(0,200));
-      if(r.status===401) throw new Error("Claude key rejected (401). Check the API key in Settings.");
-      throw new Error("Claude API error "+r.status+"."); }
+    if(!r.ok){ const t=await r.text(); log("ERROR","relay chat "+r.status+" "+t.slice(0,200));
+      if(r.status===401) throw new Error("Session expired - sign in again.");
+      if(r.status===429) throw new Error("AI is at its limit for now. Try again later.");
+      if(r.status===503) throw new Error("AI is temporarily unavailable.");
+      throw new Error("AI error "+r.status+"."); }
     const j = await r.json();
     if(j.stop_reason === "max_tokens"){ log("AI","chat truncated"); }
     const text = (j.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
@@ -693,19 +688,21 @@ const THEMES = {
 const DEFAULT_THEME = "espresso";
 
 function useStore(){
-  const [cfg, setCfg] = useState(() => lsGet("cfg", { owner:"", repo:"", token:"", apiKey:"", model:"claude-sonnet-4-6", locations:DEFAULT_LOCATIONS, categories:DEFAULT_CATEGORIES, appName:"Tracker", accent:DEFAULT_ACCENT, theme:DEFAULT_THEME, configured:false }));
+  const [cfg, setCfg] = useState(() => lsGet("cfg", { locations:DEFAULT_LOCATIONS, categories:DEFAULT_CATEGORIES, appName:"Tracker", accent:DEFAULT_ACCENT, theme:DEFAULT_THEME }));
   const [data, setData] = useState(() => {
     const d = {}; FILES.forEach(f => d[f] = lsGet("cache:"+f, [])); return d;
   });
-  const [sha, setSha] = useState(() => lsGet("sha", {}));
   const [dirty, setDirty] = useState(() => lsGet("dirty", {}));
   const [sync, setSync] = useState("idle");      // idle | busy | pending | error
   const [syncMsg, setSyncMsg] = useState("");
   const [online, setOnline] = useState(navigator.onLine);
+  const [authed, setAuthed] = useState(false);       // is a Supabase session active
+  const [authEmail, setAuthEmail] = useState("");    // signed-in email (shown in Settings)
+  const [authReady, setAuthReady] = useState(false); // first session check finished (avoids a login flash)
   const cfgRef = useRef(cfg); cfgRef.current = cfg;
   const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   const dataRef = useRef(data); dataRef.current = data;
-  const shaRef = useRef(sha); shaRef.current = sha;
+  const authedRef = useRef(false);
 
   // persist config
   const saveCfg = useCallback((next) => { setCfg(next); lsSet("cfg", next); }, []);
@@ -716,10 +713,9 @@ function useStore(){
     const nd = { ...dirtyRef.current, [file]:true }; setDirty(nd); lsSet("dirty", nd);
   }, []);
 
-  // push all dirty files to GitHub
+  // push all dirty files to the backend
   const pushDirty = useCallback(async () => {
-    const c = cfgRef.current;
-    if(!c.configured){ return; }
+    if(!authedRef.current){ return; }
     if(!navigator.onLine){ log("SYNC","offline; deferring push"); setSync("pending"); return; }
     const pending = FILES.filter(f => dirtyRef.current[f]);
     if(pending.length===0){ setSync("idle"); return; }
@@ -727,8 +723,7 @@ function useStore(){
     log("SYNC","push "+pending.join(","));
     try{
       for(const f of pending){
-        const newSha = await ghWrite(c, f, dataRef.current[f], shaRef.current[f]);
-        const ns = { ...shaRef.current, [f]:newSha }; shaRef.current = ns; setSha(ns); lsSet("sha", ns);
+        await collPut(f, dataRef.current[f]);
         const nd = { ...dirtyRef.current, [f]:false }; dirtyRef.current = nd; setDirty(nd); lsSet("dirty", nd);
       }
       setSync("idle"); setSyncMsg("");
@@ -756,27 +751,64 @@ function useStore(){
     if(wrote){ dataRef.current = nd; setData(nd); pushDirty(); }
   }, [markDirty, pushDirty]);
 
-  // pull from GitHub (only overwrites files that are NOT locally dirty)
+  // pull from the backend (only overwrites files that are NOT locally dirty)
   const pull = useCallback(async () => {
-    const c = cfgRef.current;
-    if(!c.configured || !navigator.onLine) return;
+    if(!authedRef.current || !navigator.onLine) return;
     setSync("busy"); setSyncMsg("Syncing...");
     log("SYNC","pull all");
     try{
-      const nextData = { ...dataRef.current }; const nextSha = { ...shaRef.current };
+      const nextData = { ...dataRef.current };
       for(const f of FILES){
         if(dirtyRef.current[f]){ log("SYNC","skip pull "+f+" (dirty)"); continue; }
-        const res = await ghRead(c, f);
-        nextData[f] = res.data; nextSha[f] = res.sha; lsSet("cache:"+f, res.data);
+        const arr = await collGet(f);
+        nextData[f] = arr; lsSet("cache:"+f, arr);
       }
       dataRef.current = nextData; setData(nextData);
-      shaRef.current = nextSha; setSha(nextSha); lsSet("sha", nextSha);
       setSync(FILES.some(f=>dirtyRef.current[f])?"pending":"idle"); setSyncMsg("");
       log("SYNC","pull complete");
       ensureOrders();
       await pushDirty();
     }catch(e){ setSync("error"); setSyncMsg(e.message||"Sync failed"); log("ERROR","pull: "+e.message); }
   }, [pushDirty, ensureOrders]);
+
+  // ----- Auth: track the Supabase session and pull on sign-in -----
+  // applySession runs on the initial check AND on every auth change. It pulls only
+  // on the transition INTO a signed-in state, so a background token refresh does
+  // not trigger a redundant full pull.
+  const applySession = useCallback((session) => {
+    const ok = !!session;
+    const was = authedRef.current;
+    authedRef.current = ok; setAuthed(ok);
+    setAuthEmail(ok && session.user ? (session.user.email||"") : "");
+    if(ok && !was){ log("AUTH","session active"); pull(); }
+    else if(!ok){ log("AUTH","no session"); }
+  }, [pull]);
+
+  const signIn = useCallback(async (email, password) => {
+    const { error } = await supa.auth.signInWithPassword({ email:(email||"").trim(), password:password||"" });
+    if(error){ log("AUTH","sign-in failed: "+error.message); throw new Error(error.message); }
+    log("AUTH","sign-in ok");
+  }, []);
+
+  const signOut = useCallback(async () => {
+    try{ await supa.auth.signOut(); }catch(e){ log("ERROR","signOut: "+e.message); }
+    log("AUTH","signed out");
+  }, []);
+
+  // Establish the session on mount, then subscribe to auth changes.
+  useEffect(() => {
+    let sub = null;
+    (async () => {
+      try{
+        const { data } = await supa.auth.getSession();
+        applySession(data.session);
+      }catch(e){ log("ERROR","getSession: "+e.message); }
+      setAuthReady(true);
+      const res = supa.auth.onAuthStateChange((_evt, session) => { applySession(session); });
+      sub = res.data ? res.data.subscription : null;
+    })();
+    return () => { if(sub) sub.unsubscribe(); };
+  }, [applySession]);
 
   // online/offline listeners
   useEffect(() => {
@@ -785,9 +817,6 @@ function useStore(){
     window.addEventListener("online", on); window.addEventListener("offline", off);
     return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
   }, [pushDirty]);
-
-  // initial pull on mount if configured
-  useEffect(() => { if(cfgRef.current.configured){ pull(); } /* else first-run setup */ }, [pull]);
 
   // seed manual order for whatever is already cached (covers offline launches)
   useEffect(() => { ensureOrders(); }, [ensureOrders]);
@@ -945,7 +974,7 @@ function useStore(){
     return { created, updated };
   }, [markDirty, pushDirty]);
 
-  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync, ghWriteTest };
+  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, authed, authEmail, authReady, signIn, signOut, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
 }
 
 /* ============================================================
@@ -1495,7 +1524,7 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
     if(!brain.trim())return;
     setBusy(true); setErr("");
     try{
-      const items = await claudeExtract(store.cfg, [{type:"text",text:"Turn this into tracker items:\n\n"+brain}]);
+      const items = await claudeExtract([{type:"text",text:"Turn this into tracker items:\n\n"+brain}]);
       setResults(items.map(x=>({ ...x, keep:true }))); setMode("review");
     }catch(e){ setErr(e.message); } finally{ setBusy(false); }
   }
@@ -1504,7 +1533,7 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
     setBusy(true); setErr(""); setMode("photo");
     try{
       const b64 = await resizeImage(file);
-      const items = await claudeExtract(store.cfg, [
+      const items = await claudeExtract([
         { type:"image", source:{ type:"base64", media_type:"image/jpeg", data:b64 } },
         { type:"text", text:"Extract every task/idea written or shown in this image as tracker items." }
       ]);
@@ -2033,57 +2062,20 @@ const MODELS = [
   { v:"claude-opus-4-8",            l:"Opus 4.8 - most capable, priciest" },
 ];
 
-function SettingsForm({ store, toast, onConnected }){
-  const c = store.cfg;
-  const [owner,setOwner]=useState(c.owner||"");
-  const [repo,setRepo]=useState(c.repo||"tracker-data");
-  const [token,setToken]=useState(c.token||"");
-  const [apiKey,setApiKey]=useState(c.apiKey||"");
-  const [model,setModel]=useState(c.model||"claude-sonnet-4-6");
-  // If the saved model isn't one of the known options, start in "custom" mode.
-  const [custom,setCustom]=useState(!MODELS.some(m=>m.v===(c.model||"claude-sonnet-4-6")));
+function AccountPanel({ store, toast }){
   const [busy,setBusy]=useState(false);
-  const [err,setErr]=useState("");
-  async function connect(){
-    setErr("");
-    if(!owner.trim()||!repo.trim()||!token.trim()){ setErr("Owner, data repo, and token are required."); return; }
+  async function out(){
     setBusy(true);
-    const cfg = { owner:owner.trim(), repo:repo.trim(), token:token.trim(), apiKey:apiKey.trim(), model:model.trim()||"claude-sonnet-4-6", configured:true };
-    try{
-      await ghWriteTest(cfg);                 // real write-test, surfaces bad tokens now
-      store.saveCfg(cfg);
-      toast("Connected"); log("SETUP","connected as "+owner+"/"+repo);
-      if(onConnected) onConnected();
-    }catch(e){ setErr(e.message); }
+    try{ await store.signOut(); toast("Signed out"); }
     finally{ setBusy(false); }
   }
   return (
     <div>
-      <div className="field"><span className="label">GitHub username / org (owner)</span>
-        <input className="input" value={owner} onChange={e=>setOwner(e.target.value)} placeholder="your-github-name" autoCapitalize="off"/></div>
-      <div className="field"><span className="label">Private data repo name</span>
-        <input className="input" value={repo} onChange={e=>setRepo(e.target.value)} placeholder="tracker-data" autoCapitalize="off"/>
-        <p className="hint">Keep this name distinct from your app-shell repo and token name.</p></div>
-      <div className="field"><span className="label">Fine-grained PAT</span>
-        <input className="input" type="password" value={token} onChange={e=>setToken(e.target.value)} placeholder="github_pat_..." autoCapitalize="off"/>
-        <p className="hint">Scope it to the data repo only, with Contents: Read and write.</p></div>
-      <div className="divider"></div>
-      <div className="field"><span className="label">Claude API key (for brain-dump + photo)</span>
-        <input className="input" type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="sk-ant-..." autoCapitalize="off"/>
-        <p className="hint">Optional. Stored only on this device. Without it, manual capture still works.</p></div>
-      <div className="field"><span className="label">Model (for brain-dump + photo)</span>
-        <select className="select" value={custom?"__custom":model}
-          onChange={e=>{ if(e.target.value==="__custom"){ setCustom(true); } else { setCustom(false); setModel(e.target.value); } }}>
-          {MODELS.map(m=><option key={m.v} value={m.v}>{m.l}</option>)}
-          <option value="__custom">Custom (type a model id)</option>
-        </select>
-        {custom &&
-          <input className="input" style={{marginTop:8}} value={model} onChange={e=>setModel(e.target.value)}
-            placeholder="e.g. claude-opus-4-7" autoCapitalize="off"/>}
-        <p className="hint">Sonnet handles OCR and brain-dump well at moderate cost. Switch any time.</p></div>
-      {err && <p className="hint danger-text">{err}</p>}
-      <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={busy} onClick={connect}>
-        {busy? <span className="spin"></span> : "Test & connect"}</button>
+      <div className="field"><span className="label">Signed in as</span>
+        <div style={{fontWeight:600,marginTop:2,wordBreak:"break-all"}}>{store.authEmail||"-"}</div>
+        <p className="hint">Your data syncs to your account. Sign in on another device to see the same items.</p></div>
+      <button className="btn btn-ghost btn-block" style={{marginTop:6}} disabled={busy} onClick={out}>
+        {busy? <span className="spin"></span> : "Sign out"}</button>
     </div>
   );
 }
@@ -2294,7 +2286,6 @@ function AIChat({ store, toast, back }){
 
   async function send(textArg){
     const text = (typeof textArg==="string" ? textArg : input).trim(); if(!text || busy) return;
-    if(!store.cfg.apiKey){ setErr("Add your Claude API key in Settings first."); return; }
     setErr(""); setInput("");
     const history = [...messages, { role:"user", text }];
     setMessages(history); setBusy(true);
@@ -2302,7 +2293,7 @@ function AIChat({ store, toast, back }){
       const system = ORGANIZE_SYSTEM + "\n\nCURRENT DATA (JSON):\n" + organizeSnapshot(store);
       // only user/assistant turns go to the API (skip our local 'system' confirmations)
       const apiMessages = history.filter(m=>m.role==="user"||m.role==="assistant").map(m=>({ role:m.role, content:m.text }));
-      const raw = await claudeChat(store.cfg, system, apiMessages);
+      const raw = await claudeChat(system, apiMessages);
       let parsed = null; const cleaned = stripFences(raw);
       try{ parsed = JSON.parse(cleaned); }
       catch(e){
@@ -2641,7 +2632,7 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, build }){
       </div>
       <div className="divider"></div>
       <h3 style={{fontSize:17,marginBottom:12}}>Connection</h3>
-      <SettingsForm store={store} toast={toast} onConnected={()=>{ store.pull(); }}/>
+      <AccountPanel store={store} toast={toast}/>
       <div className="divider"></div>
       <h3 style={{fontSize:17,marginBottom:12}}>Appearance</h3>
       <AppearanceEditor store={store}/>
@@ -2757,26 +2748,40 @@ function MoreView({ store, go }){
 /* ============================================================
    FIRST-RUN SETUP
    ============================================================ */
-function Setup({ store, toast }){
+function Login({ store, toast }){
+  const [email,setEmail]=useState("");
+  const [password,setPassword]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState("");
+  async function submit(){
+    setErr("");
+    if(!email.trim()||!password){ setErr("Email and password are required."); return; }
+    setBusy(true);
+    try{ await store.signIn(email, password); toast("Signed in"); }
+    catch(e){ setErr(e.message||"Sign-in failed."); }
+    finally{ setBusy(false); }
+  }
   return (
     <div className="app"><div className="screen">
       <div style={{paddingTop:"calc(env(safe-area-inset-top) + 40px)"}}>
-        <div className="eyebrow">Get started</div>
+        <div className="eyebrow">Welcome back</div>
         <h1 className="title" style={{fontSize:34,marginTop:4}}>Your Tracker</h1>
         <p className="hint" style={{marginTop:8,fontSize:14}}>
-          A GTD + Eisenhower tracker for todos, ideas, projects, and goals. Your data lives in your own private GitHub repo.
+          Sign in to sync your todos, ideas, projects, and goals across your devices.
         </p>
       </div>
       <div className="card" style={{marginTop:20}}>
-        <SettingsForm store={store} toast={toast}/>
-      </div>
-      <div className="card" style={{marginTop:14,background:"var(--bg-2)"}}>
-        <b style={{fontFamily:"Fraunces",fontSize:15}}>Before you start</b>
-        <p className="hint" style={{marginTop:6}}>
-          1. Create a private repo (e.g. <b>tracker-data</b>) for your data.<br/>
-          2. Make a fine-grained PAT scoped to that repo, Contents: Read and write.<br/>
-          3. Add this page to your Home Screen and launch it from there.
-        </p>
+        <div className="field"><span className="label">Email</span>
+          <input className="input" type="email" value={email} autoCapitalize="off" autoCorrect="off"
+            onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"
+            onKeyDown={e=>{ if(e.key==="Enter") submit(); }}/></div>
+        <div className="field"><span className="label">Password</span>
+          <input className="input" type="password" value={password} autoCapitalize="off"
+            onChange={e=>setPassword(e.target.value)} placeholder="Your password"
+            onKeyDown={e=>{ if(e.key==="Enter") submit(); }}/></div>
+        {err && <p className="hint danger-text">{err}</p>}
+        <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={busy} onClick={submit}>
+          {busy? <span className="spin"></span> : "Sign in"}</button>
       </div>
       <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>build {BUILD}</p>
     </div></div>
@@ -2864,7 +2869,8 @@ function App(){
     return ()=>window.removeEventListener("hashchange", routeHash);
   },[]); // eslint-disable-line
 
-  if(!store.cfg.configured) return <div><Setup store={store} toast={toast}/><Toast obj={toastObj} onClose={()=>setToastObj(null)}/></div>;
+  if(!store.authReady) return <div className="app"><div className="screen"><p className="hint" style={{textAlign:"center",marginTop:90}}>Loading...</p></div></div>;
+  if(!store.authed) return <div><Login store={store} toast={toast}/><Toast obj={toastObj} onClose={()=>setToastObj(null)}/></div>;
 
   // sub-views launched from More / Today
   let subView = null;
