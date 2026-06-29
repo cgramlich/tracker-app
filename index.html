@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="Tracker" />
+<meta name="apple-mobile-web-app-title" content="Priority Captain" />
 <meta name="theme-color" content="#1c1611" />
-<title>Tracker</title>
+<title>Priority Captain</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
@@ -319,7 +319,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-24.2";
+const BUILD = "2026-06-25.1";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -688,7 +688,11 @@ const THEMES = {
 const DEFAULT_THEME = "espresso";
 
 function useStore(){
-  const [cfg, setCfg] = useState(() => lsGet("cfg", { locations:DEFAULT_LOCATIONS, categories:DEFAULT_CATEGORIES, appName:"Tracker", accent:DEFAULT_ACCENT, theme:DEFAULT_THEME }));
+  const [cfg, setCfg] = useState(() => {
+    const c = lsGet("cfg", { locations:DEFAULT_LOCATIONS, categories:DEFAULT_CATEGORIES, appName:"Priority Captain", accent:DEFAULT_ACCENT, theme:DEFAULT_THEME });
+    if(c.appName === "Tracker"){ c.appName = "Priority Captain"; lsSet("cfg", c); }   // rebrand: bump the old "Tracker" default for existing installs
+    return c;
+  });
   const [data, setData] = useState(() => {
     const d = {}; FILES.forEach(f => d[f] = lsGet("cache:"+f, [])); return d;
   });
@@ -2252,13 +2256,13 @@ function CategoriesEditor({ store, toast, toastUndo }){
 
 function AppearanceEditor({ store }){
   const accent = isHex6(store.cfg.accent) ? store.cfg.accent : DEFAULT_ACCENT;
-  const name = store.cfg.appName || "Tracker";
+  const name = store.cfg.appName || "Priority Captain";
   const theme = THEMES[store.cfg.theme] ? store.cfg.theme : DEFAULT_THEME;
   function save(patch){ store.saveCfg({ ...store.cfg, ...patch }); }
   return (
     <div>
       <span className="label">App name</span>
-      <input className="input" value={name} maxLength={24} placeholder="Tracker"
+      <input className="input" value={name} maxLength={24} placeholder="Priority Captain"
         onChange={e=>save({ appName:e.target.value })} style={{marginBottom:14}}/>
       <span className="label">Theme</span>
       <div className="pills" style={{marginTop:6,marginBottom:14}}>
@@ -2422,7 +2426,7 @@ function AIChat({ store, toast, back }){
    VIEW: EXPORT (reachable from More)
    ============================================================ */
 function ExportView({ store, toast, back }){
-  const appName = (store.cfg.appName||"Tracker");
+  const appName = (store.cfg.appName||"Priority Captain");
   const fname = (ext) => (appName.replace(/[^a-z0-9]+/ig,"-").replace(/^-+|-+$/g,"").toLowerCase() || "tracker")+"-export."+ext;
   function download(name, text, mime){
     const blob = new Blob([text],{type:mime});
@@ -2756,7 +2760,7 @@ function MoreView({ store, go }){
         {rows.map(r=><button key={r.k} className="act-row" onClick={()=>go(r.k)}>
           <span className="act-ic">{r.ic}</span><span className="act-txt"><b>{r.b}</b><span>{r.s}</span></span></button>)}
       </div>
-      <p className="hint" style={{textAlign:"center",marginTop:18,opacity:.6}}>{(store.cfg.appName||"Tracker")} - build {BUILD}</p>
+      <p className="hint" style={{textAlign:"center",marginTop:18,opacity:.6}}>{(store.cfg.appName||"Priority Captain")} - build {BUILD}</p>
     </div>
   );
 }
@@ -2812,7 +2816,7 @@ function Login({ store, toast }){
     <div className="app"><div className="screen">
       <div style={{paddingTop:"calc(env(safe-area-inset-top) + 40px)"}}>
         <div className="eyebrow">{isSignup?"Get started":"Welcome back"}</div>
-        <h1 className="title" style={{fontSize:34,marginTop:4}}>Your Tracker</h1>
+        <h1 className="title" style={{fontSize:34,marginTop:4}}>Priority Captain</h1>
         <p className="hint" style={{marginTop:8,fontSize:14}}>
           {isSignup ? "Create an account to sync your todos, ideas, projects, and goals across your devices."
                     : "Sign in to sync your todos, ideas, projects, and goals across your devices."}
@@ -2900,7 +2904,7 @@ function App(){
     root.setProperty("--bg", th.bg);   root.setProperty("--bg-2", th.bg2); root.setProperty("--bg-3", th.bg3); root.setProperty("--bg-4", th.bg4);
     root.setProperty("--line", th.line); root.setProperty("--line-2", th.line2);
     root.setProperty("--ink", th.ink); root.setProperty("--ink-2", th.ink2); root.setProperty("--ink-3", th.ink3);
-    const name = (store.cfg.appName||"").trim() || "Tracker";
+    const name = (store.cfg.appName||"").trim() || "Priority Captain";
     document.title = name;
     const t1 = document.querySelector('meta[name="apple-mobile-web-app-title"]'); if(t1) t1.setAttribute("content", name);
     const t2 = document.querySelector('meta[name="theme-color"]'); if(t2) t2.setAttribute("content", th.bg);
