@@ -319,7 +319,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-25.1";
+const BUILD = "2026-06-25.2";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -815,6 +815,26 @@ function useStore(){
     return { needsConfirm };
   }, []);
 
+  // --- Password reset / recovery ---
+  const [recovery, setRecovery] = useState(false);   // true after a PASSWORD_RECOVERY event (landed from a reset link)
+
+  // "Forgot password?" - email a reset link. The link returns here with a recovery
+  // token; onAuthStateChange (below) flips `recovery` on so we show the set-password screen.
+  const requestReset = useCallback(async (email) => {
+    const redirectTo = window.location.origin + window.location.pathname;
+    const { error } = await supa.auth.resetPasswordForEmail((email||"").trim(), { redirectTo });
+    if(error){ log("AUTH","reset request failed: "+error.message); throw new Error(error.message); }
+    log("AUTH","reset email sent");
+  }, []);
+
+  // Set a new password for the current (recovery) session, then leave recovery mode.
+  const updatePassword = useCallback(async (newPassword) => {
+    const { error } = await supa.auth.updateUser({ password: newPassword });
+    if(error){ log("AUTH","updatePassword failed: "+error.message); throw new Error(error.message); }
+    setRecovery(false);
+    log("AUTH","password updated");
+  }, []);
+
   // Establish the session on mount, then subscribe to auth changes.
   useEffect(() => {
     let sub = null;
@@ -824,7 +844,7 @@ function useStore(){
         applySession(data.session);
       }catch(e){ log("ERROR","getSession: "+e.message); }
       setAuthReady(true);
-      const res = supa.auth.onAuthStateChange((_evt, session) => { applySession(session); });
+      const res = supa.auth.onAuthStateChange((evt, session) => { if(evt === "PASSWORD_RECOVERY"){ setRecovery(true); } applySession(session); });
       sub = res.data ? res.data.subscription : null;
     })();
     return () => { if(sub) sub.unsubscribe(); };
@@ -994,7 +1014,7 @@ function useStore(){
     return { created, updated };
   }, [markDirty, pushDirty]);
 
-  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, authed, authEmail, authReady, signIn, signUp, signOut, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
+  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
 }
 
 /* ============================================================
@@ -2775,6 +2795,7 @@ function Login({ store, toast }){
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState("");
   const [sent,setSent]=useState(false);       // signup confirmation email sent
+  const [resetSent,setResetSent]=useState(false); // password-reset email sent
   const isSignup = mode==="signup";
   async function submit(){
     setErr("");
@@ -2791,6 +2812,33 @@ function Login({ store, toast }){
       }
     }catch(e){ setErr(e.message||"Something went wrong."); }
     finally{ setBusy(false); }
+  }
+
+  async function forgot(){
+    setErr("");
+    if(!email.trim()){ setErr("Enter your email above first, then tap Forgot password."); return; }
+    setBusy(true);
+    try{ await store.requestReset(email); setResetSent(true); }
+    catch(e){ setErr(e.message||"Couldn't send the reset email."); }
+    finally{ setBusy(false); }
+  }
+
+  // After "Forgot password?": tell them to check their inbox for the reset link.
+  if(resetSent){
+    return (
+      <div className="app"><div className="screen">
+        <div style={{paddingTop:"calc(env(safe-area-inset-top) + 40px)"}}>
+          <div className="eyebrow">Reset password</div>
+          <h1 className="title" style={{fontSize:30,marginTop:4}}>Check your email</h1>
+          <p className="hint" style={{marginTop:10,fontSize:14}}>
+            We sent a password-reset link to <b>{email.trim()}</b>. Tap it and you'll be able to set a new password.
+          </p>
+        </div>
+        <button className="btn btn-ghost btn-block" style={{marginTop:20}}
+          onClick={()=>{ setResetSent(false); setErr(""); }}>Back to sign in</button>
+        <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>build {BUILD}</p>
+      </div></div>
+    );
   }
 
   // After signup with email confirmation on: tell them to go check their inbox.
@@ -2838,6 +2886,48 @@ function Login({ store, toast }){
       <button className="btn btn-ghost btn-block" style={{marginTop:12}} disabled={busy}
         onClick={()=>{ setErr(""); setMode(isSignup?"signin":"signup"); }}>
         {isSignup ? "Already have an account? Sign in" : "New here? Create an account"}</button>
+      {!isSignup &&
+        <button disabled={busy} onClick={forgot}
+          style={{display:"block",margin:"14px auto 0",background:"none",border:"none",color:"var(--ink-3)",fontSize:13,textDecoration:"underline",cursor:"pointer"}}>
+          Forgot password?</button>}
+      <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>build {BUILD}</p>
+    </div></div>
+  );
+}
+
+function SetPassword({ store, toast }){
+  const [password,setPassword]=useState("");
+  const [confirm,setConfirm]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState("");
+  async function submit(){
+    setErr("");
+    if(password.length<6){ setErr("Password must be at least 6 characters."); return; }
+    if(password!==confirm){ setErr("The two passwords don't match."); return; }
+    setBusy(true);
+    try{ await store.updatePassword(password); toast("Password updated"); }
+    catch(e){ setErr(e.message||"Couldn't update the password."); }
+    finally{ setBusy(false); }
+  }
+  return (
+    <div className="app"><div className="screen">
+      <div style={{paddingTop:"calc(env(safe-area-inset-top) + 40px)"}}>
+        <div className="eyebrow">Reset password</div>
+        <h1 className="title" style={{fontSize:30,marginTop:4}}>Set a new password</h1>
+        <p className="hint" style={{marginTop:8,fontSize:14}}>Choose a new password for <b>{store.authEmail||"your account"}</b>.</p>
+      </div>
+      <div className="card" style={{marginTop:20}}>
+        <div className="field"><span className="label">New password</span>
+          <input className="input" type="password" value={password} autoCapitalize="off"
+            onChange={e=>setPassword(e.target.value)} placeholder="At least 6 characters"/></div>
+        <div className="field"><span className="label">Confirm new password</span>
+          <input className="input" type="password" value={confirm} autoCapitalize="off"
+            onChange={e=>setConfirm(e.target.value)} placeholder="Re-enter it"
+            onKeyDown={e=>{ if(e.key==="Enter") submit(); }}/></div>
+        {err && <p className="hint danger-text">{err}</p>}
+        <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={busy} onClick={submit}>
+          {busy? <span className="spin"></span> : "Update password"}</button>
+      </div>
       <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>build {BUILD}</p>
     </div></div>
   );
@@ -2925,6 +3015,7 @@ function App(){
   },[]); // eslint-disable-line
 
   if(!store.authReady) return <div className="app"><div className="screen"><p className="hint" style={{textAlign:"center",marginTop:90}}>Loading...</p></div></div>;
+  if(store.recovery) return <div><SetPassword store={store} toast={toast}/><Toast obj={toastObj} onClose={()=>setToastObj(null)}/></div>;
   if(!store.authed) return <div><Login store={store} toast={toast}/><Toast obj={toastObj} onClose={()=>setToastObj(null)}/></div>;
 
   // sub-views launched from More / Today
