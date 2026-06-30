@@ -319,7 +319,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-25.2";
+const BUILD = "2026-06-25.3";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -1609,7 +1609,7 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
         </button>}
       <div className="field" style={{marginTop:6}}>
         <span className="label" style={{color:"var(--amber)"}}>Brain-dump to AI</span>
-        <textarea className="textarea" value={brain} onChange={e=>setBrain(e.target.value)} style={{minHeight:92}} autoFocus
+        <textarea className="textarea" value={brain} onChange={e=>setBrain(e.target.value)} style={{minHeight:92}}
           placeholder="Talk or type everything on your mind - I'll turn it into todos, projects, and ideas, and help file your inbox..."/>
         <button className="btn btn-primary btn-block" style={{marginTop:8,display:"flex",alignItems:"center",justifyContent:"center",gap:8}}
           onClick={()=>{ const t=brain.trim(); if(t) lsSet("aiSeed", t); openAI(); }}>
@@ -2330,7 +2330,12 @@ function AIChat({ store, toast, back }){
     const history = [...messages, { role:"user", text }];
     setMessages(history); setBusy(true);
     try{
-      const system = ORGANIZE_SYSTEM + "\n\nCURRENT DATA (JSON):\n" + organizeSnapshot(store);
+      // If a plan is already on the table, hand it to the AI so the user can ask to
+      // revise specific items (and so a plain conversational turn doesn't lose it).
+      const planCtx = (plan && plan.ops.length)
+        ? "\n\nCURRENT PROPOSED PLAN (not yet applied). If the user asks to change, revise, drop, or reconsider any of these, return an UPDATED plan: keep the items they're happy with and adjust the ones they mention.\n" + JSON.stringify(plan.ops)
+        : "";
+      const system = ORGANIZE_SYSTEM + "\n\nCURRENT DATA (JSON):\n" + organizeSnapshot(store) + planCtx;
       // only user/assistant turns go to the API (skip our local 'system' confirmations)
       const apiMessages = history.filter(m=>m.role==="user"||m.role==="assistant").map(m=>({ role:m.role, content:m.text }));
       const raw = await claudeChat(system, apiMessages);
@@ -2341,12 +2346,13 @@ function AIChat({ store, toast, back }){
         if(a>=0 && b>a){ try{ parsed = JSON.parse(cleaned.slice(a,b+1)); }catch(_){ parsed = null; } }
       }
       if(!parsed || typeof parsed!=="object"){
-        setMessages(m=>[...m, { role:"assistant", text: raw || "(no response)" }]); setPlan(null);
+        // purely conversational reply - keep any plan that's already on the table
+        setMessages(m=>[...m, { role:"assistant", text: raw || "(no response)" }]);
       }else{
         const reply = parsed.reply || "Here's what I can do.";
         const ops = Array.isArray(parsed.plan) ? parsed.plan : [];
         setMessages(m=>[...m, { role:"assistant", text: reply }]);
-        setPlan(ops.length ? { ops, excluded:[] } : null);
+        if(ops.length) setPlan({ ops, excluded:[] });   // a new/updated plan replaces the old; a no-plan turn leaves it intact
       }
     }catch(e){
       setErr(e.message || "Something went wrong.");
@@ -2370,9 +2376,16 @@ function AIChat({ store, toast, back }){
     });
     if(!included.length){ toast("Nothing selected"); return; }
     const res = store.applyPlan(included);
-    setPlan(null);
-    setMessages(m=>[...m, { role:"system", text:"Applied: "+res.created+" created"+(res.updated?", "+res.updated+" updated":"")+"." }]);
-    toast("Plan applied");
+    // Keep the UNSELECTED items on the table so you can refine or apply them next. A kept
+    // todo that pointed at a project we just created can't resolve its tmpId anymore -> null it.
+    const remaining = plan.ops.filter((_,i)=>plan.excluded.includes(i)).map(o=>{
+      if(o.op==="create_todo" && o.projectId && liveTmp.has(o.projectId)) return { ...o, projectId:null };
+      return o;
+    });
+    setPlan(remaining.length ? { ops: remaining, excluded: [] } : null);
+    const tail = remaining.length ? " - "+remaining.length+" still here to refine or apply." : ".";
+    setMessages(m=>[...m, { role:"system", text:"Applied "+res.created+" created"+(res.updated?", "+res.updated+" updated":"")+tail }]);
+    toast(remaining.length ? "Applied selected" : "Plan applied");
   }
   function clearChat(){ setMessages([]); setPlan(null); setErr(""); lsDel("aiChat"); lsDel("aiPlan"); }
 
@@ -2422,14 +2435,14 @@ function AIChat({ store, toast, back }){
         {busy && <div className="bubble ai" style={{color:"var(--ink-3)"}}>Thinking...</div>}
         {plan && plan.ops.length>0 &&
           <div className="plan-card">
-            <div className="label" style={{marginBottom:6}}>Proposed plan - tap to include/exclude</div>
+            <div className="label" style={{marginBottom:6}}>Proposed plan - tap an item to deselect it. Apply adds the selected ones; the rest stay here to refine.</div>
             {plan.ops.map((o,i)=>{ const [k,txt]=opLabel(o); const off=plan.excluded.includes(i);
               return <div key={i} className={"plan-op"+(off?" off":"")} onClick={()=>toggleOp(i)}>
-                <span className="plan-ck">{!off && Ic.check}</span>
+                <span className="plan-ck" style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:22,height:22,borderRadius:6,flex:"0 0 auto",border:"1.5px solid "+(off?"var(--line-2)":"var(--amber)"),background:off?"transparent":"var(--amber-dim)"}}>{!off && Ic.check}</span>
                 <span style={{flex:1}}><span className="pl-k">{k}</span><br/>{txt}</span>
               </div>; })}
             <div style={{display:"flex",gap:8,marginTop:10}}>
-              <button className="btn btn-primary btn-block" onClick={applyPlan}>Apply</button>
+              <button className="btn btn-primary btn-block" onClick={applyPlan} disabled={busy}>Apply {plan.ops.length-plan.excluded.length} selected</button>
               <button className="btn btn-ghost" onClick={()=>setPlan(null)}>Dismiss</button>
             </div>
           </div>}
