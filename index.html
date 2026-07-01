@@ -319,7 +319,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-25.4";
+const BUILD = "2026-06-25.5";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -344,6 +344,17 @@ function fmtDate(iso){
 }
 function isOverdue(due){ return due && due < TODAY(); }
 function isToday(due){ return due && due === TODAY(); }
+
+// Snooze: `defer` may hold a date (YYYY-MM-DD) OR a local date+time (YYYY-MM-DDTHH:MM).
+function snzNow(){ const d=new Date(); const p=n=>String(n).padStart(2,"0"); return todayKey(d)+"T"+p(d.getHours())+":"+p(d.getMinutes()); }
+function snzAt(date, hhmm){ return todayKey(date)+"T"+hhmm; }
+function snzAddDays(n){ const d=new Date(); d.setDate(d.getDate()+n); return d; }
+function snzNextDow(dow){ const d=new Date(); let add=(dow-d.getDay()+7)%7; if(add===0) add=7; d.setDate(d.getDate()+add); return d; } // dow 0=Sun..6=Sat, next one (>= tomorrow)
+function fmtDefer(s){
+  if(!s) return "";
+  if(s.length>10){ const d=new Date(s); if(isNaN(d)) return fmtDate(s.slice(0,10)); return fmtDate(s.slice(0,10))+" "+d.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"}); }
+  return fmtDate(s);
+}
 
 // "Waiting" follow-up nudges: how many whole days a to-do has sat in Waiting.
 // Uses the waitingSince stamp (set when it entered Waiting); falls back to updatedAt
@@ -1499,8 +1510,50 @@ function DoneToggle({ showDone, setShowDone, n }){
     </div>
   );
 }
+function SnoozeSheet({ store, todo, onClose }){
+  const [time,setTime]=useState("18:00");
+  const [custom,setCustom]=useState("");
+  function snooze(targetISO){
+    const datePart = targetISO.slice(0,10);
+    const patch = { id: todo.id, defer: targetISO, starredToday:false };
+    if(!todo.due || todo.due <= datePart) patch.due = datePart;   // resurface clean (not overdue) and reliably in Today
+    store.upsert("todos", patch);
+    log("SAVE","snooze "+todo.id+" -> "+targetISO);
+    onClose();
+  }
+  const Opt = ({label, sub, onClick}) => (
+    <button className="act-row" onClick={onClick}>
+      <span className="act-ic">{Ic.clock}</span>
+      <span className="act-txt"><b>{label}</b><span>{sub}</span></span>
+    </button>
+  );
+  return (
+    <Sheet title="Snooze until" onClose={onClose}>
+      <div className="field" style={{marginTop:4}}>
+        <span className="label">Tonight</span>
+        <div className="row" style={{alignItems:"center"}}>
+          <input className="input" type="time" value={time} onChange={e=>setTime(e.target.value)} style={{flex:1}}/>
+          <button className="btn btn-primary btn-sm" style={{flex:"0 0 auto"}} onClick={()=>snooze(snzAt(new Date(), time))}>Snooze</button>
+        </div>
+      </div>
+      <Opt label="Tomorrow morning" sub="9:00 AM" onClick={()=>snooze(snzAt(snzAddDays(1),"09:00"))}/>
+      <Opt label="This weekend" sub="Saturday 9:00 AM" onClick={()=>snooze(snzAt(snzNextDow(6),"09:00"))}/>
+      <Opt label="Next week" sub="Monday 9:00 AM" onClick={()=>snooze(snzAt(snzNextDow(1),"09:00"))}/>
+      <div className="divider"></div>
+      <div className="field">
+        <span className="label">Custom date &amp; time</span>
+        <div className="row" style={{alignItems:"center"}}>
+          <input className="input" type="datetime-local" value={custom} onChange={e=>setCustom(e.target.value)} style={{flex:1}}/>
+          <button className="btn btn-primary btn-sm" disabled={!custom} style={{flex:"0 0 auto"}} onClick={()=>custom&&snooze(custom)}>Set</button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
 function TodoRow({ store, todo, onOpen }){
   const done = todo.status==="done";
+  const [snz,setSnz]=useState(false);
   const project = store.data.projects.find(p=>p.id===todo.projectId);
   const subDone = (todo.subtasks||[]).filter(s=>s.done).length;
   const dwait = todo.status==="waiting" ? waitingDays(todo) : null;            // days waiting (null if not waiting)
@@ -1521,7 +1574,7 @@ function TodoRow({ store, todo, onOpen }){
           {todo.status==="waiting" && <span className={"chip "+(waitStale?"red":"")}>{Ic.clock} Waiting{dwait!=null?" "+dwait+"d":""}</span>}
           {todo.quad && <span className="chip amber">{QUADRANTS[todo.quad].label}</span>}
           {todo.due && <span className={"chip "+(isOverdue(todo.due)?"red":isToday(todo.due)?"amber":"")}>{isOverdue(todo.due)?"Overdue ":""}{fmtDate(todo.due)}</span>}
-          {todo.defer && todo.defer>TODAY() && <span className="chip blue">{Ic.clock} {fmtDate(todo.defer)}</span>}
+          {isDeferredAway(todo) && <span className="chip blue">{Ic.clock} {fmtDefer(todo.defer)}</span>}
           {todo.waitingOn && <span className="chip blue">waiting: {todo.waitingOn}</span>}
           {todo.location && <span className="chip green">{todo.location}</span>}
           {project && <span className="chip">{project.name}</span>}
@@ -1530,6 +1583,10 @@ function TodoRow({ store, todo, onOpen }){
           {(todo.tags||[]).map(t=><span key={t} className="chip">#{t}</span>)}
         </div>
       </div>
+      {!done && <button aria-label="Snooze" onClick={(e)=>{ e.stopPropagation(); setSnz(true); }}
+        style={{flex:"0 0 auto",alignSelf:"center",background:"none",border:"none",color:"var(--ink-3)",padding:"6px 8px",cursor:"pointer"}}>
+        <span style={{width:18,height:18,display:"inline-flex"}}>{Ic.clock}</span></button>}
+      {snz && <SnoozeSheet store={store} todo={todo} onClose={()=>setSnz(false)}/>}
     </div>
   );
 }
@@ -1696,7 +1753,7 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
    FILTER HELPERS
    ============================================================ */
 // An item deferred to a future date is hidden everywhere until then.
-const isDeferredAway = (t) => t.defer && t.defer > TODAY();
+const isDeferredAway = (t) => { if(!t.defer) return false; return (t.defer.length>10) ? (t.defer > snzNow()) : (t.defer > TODAY()); };
 // Quadrant sort weight (Do First highest)
 const quadWeight = (q) => ({q1:0,q3:1,q2:2,q4:3,"":4})[q||""];
 
