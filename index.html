@@ -319,7 +319,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-25.7";
+const BUILD = "2026-06-25.8";
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -1518,17 +1518,21 @@ function DoneToggle({ showDone, setShowDone, n }){
     </div>
   );
 }
-function SnoozeSheet({ store, todo, onClose }){
+// Apply a snooze to one todo: hide until `targetISO`, and push a due-today/overdue item's
+// due forward so it returns clean. Shared by the single-row and bulk snooze flows.
+function snoozeTodo(store, todo, targetISO){
+  const datePart = targetISO.slice(0,10);
+  const patch = { id: todo.id, defer: targetISO, starredToday:false };
+  if(!todo.due || todo.due <= datePart) patch.due = datePart;
+  store.upsert("todos", patch);
+  log("SAVE","snooze "+todo.id+" -> "+targetISO);
+}
+// Snooze picker. Calls onPick(targetISO) with the chosen moment; the caller decides
+// which todo(s) it applies to (one row, or a bulk selection).
+function SnoozeSheet({ onPick, onClose }){
   const [time,setTime]=useState("18:00");
   const [custom,setCustom]=useState("");
-  function snooze(targetISO){
-    const datePart = targetISO.slice(0,10);
-    const patch = { id: todo.id, defer: targetISO, starredToday:false };
-    if(!todo.due || todo.due <= datePart) patch.due = datePart;   // resurface clean (not overdue) and reliably in Today
-    store.upsert("todos", patch);
-    log("SAVE","snooze "+todo.id+" -> "+targetISO);
-    onClose();
-  }
+  const pick = (iso) => { onPick(iso); onClose(); };
   const Opt = ({label, sub, onClick}) => (
     <button className="act-row" onClick={onClick}>
       <span className="act-ic">{Ic.clock}</span>
@@ -1541,18 +1545,18 @@ function SnoozeSheet({ store, todo, onClose }){
         <span className="label">Tonight</span>
         <div className="row" style={{alignItems:"center"}}>
           <input className="input" type="time" value={time} onChange={e=>setTime(e.target.value)} style={{flex:1}}/>
-          <button className="btn btn-primary btn-sm" style={{flex:"0 0 auto"}} onClick={()=>snooze(snzAt(new Date(), time))}>Snooze</button>
+          <button className="btn btn-primary btn-sm" style={{flex:"0 0 auto"}} onClick={()=>pick(snzAt(new Date(), time))}>Snooze</button>
         </div>
       </div>
-      <Opt label="Tomorrow morning" sub="9:00 AM" onClick={()=>snooze(snzAt(snzAddDays(1),"09:00"))}/>
-      <Opt label="This weekend" sub="Saturday 9:00 AM" onClick={()=>snooze(snzAt(snzNextDow(6),"09:00"))}/>
-      <Opt label="Next week" sub="Monday 9:00 AM" onClick={()=>snooze(snzAt(snzNextDow(1),"09:00"))}/>
+      <Opt label="Tomorrow morning" sub="9:00 AM" onClick={()=>pick(snzAt(snzAddDays(1),"09:00"))}/>
+      <Opt label="This weekend" sub="Saturday 9:00 AM" onClick={()=>pick(snzAt(snzNextDow(6),"09:00"))}/>
+      <Opt label="Next week" sub="Monday 9:00 AM" onClick={()=>pick(snzAt(snzNextDow(1),"09:00"))}/>
       <div className="divider"></div>
       <div className="field">
         <span className="label">Custom date &amp; time</span>
         <div className="row" style={{alignItems:"center"}}>
           <input className="input" type="datetime-local" value={custom} onChange={e=>setCustom(e.target.value)} style={{flex:1}}/>
-          <button className="btn btn-primary btn-sm" disabled={!custom} style={{flex:"0 0 auto"}} onClick={()=>custom&&snooze(custom)}>Set</button>
+          <button className="btn btn-primary btn-sm" disabled={!custom} style={{flex:"0 0 auto"}} onClick={()=>custom&&pick(custom)}>Set</button>
         </div>
       </div>
     </Sheet>
@@ -1594,7 +1598,7 @@ function TodoRow({ store, todo, onOpen }){
       {!done && <button aria-label="Snooze" onClick={(e)=>{ e.stopPropagation(); setSnz(true); }}
         style={{flex:"0 0 auto",alignSelf:"center",background:"none",border:"none",color:"var(--ink-3)",padding:"6px 8px",cursor:"pointer"}}>
         <span style={{width:18,height:18,display:"inline-flex"}}>{Ic.clock}</span></button>}
-      {snz && <SnoozeSheet store={store} todo={todo} onClose={()=>setSnz(false)}/>}
+      {snz && <SnoozeSheet onPick={(iso)=>snoozeTodo(store, todo, iso)} onClose={()=>setSnz(false)}/>}
     </div>
   );
 }
@@ -1885,6 +1889,16 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
   const [sortMode,setSortMode]=useState(()=>lsGet("todoSort","manual")); // 'manual' = your drag order, 'smart' = priority/due
   useEffect(()=>{ lsSet("todoSort", sortMode); },[sortMode]);
   const [showDone,setShowDone]=useShowDone();  // show/hide completed on the combined "all" list
+  // Bulk multi-select: tap "Select", tick items, then act on all at once.
+  const [selMode,setSelMode]=useState(false);
+  const [sel,setSel]=useState(()=>new Set());
+  const [bulkSnooze,setBulkSnooze]=useState(false);
+  const [confirmDel,setConfirmDel]=useState(false);
+  const byId = (id) => store.data.todos.find(t=>t.id===id);
+  const toggleSel = (id) => setSel(s=>{ const n=new Set(s); n.has(id)?n.delete(id):n.add(id); return n; });
+  const exitSel = () => { setSelMode(false); setSel(new Set()); setBulkSnooze(false); setConfirmDel(false); };
+  function bulkComplete(){ sel.forEach(id=>{ const t=byId(id); if(t && t.status!=="done") store.completeTodo(t); }); exitSel(); }
+  function bulkDelete(){ sel.forEach(id=>store.remove("todos", id)); exitSel(); }
   const locs = knownLocations(store);
   // A location filter shows that place's items PLUS "anywhere" (blank) items - GTD contexts.
   const matchLoc = (t) => locFilter==="all" || !t.location || t.location===locFilter;
@@ -1904,7 +1918,9 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
-        <div className="eyebrow">Organize</div><h1 className="title">To-Dos</h1>
+        <div className="eyebrow">Organize</div>
+        <div className="topbar-row"><h1 className="title">To-Dos</h1>
+          <button className="btn btn-ghost btn-sm" onClick={()=>{ if(selMode) exitSel(); else setSelMode(true); }}>{selMode?"Cancel":"Select"}</button></div>
       </div>
       <div className="pills">
         {["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}
@@ -1917,16 +1933,27 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
       <div className="tabs">
         {TABS.map(s=><button key={s} className={"tab"+(tab===s?" on":"")} onClick={()=>setTab(s)}>{s[0].toUpperCase()+s.slice(1)} {counts[s]>0&&<span style={{opacity:.6}}>{counts[s]}</span>}</button>)}
       </div>
-      <div className="sortrow">
-        <div className="seg">
-          <button className={"seg-b"+(sortMode==="manual"?" on":"")} onClick={()=>setSortMode("manual")}>Manual</button>
-          <button className={"seg-b"+(sortMode==="smart"?" on":"")} onClick={()=>setSortMode("smart")}>Smart</button>
-        </div>
-        <span className="sortlbl">{sortMode==="manual" ? "Your drag order - hold the grip to reorder" : "Auto: priority, then due date"}</span>
-      </div>
+      {!selMode &&
+        <div className="sortrow">
+          <div className="seg">
+            <button className={"seg-b"+(sortMode==="manual"?" on":"")} onClick={()=>setSortMode("manual")}>Manual</button>
+            <button className={"seg-b"+(sortMode==="smart"?" on":"")} onClick={()=>setSortMode("smart")}>Smart</button>
+          </div>
+          <span className="sortlbl">{sortMode==="manual" ? "Your drag order - hold the grip to reorder" : "Auto: priority, then due date"}</span>
+        </div>}
       {tab==="all" && <DoneToggle showDone={showDone} setShowDone={setShowDone} n={doneAll.length}/>}
       {locFilter!=="all" && <p className="hint" style={{marginTop:8}}>Showing {locFilter} + any-place items.</p>}
       {items.length===0 && doneItems.length===0 ? <Empty glyph={"\u2014"} title={tab==="all"?"No to-dos yet":"No "+tab+" items"} sub={tab==="inbox"||tab==="all"?"Capture with the + button.":"Move items here as you organize."}/> :
+        selMode ?
+          <div className="list">
+            {items.map(t=>{ const on=sel.has(t.id);
+              return <div key={t.id} onClick={()=>toggleSel(t.id)} style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",borderRadius:12,padding:"1px 4px",background:on?"var(--amber-dim)":"transparent"}}>
+                <span style={{flex:"0 0 auto",width:24,height:24,borderRadius:"50%",display:"inline-flex",alignItems:"center",justifyContent:"center",border:"2px solid "+(on?"var(--amber)":"var(--line-2)"),background:on?"var(--amber)":"transparent",color:"var(--bg)"}}>{on && Ic.check}</span>
+                <div style={{flex:1,pointerEvents:"none"}}><TodoRow store={store} todo={t} onOpen={()=>{}}/></div>
+              </div>; })}
+            <div style={{height:72}}></div>
+          </div>
+        :
         <>
           {items.length>0 && <DragList items={items} getId={t=>t.id} reorderable={sortMode==="manual"} onReorder={(id,ids)=>reorderItem(store,"todos",id,ids,items)} onDelete={t=>del("todos",t)}
             render={t=><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/>}/>}
@@ -1935,6 +1962,16 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
             <div className="list">{doneItems.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div>
           </>}
         </>}
+      {selMode &&
+        <div style={{position:"fixed",left:0,right:0,bottom:"calc(var(--nav-h) + env(safe-area-inset-bottom))",zIndex:45,background:"var(--bg-2)",borderTop:"1px solid var(--line)",padding:"10px 16px",display:"flex",gap:6,alignItems:"center"}}>
+          <span className="label" style={{flex:1}}>{sel.size} selected</span>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setSel(sel.size===items.length&&items.length?new Set():new Set(items.map(t=>t.id)))}>{sel.size===items.length&&items.length?"Clear":"All"}</button>
+          <button className="btn btn-ghost btn-sm" disabled={!sel.size} onClick={bulkComplete}>Done</button>
+          <button className="btn btn-ghost btn-sm" disabled={!sel.size} onClick={()=>sel.size&&setBulkSnooze(true)}>Snooze</button>
+          <button className="btn btn-ghost btn-sm" disabled={!sel.size} style={{color:"var(--danger,#d9744f)"}} onClick={()=>sel.size&&setConfirmDel(true)}>Delete</button>
+        </div>}
+      {bulkSnooze && <SnoozeSheet onPick={(iso)=>{ sel.forEach(id=>{ const t=byId(id); if(t) snoozeTodo(store,t,iso); }); exitSel(); }} onClose={()=>setBulkSnooze(false)}/>}
+      {confirmDel && <Confirm text={"Delete "+sel.size+" item"+(sel.size===1?"":"s")+"? This can't be undone."} confirmLabel="Delete" onConfirm={bulkDelete} onCancel={()=>setConfirmDel(false)}/>}
     </div>
   );
 }
