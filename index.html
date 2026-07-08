@@ -83,6 +83,9 @@ a{color:var(--amber);}
 /* Settings section label - groups a labelled header above each settings card (matches
    the MenuCaptain settings pattern). Muted, small caps; sits in the page gutter. */
 .set-group{font-family:'Outfit';font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);font-weight:600;margin:22px 4px 9px;}
+/* About / update row: the Check-for-updates or Update-to-build action, centered with
+   its status text beside it (matches the MenuCaptain "refresh + update" presentation). */
+.updrow{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;padding:4px 0 2px;}
 .title{font-size:30px;line-height:1.05;margin-top:2px;}
 .title-sm{font-size:22px;}
 .subtle{color:var(--ink-3);font-size:13px;}
@@ -191,6 +194,9 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 18px;border-radius:var(--radius-sm);
   font-weight:600;font-size:15px;transition:.18s var(--ease);border:1px solid transparent;}
 .btn:active{transform:scale(.97);}
+/* Leading icon inside a button (e.g. the About "Update to build X" sparkle, the Today
+   "Focus" clock). The button's flex gap handles spacing; just give the icon a real size. */
+.btn svg{width:15px;height:15px;flex:0 0 auto;}
 .btn-primary{background:var(--amber);color:#241a0c;}
 .btn-primary:active{background:var(--amber-2);}
 .btn-ghost{background:var(--bg-3);color:var(--ink);border-color:var(--line-2);}
@@ -331,7 +337,7 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-25.12";
+const BUILD = "2026-06-25.13";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -2929,7 +2935,7 @@ function ExportView({ store, toast, back }){
   );
 }
 
-function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, build }){
+function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, update, onApplyUpdate, build }){
   const [confirmClear,setConfirmClear]=useState(false);
   const syncText = store.sync==="idle"?"Synced":store.sync==="busy"?(store.syncMsg||"Working"):store.sync==="pending"?"Changes queued (offline)":store.syncMsg||"Sync error";
   return (
@@ -2969,11 +2975,18 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, buil
       <div className="card" style={{padding:"2px 14px"}}>
         <button className="act-row" onClick={()=>store.pull()}>
           <span className="act-ic">{Ic.review}</span><span className="act-txt"><b>Force sync now</b><span>Pull the latest from the server</span></span></button>
-        <button className="act-row" onClick={()=>onCheckUpdate && onCheckUpdate(true)}>
-          <span className="act-ic">{Ic.sparkle}</span><span className="act-txt"><b>Check for updates</b><span>{updMsg || ("On build "+build)}</span></span></button>
         <button className="act-row" style={{borderBottom:"none"}} onClick={()=>go("diagnostics")}>
           <span className="act-ic">{Ic.gear}</span><span className="act-txt"><b>Diagnostics</b><span>View the activity log</span></span></button>
       </div>
+
+      <div className="set-group">About</div>
+      <div className="updrow">
+        {update
+          ? <button className="btn btn-primary btn-sm" style={{margin:0}} onClick={()=>onApplyUpdate && onApplyUpdate()}>{Ic.sparkle} Update to build {update}</button>
+          : <button className="btn btn-ghost btn-sm" style={{margin:0}} onClick={()=>onCheckUpdate && onCheckUpdate(true)}>Check for updates</button>}
+        {updMsg && <span className="hint" style={{margin:0}}>{updMsg}</span>}
+      </div>
+      <p className="hint" style={{textAlign:"center",marginTop:6}}>{(store.cfg.appName||"Priority Captain")} &middot; build {build}</p>
 
       <button className="btn btn-danger btn-block" style={{marginTop:22}} onClick={()=>setConfirmClear(true)}>Clear this device & sign out</button>
       <p className="hint" style={{textAlign:"center",marginTop:8}}>Clears this device's cache and sign-in. Your data stays safe on the server and re-syncs when you sign back in.</p>
@@ -3315,7 +3328,7 @@ function App(){
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(sub==="export") subView=<ExportView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="aichat") subView=<AIChat store={store} toast={toast} back={()=>setSub(null)}/>;
-  else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go} onCheckUpdate={checkUpdate} updMsg={updMsg} build={BUILD}/>;
+  else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go} onCheckUpdate={checkUpdate} updMsg={updMsg} update={update} onApplyUpdate={applyUpdate} build={BUILD}/>;
   else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
 
   let main;
