@@ -80,6 +80,9 @@ a{color:var(--amber);}
   background:linear-gradient(180deg, var(--bg) 60%, transparent);}
 .topbar-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;}
 .eyebrow{font-family:'Outfit';font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--amber);font-weight:600;}
+/* Settings section label - groups a labelled header above each settings card (matches
+   the MenuCaptain settings pattern). Muted, small caps; sits in the page gutter. */
+.set-group{font-family:'Outfit';font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);font-weight:600;margin:22px 4px 9px;}
 .title{font-size:30px;line-height:1.05;margin-top:2px;}
 .title-sm{font-size:22px;}
 .subtle{color:var(--ink-3);font-size:13px;}
@@ -115,11 +118,20 @@ a{color:var(--amber);}
 .chip.violet{background:#a98bc422;color:#c0a8d8;}
 .chip.work{background:#6f9bc41a;color:#8fb6d8;}
 .chip.personal{background:#cf8a5422;color:#e0a878;}
+/* Chips center their contents, so an icon with no intrinsic size collapses to 0px.
+   Give chip icons an explicit size so the clock (Waiting / snoozed) actually shows. */
+.chip svg{width:12px;height:12px;flex:0 0 auto;}
 
 /* checkbox */
 .check{width:22px;height:22px;border-radius:7px;border:2px solid var(--line-2);flex-shrink:0;margin-top:1px;
   display:flex;align-items:center;justify-content:center;transition:.18s;background:transparent;}
 .check.on{background:var(--amber);border-color:var(--amber);}
+/* Base for the inline Feather-style icons: they're all line-art, so default to
+   stroked + no fill. Without this, an icon in a container that doesn't set its own
+   svg rule (chips, the snooze button, section labels) renders as a solid black blob
+   - e.g. the clock's outline circle fills in. Class-scoped `... svg` rules below win
+   on specificity, so their custom colors/widths are unaffected. */
+svg{fill:none;stroke:currentColor;stroke-width:2;}
 .check svg{width:13px;height:13px;stroke:var(--bg);stroke-width:3.5;fill:none;opacity:0;transition:.15s;}
 .check.on svg{opacity:1;}
 
@@ -319,7 +331,17 @@ const LOG_CAP = 600;
 const LOG = [];
 // Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
 // and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-25.8";
+const BUILD = "2026-06-25.12";
+// Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
+// (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
+// numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
+// Used by the updater so we only offer a genuinely newer deployed build.
+function buildIsNewer(a, b){
+  const parse = s => String(s||"").split(/[-.]/).map(n=>parseInt(n,10)||0);
+  const pa=parse(a), pb=parse(b), len=Math.max(pa.length,pb.length);
+  for(let i=0;i<len;i++){ const x=pa[i]||0, y=pb[i]||0; if(x>y) return true; if(x<y) return false; }
+  return false;
+}
 function log(tag, msg){
   // WHY: keep a bounded buffer so memory never grows unbounded on a long-lived PWA
   const line = { t: new Date().toISOString().slice(11,19), tag, msg: String(msg) };
@@ -476,6 +498,34 @@ async function collPut(file, data){
     if(r.status===401) throw new Error("Session expired - sign in again.");
     throw new Error("Save failed ("+r.status+")"); }
   log("API","PUT "+file+" ok");
+  return true;
+}
+// `meta` is a per-user singleton OBJECT (config + app state), not an array, so it
+// needs its own load/save that doesn't array-coerce like collGet/collPut do.
+async function metaGet(){
+  const token = await authToken();
+  if(!token) throw new Error("Not signed in");
+  log("API","GET meta");
+  const r = await fetch(API_BASE + "/api/collection/meta", { headers:{ "Authorization":"Bearer "+token } });
+  if(!r.ok){ const t=await r.text(); log("ERROR","GET meta "+r.status+" "+t.slice(0,160));
+    if(r.status===401) throw new Error("Session expired - sign in again.");
+    throw new Error("Load failed ("+r.status+")"); }
+  const j = await r.json();
+  return (j && typeof j==="object" && !Array.isArray(j)) ? j : {};
+}
+async function metaPut(obj){
+  const token = await authToken();
+  if(!token) throw new Error("Not signed in");
+  log("API","PUT meta");
+  const r = await fetch(API_BASE + "/api/collection/meta", {
+    method:"PUT",
+    headers:{ "Authorization":"Bearer "+token, "Content-Type":"application/json" },
+    body: JSON.stringify(obj)
+  });
+  if(!r.ok){ const t=await r.text(); log("ERROR","PUT meta "+r.status+" "+t.slice(0,160));
+    if(r.status===401) throw new Error("Session expired - sign in again.");
+    throw new Error("Save failed ("+r.status+")"); }
+  log("API","PUT meta ok");
   return true;
 }
 
@@ -697,10 +747,13 @@ const THEMES = {
   paper:    { label:"Paper",    dark:false, bg:"#fbfaf7", bg2:"#f1efe9", bg3:"#ffffff", bg4:"#e8e5de", line:"#00000010", line2:"#e0dcd3", ink:"#211d18", ink2:"#5f584d", ink3:"#8d8676" },
 };
 const DEFAULT_THEME = "espresso";
+// The full default config shape. Also the reset target on sign-out, so a shared
+// device doesn't leak one account's settings to the next (config now syncs per-user).
+const DEFAULT_CFG = { locations:DEFAULT_LOCATIONS, categories:DEFAULT_CATEGORIES, appName:"Priority Captain", accent:DEFAULT_ACCENT, theme:DEFAULT_THEME };
 
 function useStore(){
   const [cfg, setCfg] = useState(() => {
-    const c = lsGet("cfg", { locations:DEFAULT_LOCATIONS, categories:DEFAULT_CATEGORIES, appName:"Priority Captain", accent:DEFAULT_ACCENT, theme:DEFAULT_THEME });
+    const c = lsGet("cfg", DEFAULT_CFG);
     if(c.appName === "Tracker"){ c.appName = "Priority Captain"; lsSet("cfg", c); }   // rebrand: bump the old "Tracker" default for existing installs
     return c;
   });
@@ -715,12 +768,32 @@ function useStore(){
   const [authEmail, setAuthEmail] = useState("");    // signed-in email (shown in Settings)
   const [authReady, setAuthReady] = useState(false); // first session check finished (avoids a login flash)
   const cfgRef = useRef(cfg); cfgRef.current = cfg;
+  const cfgDirtyRef = useRef(lsGet("cfgDirty", false));   // true when local config has unpushed edits
   const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   const dataRef = useRef(data); dataRef.current = data;
   const authedRef = useRef(false);
 
-  // persist config
-  const saveCfg = useCallback((next) => { setCfg(next); lsSet("cfg", next); }, []);
+  // Push config to the per-user `meta` singleton. Same offline-defer contract as
+  // the file sync: if offline or signed out, leave cfgDirty set so the next pull /
+  // online event flushes it. Reads cfgRef so it always sends the latest value.
+  const pushCfg = useCallback(async () => {
+    if(!cfgDirtyRef.current) return;
+    if(!authedRef.current) return;
+    if(!navigator.onLine){ log("SYNC","offline; deferring cfg push"); setSync("pending"); return; }
+    try{
+      await metaPut({ cfg: cfgRef.current });
+      cfgDirtyRef.current = false; lsSet("cfgDirty", false);
+      log("SYNC","cfg -> meta pushed");
+    }catch(e){ setSync("error"); setSyncMsg(e.message||"Sync failed"); log("ERROR","pushCfg: "+e.message); }
+  }, []);
+
+  // persist config (local + per-user meta). Keep cfgRef current so pushCfg sends
+  // the new value immediately, before the re-render that would sync the ref.
+  const saveCfg = useCallback((next) => {
+    setCfg(next); lsSet("cfg", next); cfgRef.current = next;
+    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    pushCfg();
+  }, [pushCfg]);
 
   // mark a file dirty + persist its cache
   const markDirty = useCallback((file, rows) => {
@@ -779,12 +852,31 @@ function useStore(){
         nextData[f] = arr; lsSet("cache:"+f, arr);
       }
       dataRef.current = nextData; setData(nextData);
+      // Config lives in the per-user `meta` singleton. Apply the server copy unless
+      // we have unpushed local edits (mirrors the per-file dirty-skip above). If the
+      // server has no config yet (existing user, first run), seed it from this device.
+      if(!cfgDirtyRef.current){
+        try{
+          const m = await metaGet();
+          const sc = m && m.cfg;
+          if(sc && typeof sc==="object" && !Array.isArray(sc)){
+            const merged = { ...DEFAULT_CFG, ...sc };
+            if(merged.appName === "Tracker") merged.appName = "Priority Captain";   // legacy rebrand guard
+            cfgRef.current = merged; setCfg(merged); lsSet("cfg", merged);
+            log("SYNC","cfg <- meta applied");
+          } else {
+            cfgDirtyRef.current = true; lsSet("cfgDirty", true);   // seed server from local on the push below
+            log("SYNC","no server cfg; seeding from local");
+          }
+        }catch(e){ log("ERROR","pull meta: "+e.message); }
+      }
       setSync(FILES.some(f=>dirtyRef.current[f])?"pending":"idle"); setSyncMsg("");
       log("SYNC","pull complete");
       ensureOrders();
       await pushDirty();
+      await pushCfg();
     }catch(e){ setSync("error"); setSyncMsg(e.message||"Sync failed"); log("ERROR","pull: "+e.message); }
-  }, [pushDirty, ensureOrders]);
+  }, [pushDirty, pushCfg, ensureOrders]);
 
   // ----- Auth: track the Supabase session and pull on sign-in -----
   // applySession runs on the initial check AND on every auth change. It pulls only
@@ -811,11 +903,15 @@ function useStore(){
     // CLEAN from the server. Prevents one account's stale/dirty data from being shown
     // to - or pushed under - a different account on the same device (migration footgun).
     FILES.forEach(f => lsDel("cache:"+f));
-    ["dirty","pendingReview","aiChat","aiPlan","aiSeed"].forEach(k => lsDel(k));
+    ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty"].forEach(k => lsDel(k));
     const empty = {}; FILES.forEach(f => empty[f] = []);
     dataRef.current = empty; setData(empty);
     dirtyRef.current = {}; setDirty({});
-    log("AUTH","signed out (local cache cleared)");
+    // Config now syncs per-user, so reset it to defaults too - the next sign-in
+    // pulls that account's config back down.
+    cfgDirtyRef.current = false; lsSet("cfg", DEFAULT_CFG);
+    cfgRef.current = DEFAULT_CFG; setCfg(DEFAULT_CFG);
+    log("AUTH","signed out (local cache + config cleared)");
   }, []);
 
   // Self-serve signup. With email confirmation ON (Supabase setting), there is no
@@ -871,20 +967,24 @@ function useStore(){
 
   // online/offline listeners
   useEffect(() => {
-    const on = () => { setOnline(true); log("SYNC","online"); pushDirty(); };
+    const on = () => { setOnline(true); log("SYNC","online"); pushDirty(); pushCfg(); };
     const off = () => { setOnline(false); log("SYNC","offline"); setSync("pending"); };
     window.addEventListener("online", on); window.addEventListener("offline", off);
     return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
-  }, [pushDirty]);
+  }, [pushDirty, pushCfg]);
 
   // seed manual order for whatever is already cached (covers offline launches)
   useEffect(() => { ensureOrders(); }, [ensureOrders]);
 
   // periodic retry while dirty
   useEffect(() => {
-    const id = setInterval(() => { if(FILES.some(f=>dirtyRef.current[f]) && navigator.onLine) pushDirty(); }, 30000);
+    const id = setInterval(() => {
+      if(!navigator.onLine) return;
+      if(FILES.some(f=>dirtyRef.current[f])) pushDirty();
+      if(cfgDirtyRef.current) pushCfg();
+    }, 30000);
     return () => clearInterval(id);
-  }, [pushDirty]);
+  }, [pushDirty, pushCfg]);
 
   // generic mutators ------------------------------------------------
   const upsert = useCallback((file, row) => {
@@ -1069,20 +1169,29 @@ function NavIc({d}){ return d; }
 /* ============================================================
    SMALL SHARED COMPONENTS
    ============================================================ */
-function Sheet({ title, onClose, children }){
+function Sheet({ title, onClose, children, action }){
   useEffect(() => { document.body.style.overflow="hidden"; return () => { document.body.style.overflow=""; }; }, []);
-  return (
+  // Portal to <body>. The scrim + sheet are position:fixed (viewport-anchored), but a
+  // Sheet opened from inside a row (e.g. the snooze button) sits under SwipeRow's
+  // .swipe-body, which has transform + will-change:transform - that makes it the
+  // containing block for fixed descendants, so the sheet would anchor to the ROW and
+  // get clipped by .swipe-wrap's overflow:hidden. The portal lifts it out of that.
+  return ReactDOM.createPortal(
     <div>
       <div className="scrim" onClick={onClose}></div>
       <div className="sheet" role="dialog">
         <div className="sheet-grip"></div>
         <div className="sheet-head">
           {title && <h3 className="sheet-title">{title}</h3>}
-          <button className="sheet-x" onClick={onClose} aria-label="Cancel">{Ic.close}</button>
+          <div style={{display:"flex",alignItems:"center",gap:10,flex:"0 0 auto"}}>
+            {action}
+            <button className="sheet-x" onClick={onClose} aria-label="Cancel">{Ic.close}</button>
+          </div>
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 function Toast({ obj, onClose }){
@@ -1206,7 +1315,7 @@ function TodoEditor({ store, todo, onClose, toast }){
   function addSub(){ if(!newSub.trim())return; setSubtasks([...subtasks,{id:uid(),title:newSub.trim(),done:false}]); setNewSub(""); }
 
   return (
-    <Sheet title={t.id?"Edit todo":"New todo"} onClose={onClose}>
+    <Sheet title={t.id?"Edit todo":"New todo"} onClose={onClose} action={<button className="btn btn-primary btn-sm" onClick={save}>{t.id?"Save":"Add"}</button>}>
       <div className="title-field"><span className="label">Title</span>
         <input className="title-input" value={title} onChange={e=>setTitle(e.target.value)} placeholder="What needs doing?" autoFocus/></div>
       <div className="row">
@@ -1316,7 +1425,7 @@ function IdeaEditor({ store, idea, onClose, toast }){
     toast("Promoted to project"); onClose();
   }
   return (
-    <Sheet title={t.id?"Edit idea":"New idea"} onClose={onClose}>
+    <Sheet title={t.id?"Edit idea":"New idea"} onClose={onClose} action={<button className="btn btn-primary btn-sm" onClick={save}>{t.id?"Save":"Capture"}</button>}>
       <div className="title-field"><span className="label">Idea</span>
         <input className="title-input" value={title} onChange={e=>setTitle(e.target.value)} placeholder="A raw thought..." autoFocus/></div>
       <div className="field"><span className="label">Body</span>
@@ -1361,7 +1470,7 @@ function ProjectEditor({ store, project, onClose, toast }){
     toast(t.id?"Saved":"Created"); onClose();
   }
   return (
-    <Sheet title={t.id?"Edit project":"New project"} onClose={onClose}>
+    <Sheet title={t.id?"Edit project":"New project"} onClose={onClose} action={<button className="btn btn-primary btn-sm" onClick={save}>{t.id?"Save":"Create"}</button>}>
       <div className="title-field"><span className="label">Name (as an outcome)</span>
         <input className="title-input" value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Submit final tech pack" autoFocus/></div>
       <div className="field"><span className="label">Outcome - what does done look like?</span>
@@ -1406,7 +1515,7 @@ function GoalEditor({ store, goal, onClose, toast }){
     toast(t.id?"Saved":"Created"); onClose();
   }
   return (
-    <Sheet title={t.id?"Edit goal":"New goal"} onClose={onClose}>
+    <Sheet title={t.id?"Edit goal":"New goal"} onClose={onClose} action={<button className="btn btn-primary btn-sm" onClick={save}>{t.id?"Save":"Create"}</button>}>
       <div className="title-field"><span className="label">Goal</span>
         <input className="title-input" value={name} onChange={e=>setName(e.target.value)} placeholder="A longer-term objective" autoFocus/></div>
       <div className="field"><span className="label">Why it matters</span>
@@ -1557,6 +1666,46 @@ function SnoozeSheet({ onPick, onClose }){
         <div className="row" style={{alignItems:"center"}}>
           <input className="input" type="datetime-local" value={custom} onChange={e=>setCustom(e.target.value)} style={{flex:1}}/>
           <button className="btn btn-primary btn-sm" disabled={!custom} style={{flex:"0 0 auto"}} onClick={()=>custom&&pick(custom)}>Set</button>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+// Bulk "move to project" picker. Same sheet UI as SnoozeSheet. onPick(projectId, label)
+// receives the target ("" = unfile) plus a label for the toast. Can create a project
+// inline, mirroring the TodoEditor's "+ Create new project" flow.
+function MoveSheet({ store, onPick, onClose }){
+  const projects = store.data.projects.filter(p=>p.status!=="archived").sort(byOrder);
+  const [newProj,setNewProj]=useState("");
+  const pick = (pid, label) => { onPick(pid, label); onClose(); };
+  function createAndMove(){
+    const name = newProj.trim(); if(!name) return;
+    const p = store.upsert("projects",{ name, type:"", status:"active", outcome:"", description:"", deadline:"", goalId:null });
+    log("SAVE","bulk-move created project "+name);
+    pick(p.id, name);
+  }
+  return (
+    <Sheet title="Move to project" onClose={onClose}>
+      <button className="act-row" onClick={()=>pick("", "no project")}>
+        <span className="act-ic">{Ic.lists}</span>
+        <span className="act-txt"><b>Unfile</b><span>No project</span></span>
+      </button>
+      <div className="divider"></div>
+      {projects.length===0
+        ? <p className="hint" style={{margin:"4px 0"}}>No projects yet - create one below.</p>
+        : projects.map(p=>(
+            <button key={p.id} className="act-row" onClick={()=>pick(p.id, p.name)}>
+              <span className="act-ic">{Ic.project}</span>
+              <span className="act-txt"><b>{p.name}</b>{p.type?<span>{p.type}</span>:null}</span>
+            </button>
+          ))}
+      <div className="divider"></div>
+      <div className="field">
+        <span className="label">New project</span>
+        <div className="row" style={{alignItems:"center"}}>
+          <input className="input" value={newProj} onChange={e=>setNewProj(e.target.value)} placeholder="New project name" autoCapitalize="sentences" style={{flex:1}}/>
+          <button className="btn btn-primary btn-sm" disabled={!newProj.trim()} style={{flex:"0 0 auto"}} onClick={createAndMove}>Create &amp; move</button>
         </div>
       </div>
     </Sheet>
@@ -1883,7 +2032,7 @@ function NowView({ store, onOpen, back }){
 /* ============================================================
    VIEW: LISTS  (GTD statuses, filterable)
    ============================================================ */
-function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLocFilter, del }){
+function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLocFilter, del, toast }){
   const TABS = ["all", ...STATUS_ORDER];     // "all" = every active to-do in one list
   const [tab,setTab]=useState("all");
   const [sortMode,setSortMode]=useState(()=>lsGet("todoSort","manual")); // 'manual' = your drag order, 'smart' = priority/due
@@ -1893,12 +2042,16 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
   const [selMode,setSelMode]=useState(false);
   const [sel,setSel]=useState(()=>new Set());
   const [bulkSnooze,setBulkSnooze]=useState(false);
+  const [bulkMoveOpen,setBulkMoveOpen]=useState(false);
   const [confirmDel,setConfirmDel]=useState(false);
   const byId = (id) => store.data.todos.find(t=>t.id===id);
   const toggleSel = (id) => setSel(s=>{ const n=new Set(s); n.has(id)?n.delete(id):n.add(id); return n; });
-  const exitSel = () => { setSelMode(false); setSel(new Set()); setBulkSnooze(false); setConfirmDel(false); };
+  const exitSel = () => { setSelMode(false); setSel(new Set()); setBulkSnooze(false); setBulkMoveOpen(false); setConfirmDel(false); };
   function bulkComplete(){ sel.forEach(id=>{ const t=byId(id); if(t && t.status!=="done") store.completeTodo(t); }); exitSel(); }
   function bulkDelete(){ sel.forEach(id=>store.remove("todos", id)); exitSel(); }
+  // Re-file every selected todo under `pid` ("" = unfile). `label` is passed from the
+  // MoveSheet so the toast is correct even for a just-created project.
+  function bulkMove(pid, label){ const n=sel.size; sel.forEach(id=>{ const t=byId(id); if(t) store.upsert("todos",{ id:t.id, projectId:pid }); }); exitSel(); if(toast) toast("Moved "+n+" to "+label); }
   const locs = knownLocations(store);
   // A location filter shows that place's items PLUS "anywhere" (blank) items - GTD contexts.
   const matchLoc = (t) => locFilter==="all" || !t.location || t.location===locFilter;
@@ -1963,14 +2116,16 @@ function ListsView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLoc
           </>}
         </>}
       {selMode &&
-        <div style={{position:"fixed",left:0,right:0,bottom:"calc(var(--nav-h) + env(safe-area-inset-bottom))",zIndex:45,background:"var(--bg-2)",borderTop:"1px solid var(--line)",padding:"10px 16px",display:"flex",gap:6,alignItems:"center"}}>
-          <span className="label" style={{flex:1}}>{sel.size} selected</span>
+        <div style={{position:"fixed",left:0,right:0,bottom:"calc(var(--nav-h) + env(safe-area-inset-bottom))",zIndex:45,background:"var(--bg-2)",borderTop:"1px solid var(--line)",padding:"10px 16px",display:"flex",gap:6,rowGap:8,flexWrap:"wrap",alignItems:"center"}}>
+          <span className="label" style={{marginRight:"auto"}}>{sel.size} selected</span>
           <button className="btn btn-ghost btn-sm" onClick={()=>setSel(sel.size===items.length&&items.length?new Set():new Set(items.map(t=>t.id)))}>{sel.size===items.length&&items.length?"Clear":"All"}</button>
           <button className="btn btn-ghost btn-sm" disabled={!sel.size} onClick={bulkComplete}>Done</button>
           <button className="btn btn-ghost btn-sm" disabled={!sel.size} onClick={()=>sel.size&&setBulkSnooze(true)}>Snooze</button>
+          <button className="btn btn-ghost btn-sm" disabled={!sel.size} onClick={()=>sel.size&&setBulkMoveOpen(true)}>Move</button>
           <button className="btn btn-ghost btn-sm" disabled={!sel.size} style={{color:"var(--danger,#d9744f)"}} onClick={()=>sel.size&&setConfirmDel(true)}>Delete</button>
         </div>}
       {bulkSnooze && <SnoozeSheet onPick={(iso)=>{ sel.forEach(id=>{ const t=byId(id); if(t) snoozeTodo(store,t,iso); }); exitSel(); }} onClose={()=>setBulkSnooze(false)}/>}
+      {bulkMoveOpen && <MoveSheet store={store} onPick={bulkMove} onClose={()=>setBulkMoveOpen(false)}/>}
       {confirmDel && <Confirm text={"Delete "+sel.size+" item"+(sel.size===1?"":"s")+"? This can't be undone."} confirmLabel="Delete" onConfirm={bulkDelete} onCancel={()=>setConfirmDel(false)}/>}
     </div>
   );
@@ -2403,7 +2558,7 @@ function AppearanceEditor({ store }){
               background:c, border: accent.toLowerCase()===c.toLowerCase() ? "2px solid var(--ink)" : "2px solid var(--line-2)"}}/>)}
         </div>
       </div>
-      <p className="hint" style={{marginTop:8}}>Saved on this device only - the name and color don't affect anyone else's copy of the app.</p>
+      <p className="hint" style={{marginTop:8}}>Saved to your account - your name, theme, and color follow you on every device you sign in on.</p>
     </div>
   );
 }
@@ -2774,53 +2929,56 @@ function ExportView({ store, toast, back }){
   );
 }
 
-function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, build }){
+function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, build }){
   const [confirmClear,setConfirmClear]=useState(false);
+  const syncText = store.sync==="idle"?"Synced":store.sync==="busy"?(store.syncMsg||"Working"):store.sync==="pending"?"Changes queued (offline)":store.syncMsg||"Sync error";
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
         <div className="eyebrow">Configure</div><h1 className="title">Settings</h1>
       </div>
       <div className={"sync "+store.sync} style={{marginTop:12}}>
-        <span className="dot"></span>{store.sync==="idle"?"Synced":store.sync==="busy"?(store.syncMsg||"Working"):store.sync==="pending"?"Changes queued (offline)":store.syncMsg||"Sync error"}
+        <span className="dot"></span>{syncText}
       </div>
-      <div className="divider"></div>
-      <h3 style={{fontSize:17,marginBottom:12}}>Connection</h3>
-      <AccountPanel store={store} toast={toast}/>
-      <div className="divider"></div>
-      <h3 style={{fontSize:17,marginBottom:12}}>Appearance</h3>
-      <AppearanceEditor store={store}/>
-      <div className="divider"></div>
-      <h3 style={{fontSize:17,marginBottom:12}}>Follow-up nudge</h3>
-      <div className="row" style={{alignItems:"center"}}>
-        <span style={{flex:1}}>Flag "Waiting" items after</span>
-        <select className="input" style={{flex:"0 0 auto",width:130}} value={String(waitThreshold(store))}
-          onChange={e=>store.saveCfg({ ...store.cfg, waitDays: parseInt(e.target.value,10) })}>
-          {[3,5,7,14,30].map(n=><option key={n} value={n}>{n} days</option>)}
-        </select>
+
+      <div className="set-group" style={{marginTop:10}}>Account</div>
+      <div className="card"><AccountPanel store={store} toast={toast}/></div>
+
+      <div className="set-group">Appearance</div>
+      <div className="card"><AppearanceEditor store={store}/></div>
+
+      <div className="set-group">Follow-up nudge</div>
+      <div className="card">
+        <div className="row" style={{alignItems:"center"}}>
+          <span style={{flex:1}}>Flag "Waiting" items after</span>
+          <select className="input" style={{flex:"0 0 auto",width:130}} value={String(waitThreshold(store))}
+            onChange={e=>store.saveCfg({ ...store.cfg, waitDays: parseInt(e.target.value,10) })}>
+            {[3,5,7,14,30].map(n=><option key={n} value={n}>{n} days</option>)}
+          </select>
+        </div>
+        <p className="hint" style={{marginTop:8,marginBottom:0}}>Older "Waiting" items show their age and surface in a Follow up list on Today.</p>
       </div>
-      <p className="hint" style={{marginTop:6}}>Older "Waiting" items show their age and surface in a Follow up list on Today.</p>
-      <div className="divider"></div>
-      <h3 style={{fontSize:17,marginBottom:12}}>Categories</h3>
-      <CategoriesEditor store={store} toast={toast} toastUndo={toastUndo}/>
-      <div className="divider"></div>
-      <h3 style={{fontSize:17,marginBottom:12}}>Locations / contexts</h3>
-      <LocationsEditor store={store} toast={toast} toastUndo={toastUndo}/>
-      <div className="divider"></div>
-      <button className="act-row" onClick={()=>go("diagnostics")}>
-        <span className="act-ic">{Ic.gear}</span><span className="act-txt"><b>Diagnostics</b><span>View the activity log</span></span></button>
-      <button className="act-row" onClick={()=>store.pull()}>
-        <span className="act-ic">{Ic.review}</span><span className="act-txt"><b>Force sync now</b><span>Pull from GitHub</span></span></button>
-      <button className="act-row" onClick={()=>onCheckUpdate && onCheckUpdate(true)}>
-        <span className="act-ic">{Ic.sparkle}</span><span className="act-txt"><b>Check for updates</b><span>On build {build}</span></span></button>
-      <div className="divider"></div>
-      <div className="card" style={{borderColor:"var(--line-2)"}}>
-        <b style={{fontFamily:"Fraunces",fontSize:15}}>One launch context</b>
-        <p className="hint" style={{marginTop:4}}>Home Screen and a Safari tab keep separate storage. Pick one (Home Screen recommended) and stick with it; you'll re-enter credentials once in each.</p>
+
+      <div className="set-group">Categories</div>
+      <div className="card"><CategoriesEditor store={store} toast={toast} toastUndo={toastUndo}/></div>
+
+      <div className="set-group">Locations / contexts</div>
+      <div className="card"><LocationsEditor store={store} toast={toast} toastUndo={toastUndo}/></div>
+
+      <div className="set-group">System</div>
+      <div className="card" style={{padding:"2px 14px"}}>
+        <button className="act-row" onClick={()=>store.pull()}>
+          <span className="act-ic">{Ic.review}</span><span className="act-txt"><b>Force sync now</b><span>Pull the latest from the server</span></span></button>
+        <button className="act-row" onClick={()=>onCheckUpdate && onCheckUpdate(true)}>
+          <span className="act-ic">{Ic.sparkle}</span><span className="act-txt"><b>Check for updates</b><span>{updMsg || ("On build "+build)}</span></span></button>
+        <button className="act-row" style={{borderBottom:"none"}} onClick={()=>go("diagnostics")}>
+          <span className="act-ic">{Ic.gear}</span><span className="act-txt"><b>Diagnostics</b><span>View the activity log</span></span></button>
       </div>
-      <button className="btn btn-danger btn-block" style={{marginTop:16}} onClick={()=>setConfirmClear(true)}>Clear this device & sign out</button>
-      {confirmClear && <Confirm text="This clears the local cache and credentials on THIS device. Your data in GitHub is untouched and re-syncs when you reconnect."
-        confirmLabel="Clear device" onConfirm={()=>{ FILES.forEach(f=>lsDel("cache:"+f)); ["cfg","sha","dirty"].forEach(lsDel); location.reload(); }}
+
+      <button className="btn btn-danger btn-block" style={{marginTop:22}} onClick={()=>setConfirmClear(true)}>Clear this device & sign out</button>
+      <p className="hint" style={{textAlign:"center",marginTop:8}}>Clears this device's cache and sign-in. Your data stays safe on the server and re-syncs when you sign back in.</p>
+      {confirmClear && <Confirm text="This clears the local cache and sign-in on THIS device. Your data on the server is untouched and re-syncs when you sign back in."
+        confirmLabel="Clear device" onConfirm={()=>{ FILES.forEach(f=>lsDel("cache:"+f)); ["cfg","cfgDirty","dirty","pendingReview","aiChat","aiPlan","aiSeed"].forEach(lsDel); location.reload(); }}
         onCancel={()=>setConfirmClear(false)}/>}
     </div>
   );
@@ -3074,23 +3232,37 @@ function App(){
 
   // --- PWA self-update: detect a newer deployed build and offer a one-tap refresh ---
   // Installed PWAs cache the HTML hard; this fetches the deployed file fresh, reads its
-  // BUILD stamp, and surfaces a banner when it differs from the running build.
-  const [update,setUpdate]=useState(null);   // deployed version string when it differs from BUILD
-  const checkUpdate = useCallback(async (announce=false)=>{
+  // BUILD stamp, and surfaces a banner when a genuinely newer build is live.
+  const [update,setUpdate]=useState(null);   // deployed build string when it's newer than BUILD
+  const [updMsg,setUpdMsg]=useState("");     // inline status for the Settings "Check for updates" row
+  const updTimer = useRef(null);
+  // Show a status line for a few seconds then clear it (used for terminal results).
+  const flashUpd = useCallback((msg)=>{ setUpdMsg(msg); if(updTimer.current) clearTimeout(updTimer.current); updTimer.current = setTimeout(()=>setUpdMsg(""), 4000); },[]);
+  // manual=true is the Settings button: show inline "Checking..." then a result. On
+  // launch/resume we check quietly and only surface the banner if there's an update.
+  const checkUpdate = useCallback(async (manual=false)=>{
+    if(manual){ if(updTimer.current) clearTimeout(updTimer.current); setUpdMsg("Checking..."); }
     try{
       const res = await fetch(location.pathname + "?_=" + Date.now(), { cache:"no-store" });
-      if(!res.ok){ log("UPDATE","check http "+res.status); if(announce) toast("Couldn't check for updates"); return; }
+      if(!res.ok){ log("UPDATE","check http "+res.status); if(manual) flashUpd("Couldn't check - are you online?"); return; }
       const html = await res.text();
       const m = html.match(/const BUILD = "([^"]+)";/);
-      if(m && m[1] && m[1] !== BUILD){ log("UPDATE","new build available: "+m[1]); setUpdate(m[1]); }
-      else { log("UPDATE","up to date ("+BUILD+")"); if(announce) toast("You're on the latest (build "+BUILD+")"); }
-    }catch(e){ log("UPDATE","check failed: "+e.message); if(announce) toast("Update check failed"); }
-  },[toast]);
+      const remote = m && m[1];
+      if(remote && buildIsNewer(remote, BUILD)){ log("UPDATE","newer build live: "+remote); setUpdate(remote); if(manual) setUpdMsg(""); }
+      else { log("UPDATE","up to date ("+BUILD+")"); setUpdate(null); if(manual) flashUpd("You're on the latest (build "+BUILD+")"); }
+    }catch(e){ log("UPDATE","check failed: "+e.message); if(manual) flashUpd("Update check failed"); }
+  },[flashUpd]);
+  // Check on launch AND on resume AND on a periodic timer - installed PWAs are usually
+  // RESUMED from the background, not cold-launched, so a launch-only check means the
+  // banner rarely surfaces on its own. Debounced so a burst of resumes only refetches once.
   useEffect(()=>{
-    checkUpdate();
-    const onVis = ()=>{ if(document.visibilityState==="visible") checkUpdate(); };
+    let last=0; const GAP=60*1000;
+    const maybe=()=>{ const now=Date.now(); if(now-last<GAP) return; last=now; checkUpdate(false); };
+    const t=setTimeout(maybe, 1200);                       // initial launch check
+    const onVis=()=>{ if(document.visibilityState==="visible") maybe(); };
     document.addEventListener("visibilitychange", onVis);
-    return ()=>document.removeEventListener("visibilitychange", onVis);
+    const iv=setInterval(maybe, 20*60*1000);               // periodic while open
+    return ()=>{ clearTimeout(t); clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
   },[checkUpdate]);
   // Apply by navigating to a version-stamped URL so iOS can't serve the cached HTML.
   function applyUpdate(){ log("UPDATE","applying -> "+update); window.location.replace(location.pathname + "?u=" + encodeURIComponent(update||String(Date.now()))); }
@@ -3143,13 +3315,13 @@ function App(){
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(sub==="export") subView=<ExportView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="aichat") subView=<AIChat store={store} toast={toast} back={()=>setSub(null)}/>;
-  else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go} onCheckUpdate={checkUpdate} build={BUILD}/>;
+  else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go} onCheckUpdate={checkUpdate} updMsg={updMsg} build={BUILD}/>;
   else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
 
   let main;
   if(sub && sub!=="more") main=subView;
   else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter} del={deleteWithUndo}/>;
-  else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter} del={deleteWithUndo}/>;
+  else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter} del={deleteWithUndo} toast={toast}/>;
   else if(tab==="more") main=<MoreView store={store} go={go}/>;
 
   function navTo(t){ setTab(t); setSub(null); }
