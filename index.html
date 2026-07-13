@@ -350,11 +350,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.8.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-13.2";
+const BUILD = "2026-07-13.3";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -671,6 +671,31 @@ async function claudeChat(system, messages){
     log("AI","chat raw len="+text.length);
     return text;
   }catch(e){ log("ERROR","claudeChat: "+e.message); throw e; }
+}
+
+// Dashboard AI brief: a short "what needs your attention" summary. Routes through the same
+// relay (task "brief" -> Haiku server-side; cheap + fast), gated by the same budget/circuit
+// breaker. Optional + button-triggered, never auto - so it never blocks the dashboard.
+async function claudeBrief(system, userText){
+  log("AI","brief request (relay)");
+  const token = await authToken();
+  if(!token) throw new Error("Not signed in.");
+  try{
+    const r = await fetch(API_BASE + "/api/ai/relay",{
+      method:"POST",
+      headers:{ "Content-Type":"application/json", "Authorization":"Bearer "+token },
+      body:JSON.stringify({ task:"brief", model:"claude-haiku-4-5", max_tokens: 700, system, messages:[{ role:"user", content:userText }] })
+    });
+    if(!r.ok){ const t=await r.text(); log("ERROR","relay brief "+r.status+" "+t.slice(0,200));
+      if(r.status===401) throw new Error("Session expired - sign in again.");
+      if(r.status===429) throw new Error("AI is at its limit for now. Try again later.");
+      if(r.status===503) throw new Error("AI is temporarily unavailable.");
+      throw new Error("AI error "+r.status+"."); }
+    const j = await r.json();
+    const text = (j.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
+    log("AI","brief len="+text.length);
+    return text.trim();
+  }catch(e){ log("ERROR","claudeBrief: "+e.message); throw e; }
 }
 
 // Build a compact snapshot of current data for the organizer's context.
@@ -3323,12 +3348,51 @@ function DashboardView({ store, onOpen, openEditor }){
     </div>
   );
 
+  // AI brief (optional, button-triggered so it never auto-spends). Summarizes the CURRENT
+  // (space-scoped) snapshot. Grounded: the prompt says use only the provided items.
+  const [brief,setBrief]=useState("");
+  const [briefBusy,setBriefBusy]=useState(false);
+  const [briefErr,setBriefErr]=useState("");
+  const hasData = todayOverdue.length||priorities.length||activeProjects.length||activeGoals.length;
+  function buildBriefInput(){
+    const line=(t)=>{ let s='"'+(t.title||"")+'"'; const bits=[];
+      if(t.due) bits.push(isOverdue(t.due)?("overdue, was due "+t.due):isToday(t.due)?"due today":("due "+t.due));
+      if(t.quad==="q1") bits.push("Do First"); if(t.starredToday) bits.push("flagged");
+      if(bits.length) s+=" ("+bits.join(", ")+")"; return s; };
+    const L=["Space: "+spaceName];
+    if(todayOverdue.length) L.push("Due/overdue ("+todayOverdue.length+"): "+todayOverdue.slice(0,12).map(line).join("; "));
+    if(priorities.length)   L.push("Priorities ("+priorities.length+"): "+priorities.slice(0,10).map(line).join("; "));
+    if(activeProjects.length) L.push("Active projects ("+activeProjects.length+"): "+activeProjects.slice(0,10).map(p=>'"'+p.name+'" - '+openCount(p.id)+" open"+(p.deadline?(", deadline "+p.deadline):"")).join("; "));
+    if(activeGoals.length)  L.push("Goals ("+activeGoals.length+"): "+activeGoals.slice(0,8).map(g=>'"'+g.name+'"').join("; "));
+    return L.join("\n");
+  }
+  async function runBrief(){
+    if(briefBusy) return;
+    setBriefBusy(true); setBriefErr("");
+    try{
+      const sys = "You are the user's focused assistant. Given a snapshot of their current tasks, projects and goals"+(isAll?"":(" for their \""+spaceName+"\" area"))+", write a SHORT brief (3-5 sentences, plain text, no headers or markdown) on what needs their attention right now. Lead with anything overdue or due today. Be specific and name actual items. Use ONLY the provided data - never invent tasks. If there's little to do, say so briefly.";
+      setBrief(await claudeBrief(sys, buildBriefInput()) || "(no summary returned)");
+    }catch(e){ setBriefErr(e.message||"Couldn't generate a brief."); }
+    finally{ setBriefBusy(false); }
+  }
+
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
         <div className="eyebrow">Overview</div>
         <div className="topbar-row"><h1 className="title">Dashboard</h1></div>
         <div className="subtle" style={{marginTop:2}}>{spaceName}{" · "}{todayOverdue.length} due/overdue{" · "}{activeProjects.length} active project{activeProjects.length===1?"":"s"}</div>
+      </div>
+
+      <div className="card" style={{marginTop:16,borderColor:"var(--amber-line)"}}>
+        <div className="topbar-row" style={{alignItems:"center"}}>
+          <div className="label" style={{display:"flex",alignItems:"center",gap:6}}>{Ic.sparkle} AI brief</div>
+          {hasData && <button className="btn btn-ghost btn-sm" disabled={briefBusy} onClick={runBrief}>{briefBusy? <span className="spin"></span> : (brief?"Refresh":"Summarize")}</button>}
+        </div>
+        {briefErr && <p className="hint danger-text" style={{marginTop:8}}>{briefErr}</p>}
+        {!briefErr && brief && <p style={{marginTop:8,lineHeight:1.5,whiteSpace:"pre-wrap"}}>{brief}</p>}
+        {!briefErr && !brief && !briefBusy &&
+          <p className="hint" style={{marginTop:8}}>{hasData ? ("Tap Summarize for a quick read on what needs your attention"+(isAll?" across all Spaces.":" in "+spaceName+".")) : "Nothing to brief right now."}</p>}
       </div>
 
       <Section title="Today / Overdue" n={todayOverdue.length} empty="Nothing due or overdue. Nice."
@@ -3366,7 +3430,7 @@ function DashboardView({ store, onOpen, openEditor }){
    ============================================================ */
 function MoreView({ store, go }){
   const rows = [
-    { k:"dashboard", ic:Ic.dashboard, b:"Dashboard", s:"What needs your attention" },
+    { k:"ideas",    ic:Ic.idea,    b:"Ideas", s:store.data.ideas.length+" captured" },
     { k:"aichat",   ic:Ic.sparkle, b:"Organize with AI", s:"Brain-dump, then approve a plan" },
     { k:"matrix",   ic:Ic.matrix,  b:"Matrix", s:"Eisenhower priorities" },
     { k:"goals",    ic:Ic.goal,    b:"Goals", s:store.data.goals.filter(g=>g.status==="active").length+" active" },
@@ -3687,7 +3751,7 @@ function App(){
   function navTo(t){ setTab(t); setSub(null); }
   // Promote Ideas/Goals/Search to nav items: clear the main tab so only the sub lights up.
   function goNav(s){ setTab(""); setSub(s); }
-  const NAV_SUBS = ["ideas","projects","search"]; // not "owned" by the More tab highlight
+  const NAV_SUBS = ["dashboard","projects","search"]; // not "owned" by the More tab highlight
   const moreActive = tab==="more" || (sub && !NAV_SUBS.includes(sub));
 
   const syncLabel = store.sync==="idle"?"Synced":store.sync==="busy"?(store.syncMsg||"Working"):store.sync==="pending"?"Queued offline":store.syncMsg||"Sync error";
@@ -3717,7 +3781,7 @@ function App(){
       <div className="nav">
         <button className={"nav-btn"+(tab==="today"&&!sub?" on":"")} onClick={()=>navTo("today")}><NavIc d={Ic.today}/>Today</button>
         <button className={"nav-btn"+(tab==="lists"&&!sub?" on":"")} onClick={()=>navTo("lists")}><NavIc d={Ic.lists}/>To-Dos</button>
-        <button className={"nav-btn"+(sub==="ideas"?" on":"")} onClick={()=>goNav("ideas")}><NavIc d={Ic.idea}/>Ideas</button>
+        <button className={"nav-btn"+(sub==="dashboard"?" on":"")} onClick={()=>goNav("dashboard")}><NavIc d={Ic.dashboard}/>Dashboard</button>
         <button className="nav-btn nav-fab" onClick={()=>setCapture(true)}><span className="fab">{Ic.plus}</span></button>
         <button className={"nav-btn"+(sub==="projects"?" on":"")} onClick={()=>goNav("projects")}><NavIc d={Ic.project}/>Projects</button>
         <button className={"nav-btn"+(moreActive?" on":"")} onClick={()=>navTo("more")}><NavIc d={Ic.more}/>More</button>
