@@ -350,11 +350,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.7.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-13.1";
+const BUILD = "2026-07-13.2";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1293,6 +1293,7 @@ const Ic = {
   today:   <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
   lists:   <svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>,
   matrix:  <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18M3 12h18"/></svg>,
+  dashboard: <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>,
   more:    <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>,
   plus:    <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>,
   bolt:    <svg viewBox="0 0 24 24"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>,
@@ -3282,10 +3283,90 @@ function SearchView({ store, openEditor, back }){
 }
 
 /* ============================================================
+   VIEW: DASHBOARD - a roll-up of "what needs my attention". Reads existing data (no new
+   item type) and respects the active Space (store.data is already space-scoped): focus a
+   Space -> its dashboard; All -> a cross-Space roll-up (with a Space dot on each row).
+   ============================================================ */
+function DashboardView({ store, onOpen, openEditor }){
+  const active = store.activeSpace;
+  const isAll = !active || active==="all";
+  const spaceName = isAll ? "All spaces" : (((store.spaces||[]).find(s=>s.id===active)||{}).name || "Space");
+  const { todos, projects, goals, ideas } = store.data;
+
+  const openTodos = todos.filter(t=>t.status!=="done" && !isDeferredAway(t));
+  const todayOverdue = openTodos.filter(t=>t.due && (isToday(t.due)||isOverdue(t.due)))
+    .sort((a,b)=> a.due<b.due?-1:a.due>b.due?1:0);
+  const todaySet = new Set(todayOverdue.map(t=>t.id));
+  const priorities = openTodos.filter(t=>(t.starredToday || t.quad==="q1") && !todaySet.has(t.id)).sort(sortTodos);
+  const activeProjects = projects.filter(p=>p.status==="active").sort(byOrder);
+  const activeGoals = goals.filter(g=>g.status==="active").sort(byOrder);
+  const recent = [
+    ...todos.map(x=>({x,kind:"todo",name:x.title})),
+    ...projects.map(x=>({x,kind:"project",name:x.name})),
+    ...ideas.map(x=>({x,kind:"idea",name:x.title})),
+    ...goals.map(x=>({x,kind:"goal",name:x.name})),
+  ].filter(r=>r.x.updatedAt).sort((a,b)=> a.x.updatedAt<b.x.updatedAt?1:-1).slice(0,6);
+
+  const openCount = (pid)=> todos.filter(t=>t.projectId===pid && t.status!=="done").length;
+  const Dot = ({id})=>{ if(!isAll) return null; const s=(store.spaces||[]).find(x=>x.id===id); return s? <span className="space-dot" style={{background:s.color,marginRight:6,display:"inline-block",verticalAlign:"middle"}} title={s.name}></span>:null; };
+  const More = ({n})=> n>0 ? <p className="hint" style={{marginTop:6}}>+{n} more</p> : null;
+  const Section = ({title, n, children, empty})=> (
+    <div style={{marginTop:18}}>
+      <div className="eyebrow" style={{marginBottom:8}}>{title}{n>0?" ("+n+")":""}</div>
+      {children || <p className="hint">{empty}</p>}
+    </div>
+  );
+  const Row = ({onClick, spaceId, title, chips})=> (
+    <div className="item" style={{cursor:"pointer"}} onClick={onClick}>
+      <div className="item-body"><div className="item-title"><Dot id={spaceId}/>{title||"(untitled)"}</div>
+        <div className="item-meta">{chips}</div></div>
+    </div>
+  );
+
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="eyebrow">Overview</div>
+        <div className="topbar-row"><h1 className="title">Dashboard</h1></div>
+        <div className="subtle" style={{marginTop:2}}>{spaceName}{" · "}{todayOverdue.length} due/overdue{" · "}{activeProjects.length} active project{activeProjects.length===1?"":"s"}</div>
+      </div>
+
+      <Section title="Today / Overdue" n={todayOverdue.length} empty="Nothing due or overdue. Nice."
+        children={todayOverdue.length ? <><div className="list">{todayOverdue.slice(0,10).map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div><More n={todayOverdue.length-10}/></> : null}/>
+
+      <Section title="Priorities" n={priorities.length} empty="No flagged or Do-First items."
+        children={priorities.length ? <><div className="list">{priorities.slice(0,6).map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div><More n={priorities.length-6}/></> : null}/>
+
+      <Section title="Active projects" n={activeProjects.length} empty="No active projects."
+        children={activeProjects.length ? <><div className="list">{activeProjects.slice(0,6).map(p=>
+          <Row key={p.id} spaceId={p.space} title={p.name} onClick={()=>openEditor("project",p)}
+            chips={<><span className="chip">{openCount(p.id)} open</span>{p.deadline && <span className="chip amber">{fmtDate(p.deadline)}</span>}</>}/>)}
+          </div><More n={activeProjects.length-6}/></> : null}/>
+
+      <Section title="Goals" n={activeGoals.length} empty="No active goals."
+        children={activeGoals.length ? <><div className="list">{activeGoals.slice(0,5).map(g=>{
+          const projs = projects.filter(p=>p.goalId===g.id);
+          return <Row key={g.id} spaceId={g.space} title={g.name} onClick={()=>openEditor("goal",g)}
+            chips={<><span className="chip">{projs.length} project{projs.length===1?"":"s"}</span>{g.target && <span className="chip amber">{fmtDate(g.target)}</span>}</>}/>;
+        })}</div><More n={activeGoals.length-5}/></> : null}/>
+
+      <Section title="Recent activity" empty="Nothing yet."
+        children={recent.length ? <div className="list">{recent.map((r,i)=>
+          <Row key={r.kind+i} spaceId={r.x.space} title={r.name} onClick={()=>openEditor(r.kind, r.x)}
+            chips={<><span className="chip">{r.kind}</span><span className="chip">{fmtDate((r.x.updatedAt||"").slice(0,10))}</span></>}/>)}
+          </div> : null}/>
+
+      <div style={{height:20}}></div>
+    </div>
+  );
+}
+
+/* ============================================================
    VIEW: MORE (hub)
    ============================================================ */
 function MoreView({ store, go }){
   const rows = [
+    { k:"dashboard", ic:Ic.dashboard, b:"Dashboard", s:"What needs your attention" },
     { k:"aichat",   ic:Ic.sparkle, b:"Organize with AI", s:"Brain-dump, then approve a plan" },
     { k:"matrix",   ic:Ic.matrix,  b:"Matrix", s:"Eisenhower priorities" },
     { k:"goals",    ic:Ic.goal,    b:"Goals", s:store.data.goals.filter(g=>g.status==="active").length+" active" },
@@ -3591,6 +3672,7 @@ function App(){
   else if(sub==="now") subView=<NowView store={store} onOpen={openTodo} back={()=>setSub(null)}/>;
   else if(sub==="search") subView=<SearchView store={store} openEditor={openEditor} back={()=>setSub(null)}/>;
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
+  else if(sub==="dashboard") subView=<DashboardView store={store} onOpen={openTodo} openEditor={openEditor}/>;
   else if(sub==="export") subView=<ExportView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="aichat") subView=<AIChat store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go} onCheckUpdate={checkUpdate} updMsg={updMsg} update={update} onApplyUpdate={applyUpdate}/>;
