@@ -233,6 +233,11 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
   background:var(--bg-3);border:1px solid var(--line-2);color:var(--ink-3);font-size:14px;font-weight:500;text-align:left;transition:.15s;}
 .search-bar:active{border-color:var(--amber-line);background:var(--bg-4);}
 .search-bar svg{width:18px;height:18px;stroke:var(--ink-3);fill:none;stroke-width:2;}
+/* Header gear that opens Settings - a round button matched to the search bar's height. */
+.icon-btn{flex:0 0 auto;width:44px;height:44px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;
+  background:var(--bg-3);border:1px solid var(--line-2);color:var(--ink-2);transition:.15s;}
+.icon-btn:active{border-color:var(--amber-line);background:var(--bg-4);}
+.icon-btn svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.8;}
 .nav-fab{flex:0 0 auto;margin-top:-22px;}
 .fab{width:54px;height:54px;border-radius:50%;background:var(--amber);color:#241a0c;display:flex;align-items:center;justify-content:center;
   box-shadow:0 10px 26px -6px rgba(224,163,62,.6);transition:.18s var(--ease);}
@@ -335,9 +340,14 @@ const { useState, useEffect, useRef, useCallback, useMemo } = React;
    ============================================================ */
 const LOG_CAP = 600;
 const LOG = [];
-// Build stamp. Bump on every deploy so the on-screen version (Settings + More footer)
-// and the boot log tell you whether the installed app picked up the latest index.html.
-const BUILD = "2026-06-25.13";
+// User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
+// the update prompts, and the footers - a real version, not a build date. Bump it on
+// every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
+const APP_VERSION = "1.5.0";
+// Internal build stamp. Bump on every deploy too (today's date + a counter). This is
+// what the updater actually COMPARES (it's monotonic, so detection never misfires) and
+// what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
+const BUILD = "2026-06-25.14";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -355,7 +365,7 @@ function log(tag, msg){
   if (LOG.length > LOG_CAP) LOG.shift();
   try { console.log("[" + tag + "] " + line.msg); } catch(e){}
 }
-log("INIT", "script booting - build "+BUILD);
+log("INIT", "script booting - v"+APP_VERSION+" (build "+BUILD+")");
 
 /* ============================================================
    SMALL UTILITIES
@@ -2344,7 +2354,7 @@ function Diagnostics({ back }){
       <div className="topbar" style={{padding:0,position:"static"}}>
         <button className="btn btn-ghost btn-sm" onClick={back}>{Ic.back} Settings</button>
         <h1 className="title" style={{marginTop:8}}>Diagnostics</h1>
-        <div className="subtle">Build {BUILD} - newest at the bottom, {LOG.length} lines</div>
+        <div className="subtle">v{APP_VERSION} (build {BUILD}) - newest at the bottom, {LOG.length} lines</div>
       </div>
       <div className="log" style={{marginTop:14}}>
         {LOG.map((l,i)=><div key={i}><span className="t">{l.t} </span><span className={l.tag==="ERROR"?"err":"tag"}>[{l.tag}]</span> {l.msg}</div>)}
@@ -2935,7 +2945,7 @@ function ExportView({ store, toast, back }){
   );
 }
 
-function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, update, onApplyUpdate, build }){
+function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, update, onApplyUpdate }){
   const [confirmClear,setConfirmClear]=useState(false);
   const syncText = store.sync==="idle"?"Synced":store.sync==="busy"?(store.syncMsg||"Working"):store.sync==="pending"?"Changes queued (offline)":store.syncMsg||"Sync error";
   return (
@@ -2982,11 +2992,11 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, upda
       <div className="set-group">About</div>
       <div className="updrow">
         {update
-          ? <button className="btn btn-primary btn-sm" style={{margin:0}} onClick={()=>onApplyUpdate && onApplyUpdate()}>{Ic.sparkle} Update to build {update}</button>
+          ? <button className="btn btn-primary btn-sm" style={{margin:0}} onClick={()=>onApplyUpdate && onApplyUpdate()}>{Ic.sparkle} Update to v{update.ver||update.build}</button>
           : <button className="btn btn-ghost btn-sm" style={{margin:0}} onClick={()=>onCheckUpdate && onCheckUpdate(true)}>Check for updates</button>}
         {updMsg && <span className="hint" style={{margin:0}}>{updMsg}</span>}
       </div>
-      <p className="hint" style={{textAlign:"center",marginTop:6}}>{(store.cfg.appName||"Priority Captain")} &middot; build {build}</p>
+      <p className="hint" style={{textAlign:"center",marginTop:6}}>{(store.cfg.appName||"Priority Captain")} v{APP_VERSION}</p>
 
       <button className="btn btn-danger btn-block" style={{marginTop:22}} onClick={()=>setConfirmClear(true)}>Clear this device & sign out</button>
       <p className="hint" style={{textAlign:"center",marginTop:8}}>Clears this device's cache and sign-in. Your data stays safe on the server and re-syncs when you sign back in.</p>
@@ -3065,7 +3075,7 @@ function MoreView({ store, go }){
         {rows.map(r=><button key={r.k} className="act-row" onClick={()=>go(r.k)}>
           <span className="act-ic">{r.ic}</span><span className="act-txt"><b>{r.b}</b><span>{r.s}</span></span></button>)}
       </div>
-      <p className="hint" style={{textAlign:"center",marginTop:18,opacity:.6}}>{(store.cfg.appName||"Priority Captain")} - build {BUILD}</p>
+      <p className="hint" style={{textAlign:"center",marginTop:18,opacity:.6}}>{(store.cfg.appName||"Priority Captain")} v{APP_VERSION}</p>
     </div>
   );
 }
@@ -3121,7 +3131,7 @@ function Login({ store, toast }){
         </div>
         <button className="btn btn-ghost btn-block" style={{marginTop:20}}
           onClick={()=>{ setResetSent(false); setErr(""); }}>Back to sign in</button>
-        <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>build {BUILD}</p>
+        <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>v{APP_VERSION}</p>
       </div></div>
     );
   }
@@ -3140,7 +3150,7 @@ function Login({ store, toast }){
         </div>
         <button className="btn btn-ghost btn-block" style={{marginTop:20}}
           onClick={()=>{ setSent(false); setMode("signin"); setPassword(""); setErr(""); }}>Back to sign in</button>
-        <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>build {BUILD}</p>
+        <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>v{APP_VERSION}</p>
       </div></div>
     );
   }
@@ -3175,7 +3185,7 @@ function Login({ store, toast }){
         <button disabled={busy} onClick={forgot}
           style={{display:"block",margin:"14px auto 0",background:"none",border:"none",color:"var(--ink-3)",fontSize:13,textDecoration:"underline",cursor:"pointer"}}>
           Forgot password?</button>}
-      <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>build {BUILD}</p>
+      <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>v{APP_VERSION}</p>
     </div></div>
   );
 }
@@ -3213,7 +3223,7 @@ function SetPassword({ store, toast }){
         <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={busy} onClick={submit}>
           {busy? <span className="spin"></span> : "Update password"}</button>
       </div>
-      <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>build {BUILD}</p>
+      <p className="hint" style={{textAlign:"center",marginTop:16,opacity:.6}}>v{APP_VERSION}</p>
     </div></div>
   );
 }
@@ -3246,23 +3256,25 @@ function App(){
   // --- PWA self-update: detect a newer deployed build and offer a one-tap refresh ---
   // Installed PWAs cache the HTML hard; this fetches the deployed file fresh, reads its
   // BUILD stamp, and surfaces a banner when a genuinely newer build is live.
-  const [update,setUpdate]=useState(null);   // deployed build string when it's newer than BUILD
+  const [update,setUpdate]=useState(null);   // { ver, build } of a newer deployed build, else null
   const [updMsg,setUpdMsg]=useState("");     // inline status for the Settings "Check for updates" row
   const updTimer = useRef(null);
   // Show a status line for a few seconds then clear it (used for terminal results).
   const flashUpd = useCallback((msg)=>{ setUpdMsg(msg); if(updTimer.current) clearTimeout(updTimer.current); updTimer.current = setTimeout(()=>setUpdMsg(""), 4000); },[]);
   // manual=true is the Settings button: show inline "Checking..." then a result. On
   // launch/resume we check quietly and only surface the banner if there's an update.
+  // Detection compares the deployed BUILD (monotonic date stamp) so it never misfires;
+  // the deployed APP_VERSION is read alongside it purely to LABEL the update ("v1.5.1").
   const checkUpdate = useCallback(async (manual=false)=>{
     if(manual){ if(updTimer.current) clearTimeout(updTimer.current); setUpdMsg("Checking..."); }
     try{
       const res = await fetch(location.pathname + "?_=" + Date.now(), { cache:"no-store" });
       if(!res.ok){ log("UPDATE","check http "+res.status); if(manual) flashUpd("Couldn't check - are you online?"); return; }
       const html = await res.text();
-      const m = html.match(/const BUILD = "([^"]+)";/);
-      const remote = m && m[1];
-      if(remote && buildIsNewer(remote, BUILD)){ log("UPDATE","newer build live: "+remote); setUpdate(remote); if(manual) setUpdMsg(""); }
-      else { log("UPDATE","up to date ("+BUILD+")"); setUpdate(null); if(manual) flashUpd("You're on the latest (build "+BUILD+")"); }
+      const mb = html.match(/const BUILD = "([^"]+)";/);       const rBuild = mb && mb[1];
+      const mv = html.match(/const APP_VERSION = "([^"]+)";/); const rVer = mv && mv[1];
+      if(rBuild && buildIsNewer(rBuild, BUILD)){ log("UPDATE","newer build live: "+rBuild+" (v"+(rVer||"?")+")"); setUpdate({ ver:rVer, build:rBuild }); if(manual) setUpdMsg(""); }
+      else { log("UPDATE","up to date (v"+APP_VERSION+", "+BUILD+")"); setUpdate(null); if(manual) flashUpd("You're on the latest (v"+APP_VERSION+")"); }
     }catch(e){ log("UPDATE","check failed: "+e.message); if(manual) flashUpd("Update check failed"); }
   },[flashUpd]);
   // Check on launch AND on resume AND on a periodic timer - installed PWAs are usually
@@ -3277,8 +3289,8 @@ function App(){
     const iv=setInterval(maybe, 20*60*1000);               // periodic while open
     return ()=>{ clearTimeout(t); clearInterval(iv); document.removeEventListener("visibilitychange", onVis); };
   },[checkUpdate]);
-  // Apply by navigating to a version-stamped URL so iOS can't serve the cached HTML.
-  function applyUpdate(){ log("UPDATE","applying -> "+update); window.location.replace(location.pathname + "?u=" + encodeURIComponent(update||String(Date.now()))); }
+  // Apply by navigating to a build-stamped URL so iOS can't serve the cached HTML.
+  function applyUpdate(){ const stamp=(update&&update.build)||String(Date.now()); log("UPDATE","applying -> "+stamp); window.location.replace(location.pathname + "?u=" + encodeURIComponent(stamp)); }
 
   // Apply the per-device theme (accent color + app name) live. Because this is
   // device config (not code), one shared app file can look different for each user.
@@ -3328,7 +3340,7 @@ function App(){
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(sub==="export") subView=<ExportView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="aichat") subView=<AIChat store={store} toast={toast} back={()=>setSub(null)}/>;
-  else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go} onCheckUpdate={checkUpdate} updMsg={updMsg} update={update} onApplyUpdate={applyUpdate} build={BUILD}/>;
+  else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go} onCheckUpdate={checkUpdate} updMsg={updMsg} update={update} onApplyUpdate={applyUpdate}/>;
   else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
 
   let main;
@@ -3349,13 +3361,17 @@ function App(){
     <div className="app">
       {update &&
         <button className="update-bar" onClick={applyUpdate}>
-          <span>{Ic.sparkle} Update available - tap to refresh <b>(build {update})</b></span>
+          <span>{Ic.sparkle} Update available <b>(v{update.ver||update.build})</b></span>
           <span className="update-go">Refresh</span>
         </button>}
-      {/* global top bar - search on every page (hidden on the search view itself) + sync */}
+      {/* global top bar - search + a gear that opens Settings (hidden on search/settings) + sync */}
       {sub!=="search" &&
         <div style={{padding:"calc(env(safe-area-inset-top) + 10px) 18px 0"}}>
-          <button className="search-bar" style={{marginTop:0}} onClick={()=>setSub("search")}>{Ic.search}<span>Search everything</span></button>
+          <div style={{display:"flex",gap:10,alignItems:"center"}}>
+            <button className="search-bar" style={{marginTop:0,flex:1}} onClick={()=>setSub("search")}>{Ic.search}<span>Search everything</span></button>
+            {sub!=="settings" &&
+              <button className="icon-btn" aria-label="Settings" onClick={()=>setSub("settings")}>{Ic.gear}</button>}
+          </div>
           {sub!=="settings" && store.sync!=="idle" &&
             <div className={"sync "+store.sync} style={{marginTop:10}}><span className="dot"></span>{syncLabel}</div>}
         </div>}
