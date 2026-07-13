@@ -238,6 +238,13 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
   background:var(--bg-3);border:1px solid var(--line-2);color:var(--ink-2);transition:.15s;}
 .icon-btn:active{border-color:var(--amber-line);background:var(--bg-4);}
 .icon-btn svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.8;}
+/* Space switcher - the top-level focus/mute control. A horizontal pill row (All + each
+   Space); the active pill takes the Space's own color so the current focus is unmistakable. */
+.space-switch{display:flex;gap:8px;overflow-x:auto;margin-top:10px;padding-bottom:2px;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+.space-switch::-webkit-scrollbar{display:none;}
+.space-pill{flex:0 0 auto;display:inline-flex;align-items:center;gap:7px;padding:7px 14px;border-radius:999px;font-size:13px;font-weight:600;color:var(--ink-2);background:var(--bg-3);border:1px solid var(--line-2);transition:.15s;}
+.space-pill.on{color:#241a0c;background:var(--amber);border-color:var(--amber);}
+.space-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}
 .nav-fab{flex:0 0 auto;margin-top:-22px;}
 .fab{width:54px;height:54px;border-radius:50%;background:var(--amber);color:#241a0c;display:flex;align-items:center;justify-content:center;
   box-shadow:0 10px 26px -6px rgba(224,163,62,.6);transition:.18s var(--ease);}
@@ -343,11 +350,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.6.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-06-25.14";
+const BUILD = "2026-07-13.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -767,6 +774,28 @@ const DEFAULT_THEME = "espresso";
 // device doesn't leak one account's settings to the next (config now syncs per-user).
 const DEFAULT_CFG = { locations:DEFAULT_LOCATIONS, categories:DEFAULT_CATEGORIES, appName:"Priority Captain", accent:DEFAULT_ACCENT, theme:DEFAULT_THEME };
 
+/* ============================================================
+   SPACES - partition every item by area of life (Personal / RTR / Kids / ...).
+   Rides entirely on the existing sync: a per-item `space` (id) field, and the Space
+   LIST in the per-user `meta` object (meta.spaces + meta.defaultSpace). No backend change.
+   The active-Space selection (Step 2) is per-device; the list here is synced.
+   ============================================================ */
+const DEFAULT_SPACE = "personal";
+const SEED_SPACES = [
+  { id:"personal", name:"Personal", color:"#6f9bc4", order:0, archived:false },
+  { id:"rtr",      name:"RTR",      color:"#7fa66a", order:1, archived:false },
+  { id:"kids",     name:"Kids",     color:"#c98aa6", order:2, archived:false },
+];
+// Where an existing item migrates, from its category (`type`). Category-aware seed
+// (chosen 2026-07-13): the RTR/Kids categories move into their Spaces; everything else
+// goes to the default (Personal). Case-insensitive. Additive + reversible.
+function spaceForType(type){
+  const t = String(type||"").trim().toLowerCase();
+  if(t==="rtr")  return "rtr";
+  if(t==="kids") return "kids";
+  return DEFAULT_SPACE;
+}
+
 function useStore(){
   const [cfg, setCfg] = useState(() => {
     const c = lsGet("cfg", DEFAULT_CFG);
@@ -784,22 +813,53 @@ function useStore(){
   const [authEmail, setAuthEmail] = useState("");    // signed-in email (shown in Settings)
   const [authReady, setAuthReady] = useState(false); // first session check finished (avoids a login flash)
   const cfgRef = useRef(cfg); cfgRef.current = cfg;
-  const cfgDirtyRef = useRef(lsGet("cfgDirty", false));   // true when local config has unpushed edits
+  const cfgDirtyRef = useRef(lsGet("cfgDirty", false));   // true when local META (cfg + spaces) has unpushed edits
+  // Spaces live in the same per-user meta object as cfg. `spaces` is null until seeded
+  // (on the first authed pull) or applied from the server.
+  const [spaces, setSpaces] = useState(() => lsGet("spaces", null));
+  const [defaultSpace, setDefaultSpace] = useState(() => lsGet("defaultSpace", DEFAULT_SPACE));
+  const spacesRef = useRef(spaces); spacesRef.current = spaces;
+  const defaultSpaceRef = useRef(defaultSpace); defaultSpaceRef.current = defaultSpace;
+  const spacesSeededRef = useRef(lsGet("spacesSeeded", false));
+  // Active Space = the current focus (per-device). "all" = show everything. lastSpaceRef
+  // remembers the last real Space so a new item created in "All" still gets a sensible one.
+  const [activeSpace, setActiveSpaceState] = useState(() => lsGet("activeSpace", "all"));
+  const activeSpaceRef = useRef(activeSpace); activeSpaceRef.current = activeSpace;
+  const lastSpaceRef = useRef(lsGet("lastSpace", DEFAULT_SPACE));
+  const setActiveSpace = useCallback((id) => {
+    const v = id || "all";
+    setActiveSpaceState(v); lsSet("activeSpace", v); activeSpaceRef.current = v;
+    if(v !== "all"){ lastSpaceRef.current = v; lsSet("lastSpace", v); }
+    log("SPACES","active -> "+v);
+  }, []);
+  // The Space a newly created item inherits: the active Space, or (in "All") the last-used one.
+  const newItemSpace = () => (activeSpaceRef.current && activeSpaceRef.current!=="all")
+    ? activeSpaceRef.current : (lastSpaceRef.current || defaultSpaceRef.current);
   const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   const dataRef = useRef(data); dataRef.current = data;
   const authedRef = useRef(false);
 
-  // Push config to the per-user `meta` singleton. Same offline-defer contract as
-  // the file sync: if offline or signed out, leave cfgDirty set so the next pull /
-  // online event flushes it. Reads cfgRef so it always sends the latest value.
+  // Assemble the whole per-user meta blob (backend replaces it wholesale on PUT, so a
+  // partial PUT would drop keys). Reads refs, so it's always current. Spaces are included
+  // only once seeded, so we never write a null spaces list over a good server one.
+  const buildMeta = () => {
+    const m = { cfg: cfgRef.current };
+    if(spacesRef.current && spacesRef.current.length){
+      m.spaces = spacesRef.current; m.defaultSpace = defaultSpaceRef.current; m.spacesSeeded = spacesSeededRef.current;
+    }
+    return m;
+  };
+  // Push the meta blob (cfg + spaces) to the per-user `meta` singleton. Same offline-defer
+  // contract as the file sync: if offline or signed out, leave cfgDirty set so the next
+  // pull / online event flushes it. (Named pushCfg for history; it now pushes all of meta.)
   const pushCfg = useCallback(async () => {
     if(!cfgDirtyRef.current) return;
     if(!authedRef.current) return;
-    if(!navigator.onLine){ log("SYNC","offline; deferring cfg push"); setSync("pending"); return; }
+    if(!navigator.onLine){ log("SYNC","offline; deferring meta push"); setSync("pending"); return; }
     try{
-      await metaPut({ cfg: cfgRef.current });
+      await metaPut(buildMeta());
       cfgDirtyRef.current = false; lsSet("cfgDirty", false);
-      log("SYNC","cfg -> meta pushed");
+      log("SYNC","meta (cfg+spaces) pushed");
     }catch(e){ setSync("error"); setSyncMsg(e.message||"Sync failed"); log("ERROR","pushCfg: "+e.message); }
   }, []);
 
@@ -807,6 +867,19 @@ function useStore(){
   // the new value immediately, before the re-render that would sync the ref.
   const saveCfg = useCallback((next) => {
     setCfg(next); lsSet("cfg", next); cfgRef.current = next;
+    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    pushCfg();
+  }, [pushCfg]);
+
+  // Save the Space list (add / rename / recolor / reorder / archive) - persists to meta.
+  const saveSpaces = useCallback((next) => {
+    spacesRef.current = next; setSpaces(next); lsSet("spaces", next);
+    spacesSeededRef.current = true; lsSet("spacesSeeded", true);
+    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    pushCfg();
+  }, [pushCfg]);
+  const setDefaultSpaceId = useCallback((id) => {
+    defaultSpaceRef.current = id; setDefaultSpace(id); lsSet("defaultSpace", id);
     cfgDirtyRef.current = true; lsSet("cfgDirty", true);
     pushCfg();
   }, [pushCfg]);
@@ -855,6 +928,43 @@ function useStore(){
     if(wrote){ dataRef.current = nd; setData(nd); pushDirty(); }
   }, [markDirty, pushDirty]);
 
+  // One-time, idempotent: seed the Space list into meta and stamp every existing item
+  // with a `space`. Runs from pull() on authoritative data (like ensureOrders). Only
+  // fills items that lack a valid space, so re-running is a no-op. Category-aware map
+  // (spaceForType): RTR/Kids categories -> their Spaces, everything else -> default.
+  // Additive only (never deletes) -> fully reversible.
+  const ensureSpaces = useCallback(() => {
+    let metaChanged = false;
+    // 1) Seed the Space list if this account has none yet.
+    if(!spacesRef.current || !spacesRef.current.length){
+      const seeded = SEED_SPACES.map(s => ({ ...s }));
+      spacesRef.current = seeded; setSpaces(seeded); lsSet("spaces", seeded);
+      defaultSpaceRef.current = DEFAULT_SPACE; setDefaultSpace(DEFAULT_SPACE); lsSet("defaultSpace", DEFAULT_SPACE);
+      metaChanged = true;
+      log("SPACES","seeded space list: "+seeded.map(s=>s.id).join(","));
+    }
+    // 2) Backfill `space` on any item missing one (or pointing at a space that no longer exists).
+    const valid = new Set((spacesRef.current||[]).map(s => s.id));
+    let wrote = false; const nd = { ...dataRef.current }; const tally = {}; let before = 0, after = 0;
+    FILES.forEach(f => {
+      const list = dataRef.current[f] || []; before += list.length;
+      if(!list.some(x => !x.space || !valid.has(x.space))){ after += list.length; return; }
+      const nextList = list.map(x => {
+        if(x.space && valid.has(x.space)) return x;
+        const sp = spaceForType(x.type); tally[sp] = (tally[sp]||0) + 1;
+        return { ...x, space: sp };
+      });
+      nd[f] = nextList; after += nextList.length; markDirty(f, nextList); wrote = true;
+    });
+    if(wrote){
+      dataRef.current = nd; setData(nd);
+      log("SPACES","migrated items to spaces "+JSON.stringify(tally)+" (count "+before+" -> "+after+")");
+    }
+    if(!spacesSeededRef.current){ spacesSeededRef.current = true; lsSet("spacesSeeded", true); metaChanged = true; }
+    if(metaChanged){ cfgDirtyRef.current = true; lsSet("cfgDirty", true); }
+    if(wrote || metaChanged){ pushDirty(); pushCfg(); }
+  }, [markDirty, pushDirty, pushCfg]);
+
   // pull from the backend (only overwrites files that are NOT locally dirty)
   const pull = useCallback(async () => {
     if(!authedRef.current || !navigator.onLine) return;
@@ -884,15 +994,24 @@ function useStore(){
             cfgDirtyRef.current = true; lsSet("cfgDirty", true);   // seed server from local on the push below
             log("SYNC","no server cfg; seeding from local");
           }
+          // Spaces live in the same meta object. Apply the server list if present;
+          // ensureSpaces() below seeds it (and migrates items) when the server has none.
+          if(Array.isArray(m && m.spaces) && m.spaces.length){
+            spacesRef.current = m.spaces; setSpaces(m.spaces); lsSet("spaces", m.spaces);
+            const ds = m.defaultSpace || DEFAULT_SPACE; defaultSpaceRef.current = ds; setDefaultSpace(ds); lsSet("defaultSpace", ds);
+            spacesSeededRef.current = !!m.spacesSeeded; lsSet("spacesSeeded", !!m.spacesSeeded);
+            log("SPACES","spaces <- meta ("+m.spaces.length+")");
+          }
         }catch(e){ log("ERROR","pull meta: "+e.message); }
       }
       setSync(FILES.some(f=>dirtyRef.current[f])?"pending":"idle"); setSyncMsg("");
       log("SYNC","pull complete");
       ensureOrders();
+      ensureSpaces();
       await pushDirty();
       await pushCfg();
     }catch(e){ setSync("error"); setSyncMsg(e.message||"Sync failed"); log("ERROR","pull: "+e.message); }
-  }, [pushDirty, pushCfg, ensureOrders]);
+  }, [pushDirty, pushCfg, ensureOrders, ensureSpaces]);
 
   // ----- Auth: track the Supabase session and pull on sign-in -----
   // applySession runs on the initial check AND on every auth change. It pulls only
@@ -919,15 +1038,18 @@ function useStore(){
     // CLEAN from the server. Prevents one account's stale/dirty data from being shown
     // to - or pushed under - a different account on the same device (migration footgun).
     FILES.forEach(f => lsDel("cache:"+f));
-    ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty"].forEach(k => lsDel(k));
+    ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty","spaces","defaultSpace","spacesSeeded"].forEach(k => lsDel(k));
     const empty = {}; FILES.forEach(f => empty[f] = []);
     dataRef.current = empty; setData(empty);
     dirtyRef.current = {}; setDirty({});
-    // Config now syncs per-user, so reset it to defaults too - the next sign-in
-    // pulls that account's config back down.
+    // Config + spaces sync per-user, so reset them to defaults too - the next sign-in
+    // pulls that account's meta (cfg + spaces) back down.
     cfgDirtyRef.current = false; lsSet("cfg", DEFAULT_CFG);
     cfgRef.current = DEFAULT_CFG; setCfg(DEFAULT_CFG);
-    log("AUTH","signed out (local cache + config cleared)");
+    spacesRef.current = null; setSpaces(null);
+    defaultSpaceRef.current = DEFAULT_SPACE; setDefaultSpace(DEFAULT_SPACE);
+    spacesSeededRef.current = false;
+    log("AUTH","signed out (local cache + config + spaces cleared)");
   }, []);
 
   // Self-serve signup. With email confirmation ON (Supabase setting), there is no
@@ -1011,7 +1133,7 @@ function useStore(){
     else {
       const os = list.filter(x=>typeof x.order==="number").map(x=>x.order);
       const ord = typeof row.order==="number" ? row.order : (os.length?Math.min(...os):0) - 1000;
-      merged = { ...row, order:ord, id: row.id||uid(), createdAt:nowISO(), updatedAt:nowISO() };
+      merged = { ...row, space: row.space || newItemSpace(), order:ord, id: row.id||uid(), createdAt:nowISO(), updatedAt:nowISO() };
     }
     // Track when a to-do entered "waiting" so stale follow-ups can be nudged.
     if(file==="todos"){
@@ -1064,7 +1186,7 @@ function useStore(){
   const bulkAdd = useCallback((file, rows) => {
     const os = (dataRef.current[file]||[]).filter(x=>typeof x.order==="number").map(x=>x.order);
     const minO = os.length?Math.min(...os):0;
-    const stamped = rows.map((r,k) => ({ ...r, order: typeof r.order==="number"?r.order:(minO-1000*(rows.length-k)),
+    const stamped = rows.map((r,k) => ({ ...r, space: r.space || newItemSpace(), order: typeof r.order==="number"?r.order:(minO-1000*(rows.length-k)),
       id:uid(), createdAt:nowISO(), updatedAt:nowISO() }));
     const next = [...stamped, ...(dataRef.current[file]||[])];
     const nd = { ...dataRef.current, [file]:next }; dataRef.current = nd; setData(nd);
@@ -1118,7 +1240,7 @@ function useStore(){
     const minOrder = (file) => { const os = d[file].filter(x=>typeof x.order==="number").map(x=>x.order); return os.length?Math.min(...os):0; };
     const addTop = (file, row) => {
       const id = row.id || uid();
-      d[file] = [{ ...row, id, order:minOrder(file)-1000, createdAt:nowISO(), updatedAt:nowISO() }, ...d[file]];
+      d[file] = [{ ...row, space: row.space || newItemSpace(), id, order:minOrder(file)-1000, createdAt:nowISO(), updatedAt:nowISO() }, ...d[file]];
       created++; touched.add(file); return id;
     };
     (plan||[]).filter(o=>o.op==="create_project").forEach(o=>{
@@ -1149,7 +1271,19 @@ function useStore(){
     return { created, updated };
   }, [markDirty, pushDirty]);
 
-  return { cfg, saveCfg, data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
+  // Views read `data` SPACE-SCOPED - this is the focus/mute: when a Space is active, every
+  // other Space is filtered out everywhere at once (no per-view plumbing to leak). Writes go
+  // through the store methods on dataRef (full data), so nothing is ever lost. `allData` stays
+  // full for backups/export. Falls back to showing everything if the active Space is gone.
+  const scopedData = useMemo(() => {
+    if(activeSpace === "all") return data;
+    const sp = (spaces||[]).find(s => s.id === activeSpace);
+    if(!sp || sp.archived) return data;   // active space gone or archived -> show everything (never a blank app)
+    const out = {}; FILES.forEach(f => { out[f] = (data[f]||[]).filter(x => (x.space||DEFAULT_SPACE) === activeSpace); });
+    return out;
+  }, [data, activeSpace, spaces]);
+
+  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
 }
 
 /* ============================================================
@@ -1285,8 +1419,27 @@ function ConvertRow({ store, fromFile, item, toast, onClose }){
 /* ============================================================
    TODO EDITOR  (full manual form - every field editable by hand)
    ============================================================ */
+// The Space an editor should preselect: the item's own, else the active Space (or, in
+// "All", the default). New items thus inherit the current focus, with the picker to override.
+function editorSpace(store, t){
+  return (t && t.space) || (store.activeSpace && store.activeSpace!=="all" ? store.activeSpace : (store.defaultSpace||DEFAULT_SPACE));
+}
+// Reusable Space picker for the item editors (the "easy override control").
+function SpaceField({ store, value, onChange }){
+  const list = (store.spaces||[]).filter(s=>!s.archived).slice().sort((a,b)=>(a.order||0)-(b.order||0));
+  if(!list.length) return null;   // spaces not seeded yet
+  return (
+    <div className="field"><span className="label">Space</span>
+      <select className="select" value={value||""} onChange={e=>onChange(e.target.value)}>
+        {list.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+      </select>
+    </div>
+  );
+}
+
 function TodoEditor({ store, todo, onClose, toast }){
   const t = todo || {};
+  const [space,setSpace]=useState(editorSpace(store, t));
   const [title,setTitle]=useState(t.title||"");
   const [status,setStatus]=useState(t.status||"inbox");
   const [type,setType]=useState(t.type||"");
@@ -1322,7 +1475,7 @@ function TodoEditor({ store, todo, onClose, toast }){
     }
     // A recurring todo needs an anchor; if none given, start it today.
     const dueAnchored = (recur!=="none" && !due) ? TODAY() : due;
-    store.upsert("todos",{ id:t.id, title:title.trim(), status, type, quad, due:dueAnchored, defer, recur,
+    store.upsert("todos",{ id:t.id, title:title.trim(), status, type, quad, due:dueAnchored, defer, recur, space,
       tags: tags.split(",").map(s=>s.trim()).filter(Boolean), projectId:finalProjectId, url:url.trim(), notes, location,
       waitingOn: status==="waiting"?waitingOn:"", subtasks,
       starredToday: t.starredToday||false, completedAt: t.completedAt||null });
@@ -1343,6 +1496,7 @@ function TodoEditor({ store, todo, onClose, toast }){
           <select className="select" value={type} onChange={e=>setType(e.target.value)}>
             <option value="">Uncategorized</option>{knownCategories(store).map(c=><option key={c} value={c}>{c}</option>)}</select></div>
       </div>
+      <SpaceField store={store} value={space} onChange={setSpace}/>
       {status==="waiting" &&
         <div className="field"><span className="label">Waiting on</span>
           <input className="input" value={waitingOn} onChange={e=>setWaitingOn(e.target.value)} placeholder="Who / what?"/></div>}
@@ -1420,6 +1574,7 @@ function TodoEditor({ store, todo, onClose, toast }){
    ============================================================ */
 function IdeaEditor({ store, idea, onClose, toast }){
   const t = idea || {};
+  const [space,setSpace]=useState(editorSpace(store, t));
   const [title,setTitle]=useState(t.title||"");
   const [body,setBody]=useState(t.body||"");
   const [type,setType]=useState(t.type||"");
@@ -1427,16 +1582,16 @@ function IdeaEditor({ store, idea, onClose, toast }){
   const [state,setState]=useState(t.state||"raw");
   function save(){
     if(!title.trim()){ toast("Add a title first"); return; }
-    store.upsert("ideas",{ id:t.id, title:title.trim(), body, type, state,
+    store.upsert("ideas",{ id:t.id, title:title.trim(), body, type, state, space,
       tags: tags.split(",").map(s=>s.trim()).filter(Boolean),
       capturedAt: t.capturedAt||nowISO(), promotedProjectId: t.promotedProjectId||null });
     toast(t.id?"Saved":"Captured"); onClose();
   }
   function promote(){
-    // Idea -> Project: carry title + body, mark idea promoted (E1/C2 decision)
-    const p = store.upsert("projects",{ name:title.trim(), type, status:"active",
+    // Idea -> Project: carry title + body + space, mark idea promoted (E1/C2 decision)
+    const p = store.upsert("projects",{ name:title.trim(), type, status:"active", space,
       outcome:"", description: body, deadline:"", goalId:null });
-    store.upsert("ideas",{ id:t.id, title:title.trim(), body, type, tags:tags.split(",").map(s=>s.trim()).filter(Boolean),
+    store.upsert("ideas",{ id:t.id, title:title.trim(), body, type, space, tags:tags.split(",").map(s=>s.trim()).filter(Boolean),
       state:"promoted", capturedAt:t.capturedAt||nowISO(), promotedProjectId:p.id });
     toast("Promoted to project"); onClose();
   }
@@ -1455,6 +1610,7 @@ function IdeaEditor({ store, idea, onClose, toast }){
             <option value="raw">Raw</option><option value="developing">Developing</option>
             <option value="promoted">Promoted</option><option value="discarded">Discarded</option></select></div>
       </div>
+      <SpaceField store={store} value={space} onChange={setSpace}/>
       <div className="field"><span className="label">Tags</span>
         <input className="input" value={tags} onChange={e=>setTags(e.target.value)} placeholder="comma, separated"/></div>
       <button className="btn btn-primary btn-block" onClick={save}>{t.id?"Save":"Capture idea"}</button>
@@ -1472,6 +1628,7 @@ function IdeaEditor({ store, idea, onClose, toast }){
    ============================================================ */
 function ProjectEditor({ store, project, onClose, toast }){
   const t = project || {};
+  const [space,setSpace]=useState(editorSpace(store, t));
   const [name,setName]=useState(t.name||"");
   const [type,setType]=useState(t.type||"");
   const [status,setStatus]=useState(t.status||"active");
@@ -1482,7 +1639,7 @@ function ProjectEditor({ store, project, onClose, toast }){
   const goals = store.data.goals.filter(g=>g.status==="active");
   function save(){
     if(!name.trim()){ toast("Name it first"); return; }
-    store.upsert("projects",{ id:t.id, name:name.trim(), type, status, outcome, deadline, description, goalId:goalId||null });
+    store.upsert("projects",{ id:t.id, name:name.trim(), type, status, outcome, deadline, description, goalId:goalId||null, space });
     toast(t.id?"Saved":"Created"); onClose();
   }
   return (
@@ -1500,6 +1657,7 @@ function ProjectEditor({ store, project, onClose, toast }){
             <option value="active">Active</option><option value="onhold">On hold</option>
             <option value="someday">Someday</option><option value="done">Done</option><option value="archived">Archived</option></select></div>
       </div>
+      <SpaceField store={store} value={space} onChange={setSpace}/>
       <div className="field"><span className="label">Deadline (optional)</span>
         <input className="input" type="date" value={deadline} onChange={e=>setDeadline(e.target.value)}/></div>
       <div className="field"><span className="label">Roll up to goal (optional)</span>
@@ -1520,6 +1678,7 @@ function ProjectEditor({ store, project, onClose, toast }){
    ============================================================ */
 function GoalEditor({ store, goal, onClose, toast }){
   const t = goal || {};
+  const [space,setSpace]=useState(editorSpace(store, t));
   const [name,setName]=useState(t.name||"");
   const [type,setType]=useState(t.type||"");
   const [why,setWhy]=useState(t.why||"");
@@ -1527,7 +1686,7 @@ function GoalEditor({ store, goal, onClose, toast }){
   const [status,setStatus]=useState(t.status||"active");
   function save(){
     if(!name.trim()){ toast("Name it first"); return; }
-    store.upsert("goals",{ id:t.id, name:name.trim(), type, why, target, status });
+    store.upsert("goals",{ id:t.id, name:name.trim(), type, why, target, status, space });
     toast(t.id?"Saved":"Created"); onClose();
   }
   return (
@@ -1544,6 +1703,7 @@ function GoalEditor({ store, goal, onClose, toast }){
           <select className="select" value={status} onChange={e=>setStatus(e.target.value)}>
             <option value="active">Active</option><option value="achieved">Achieved</option><option value="dropped">Dropped</option></select></div>
       </div>
+      <SpaceField store={store} value={space} onChange={setSpace}/>
       <div className="field"><span className="label">Target date (optional)</span>
         <input className="input" type="date" value={target} onChange={e=>setTarget(e.target.value)}/></div>
       <button className="btn btn-primary btn-block" onClick={save}>{t.id?"Save":"Create goal"}</button>
@@ -2213,7 +2373,7 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
         {p.outcome && <div className="card" style={{marginTop:14}}><div className="label">Outcome</div><div>{p.outcome}</div></div>}
         {p.description && <p className="hint" style={{marginTop:12}}>{p.description}</p>}
         <div className="topbar-row" style={{marginTop:18}}><h3 style={{fontSize:17}}>Todos</h3>
-          <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("todo",{projectId:p.id,type:p.type})}>{Ic.plus} Add</button></div>
+          <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("todo",{projectId:p.id,type:p.type,space:p.space})}>{Ic.plus} Add</button></div>
         {doneTodos.length>0 && <DoneToggle showDone={showDone} setShowDone={setShowDone} n={doneTodos.length}/>}
         {activeTodos.length===0 && doneShown.length===0
           ? (todos.length===0
@@ -2421,9 +2581,74 @@ function EditableLabelRow({ value, color, count, onCommit, onRemove }){
     </div>
   );
 }
-// How many items currently carry a given category(type)/location value.
+// How many items currently carry a given category(type)/location value. Uses allData:
+// category/location management is global (every Space), not scoped to the active one.
 function countUses(store, field, val){
-  let n=0; FILES.forEach(f=>(store.data[f]||[]).forEach(x=>{ if(x[field]===val) n++; })); return n;
+  let n=0; FILES.forEach(f=>((store.allData||store.data)[f]||[]).forEach(x=>{ if(x[field]===val) n++; })); return n;
+}
+
+/* ============================================================
+   MANAGE SPACES editor (Settings): add / rename / recolor / reorder / archive.
+   Reuses the list + DragList patterns. Spaces live in meta via store.saveSpaces.
+   ============================================================ */
+function SpacesEditor({ store, toast }){
+  const all = (store.spaces||[]).slice().sort((a,b)=>(a.order||0)-(b.order||0));
+  const active = all.filter(s=>!s.archived);
+  const archived = all.filter(s=>s.archived);
+  const def = store.defaultSpace;
+  const [adding,setAdding]=useState("");
+  const patch = (id, changes) => store.saveSpaces(all.map(s=>s.id===id?{...s,...changes}:s));
+  function rename(id, v){ const n=(v||"").trim(); if(n) patch(id,{name:n}); }
+  function archive(id){
+    if(id===def){ toast&&toast("Make another Space the default first"); return; }
+    store.saveSpaces(all.map(s=>s.id===id?{...s,archived:true}:s));
+    if(store.activeSpace===id) store.setActiveSpace("all");
+    toast&&toast("Space archived");
+  }
+  function reorder(movedId, newIds){
+    const om={}; newIds.forEach((id,i)=>om[id]=i*10); let base=newIds.length*10;
+    store.saveSpaces(all.map(s => om[s.id]!==undefined ? {...s,order:om[s.id]} : {...s,order:base++}));
+  }
+  function add(){
+    const n=adding.trim(); if(!n) return;
+    if(all.some(s=>(s.name||"").toLowerCase()===n.toLowerCase())){ toast&&toast("A Space with that name exists"); return; }
+    const color = ACCENT_PRESETS[all.length % ACCENT_PRESETS.length];
+    const order = (active.length?Math.max(...active.map(s=>s.order||0)):0)+10;
+    store.saveSpaces([...all, { id:uid(), name:n, color, order, archived:false }]);
+    setAdding("");
+  }
+  const Row = (s) => (
+    <div className="row" style={{alignItems:"center",gap:8,flexWrap:"wrap",background:"var(--bg)"}}>
+      <input type="color" value={s.color||"#6f9bc4"} onChange={e=>patch(s.id,{color:e.target.value})}
+        aria-label="Space color" style={{flex:"0 0 auto",width:34,height:34,padding:2,border:"1px solid var(--line-2)",borderRadius:9,background:"transparent"}}/>
+      <input className="input" defaultValue={s.name} key={s.id+"|"+s.name} onBlur={e=>rename(s.id,e.target.value)}
+        onKeyDown={e=>{ if(e.key==="Enter") e.target.blur(); }} style={{flex:1,minWidth:110}} aria-label="Space name"/>
+      {def===s.id
+        ? <span className="chip amber" style={{flex:"0 0 auto"}}>Default</span>
+        : <button className="btn btn-ghost btn-sm" style={{flex:"0 0 auto"}} onClick={()=>store.setDefaultSpaceId(s.id)}>Make default</button>}
+      <button className="btn btn-ghost btn-sm" style={{flex:"0 0 auto"}} onClick={()=>archive(s.id)}>Archive</button>
+    </div>
+  );
+  return (
+    <div>
+      <DragList items={active} getId={s=>s.id} reorderable={active.length>1} onReorder={reorder} render={Row}/>
+      <div className="row" style={{marginTop:6}}>
+        <input className="input" value={adding} onChange={e=>setAdding(e.target.value)} placeholder="Add a Space"
+          onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:3}} autoCapitalize="words"/>
+        <button className="btn btn-ghost btn-sm" onClick={add} style={{flex:1}}>Add</button>
+      </div>
+      <p className="hint" style={{marginTop:6}}>Drag to reorder. Tap a name to rename, or the swatch to recolor. Archiving hides a Space (its items keep it); the default can't be archived.</p>
+      {archived.length>0 && <>
+        <div className="set-group">Archived</div>
+        {archived.map(s=>
+          <div key={s.id} className="row" style={{alignItems:"center",gap:8,background:"var(--bg)",marginBottom:6}}>
+            <span className="space-dot" style={{background:s.color,marginLeft:4}}></span>
+            <span style={{flex:1,color:"var(--ink-3)"}}>{s.name}</span>
+            <button className="btn btn-ghost btn-sm" onClick={()=>patch(s.id,{archived:false})}>Unarchive</button>
+          </div>)}
+      </>}
+    </div>
+  );
 }
 
 /* ============================================================
@@ -2450,7 +2675,7 @@ function LocationsEditor({ store, toast, toastUndo }){
   }
   function doMerge(){
     const {from,to}=merge; const prevCfg=store.cfg;
-    const affected=[]; FILES.forEach(f=>(store.data[f]||[]).forEach(x=>{ if(x.location===from) affected.push({file:f,id:x.id}); }));
+    const affected=[]; FILES.forEach(f=>((store.allData||store.data)[f]||[]).forEach(x=>{ if(x.location===from) affected.push({file:f,id:x.id}); }));
     persist(cfgList.filter(x=>x!==from));
     const n=store.relabel("location", from, to);
     setMerge(null); setSeed(s=>s+1);
@@ -2462,7 +2687,7 @@ function LocationsEditor({ store, toast, toastUndo }){
   function cancelMerge(){ setMerge(null); setSeed(s=>s+1); }
   function remove(val){
     const prevCfg = store.cfg;
-    const affected = []; FILES.forEach(f => (store.data[f]||[]).forEach(x => { if(x.location===val) affected.push({file:f,id:x.id}); }));
+    const affected = []; FILES.forEach(f => ((store.allData||store.data)[f]||[]).forEach(x => { if(x.location===val) affected.push({file:f,id:x.id}); }));
     persist(cfgList.filter(x=>x!==val));
     const n = store.relabel("location", val, "");
     toastUndo("Deleted \""+val+"\""+(n?(" - cleared "+n+" item"+(n===1?"":"s")):""), ()=>{
@@ -2509,7 +2734,7 @@ function CategoriesEditor({ store, toast, toastUndo }){
   }
   function doMerge(){
     const {from,to}=merge; const prevCfg=store.cfg;
-    const affected=[]; FILES.forEach(f=>(store.data[f]||[]).forEach(x=>{ if(x.type===from) affected.push({file:f,id:x.id}); }));
+    const affected=[]; FILES.forEach(f=>((store.allData||store.data)[f]||[]).forEach(x=>{ if(x.type===from) affected.push({file:f,id:x.id}); }));
     persist(cfgList.filter(x=>x!==from));
     const n=store.relabel("type", from, to);
     setMerge(null); setSeed(s=>s+1);
@@ -2521,7 +2746,7 @@ function CategoriesEditor({ store, toast, toastUndo }){
   function cancelMerge(){ setMerge(null); setSeed(s=>s+1); }   // reset the row back to its old name
   function remove(val){
     const prevCfg = store.cfg;                       // snapshot for undo
-    const affected = []; FILES.forEach(f => (store.data[f]||[]).forEach(x => { if(x.type===val) affected.push({file:f,id:x.id}); }));
+    const affected = []; FILES.forEach(f => ((store.allData||store.data)[f]||[]).forEach(x => { if(x.type===val) affected.push({file:f,id:x.id}); }));
     persist(cfgList.filter(x=>x!==val));
     const n = store.relabel("type", val, "");        // clear it off every item
     toastUndo("Deleted \""+val+"\""+(n?(" - cleared "+n+" item"+(n===1?"":"s")):""), ()=>{
@@ -2739,11 +2964,11 @@ function ExportView({ store, toast, back }){
     setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
   }
   function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-  const projName = () => { const m={}; (store.data.projects||[]).forEach(p=>{ m[p.id]=p.name; }); return m; };
+  const projName = () => { const m={}; ((store.allData||store.data).projects||[]).forEach(p=>{ m[p.id]=p.name; }); return m; };
 
   // ---- builders (one per format) ----------------------------------
   function buildText(){
-    const d = store.data; const pn = projName(); const L = [];
+    const d = store.allData; const pn = projName(); const L = [];
     L.push(appName.toUpperCase()+" EXPORT"); L.push(new Date().toString());
     const todoLine = (t)=>{
       const bits = [];
@@ -2793,7 +3018,7 @@ function ExportView({ store, toast, back }){
   }
 
   function buildMarkdown(){
-    const d = store.data; const pn = projName();
+    const d = store.allData; const pn = projName();
     const L = ["# "+appName+" export","","_"+new Date().toLocaleString()+"_"];
     const line = (t)=>{
       const bits = [];
@@ -2840,7 +3065,7 @@ function ExportView({ store, toast, back }){
   }
 
   function buildCSV(){
-    const d = store.data; const pn = projName();
+    const d = store.allData; const pn = projName();
     const cell = (v)=>{ v=(v==null?"":String(v)); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; };
     const rows = [["Kind","Title","Category","Status","Priority","Due","Defer","Location","Project","Tags","Notes"]];
     (d.todos||[]).forEach(t=>rows.push(["Todo",t.title,t.type,t.status,
@@ -2854,7 +3079,7 @@ function ExportView({ store, toast, back }){
   }
 
   function buildPrintHTML(){
-    const d = store.data; const pn = projName();
+    const d = store.allData; const pn = projName();
     let h = "<h1>"+esc(appName)+" export</h1><p class=date>"+esc(new Date().toLocaleString())+"</p>";
     h += "<h2>Todos</h2>";
     let any=false;
@@ -2911,7 +3136,7 @@ function ExportView({ store, toast, back }){
   }
   function exportMarkdown(){ download(fname("md"), buildMarkdown(), "text/markdown"); toast("Markdown downloaded"); log("NAV","export md"); }
   function exportCSV(){ download(fname("csv"), buildCSV(), "text/csv"); toast("CSV downloaded"); log("NAV","export csv"); }
-  function exportData(){ download(fname("json"), JSON.stringify(store.data,null,2), "application/json"); toast("JSON downloaded"); log("NAV","export json"); }
+  function exportData(){ download(fname("json"), JSON.stringify(store.allData,null,2), "application/json"); toast("JSON downloaded"); log("NAV","export json"); }
   function printDoc(){
     const w = window.open("", "_blank");
     if(!w){ toast("Allow pop-ups to print / save as PDF"); log("ERROR","print: popup blocked"); return; }
@@ -2962,6 +3187,9 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, upda
 
       <div className="set-group">Appearance</div>
       <div className="card"><AppearanceEditor store={store}/></div>
+
+      <div className="set-group">Spaces</div>
+      <div className="card"><SpacesEditor store={store} toast={toast}/></div>
 
       <div className="set-group">Follow-up nudge</div>
       <div className="card">
@@ -3229,6 +3457,31 @@ function SetPassword({ store, toast }){
 }
 
 /* ============================================================
+   SPACE SWITCHER - top-level focus/mute. Tap a Space to focus the whole app on it,
+   or "All" to see everything. Persisted per-device via the store.
+   ============================================================ */
+function SpaceSwitcher({ store }){
+  const list = (store.spaces||[]).filter(s=>!s.archived).slice().sort((a,b)=>(a.order||0)-(b.order||0));
+  if(!list.length) return null;   // spaces not seeded yet (pre first pull)
+  const active = store.activeSpace || "all";
+  const Pill = ({ id, label, color }) => {
+    const on = active===id;
+    const style = on ? { background: color||"var(--amber)", borderColor: color||"var(--amber)", color:"#241a0c" } : null;
+    return (
+      <button className={"space-pill"+(on?" on":"")} style={style} onClick={()=>store.setActiveSpace(id)}>
+        {color && <span className="space-dot" style={{background: on ? "#241a0c" : color}}></span>}{label}
+      </button>
+    );
+  };
+  return (
+    <div className="space-switch">
+      <Pill id="all" label="All" color={null}/>
+      {list.map(s => <Pill key={s.id} id={s.id} label={s.name} color={s.color}/>)}
+    </div>
+  );
+}
+
+/* ============================================================
    APP SHELL
    ============================================================ */
 function App(){
@@ -3374,6 +3627,7 @@ function App(){
           </div>
           {sub!=="settings" && store.sync!=="idle" &&
             <div className={"sync "+store.sync} style={{marginTop:10}}><span className="dot"></span>{syncLabel}</div>}
+          {sub!=="settings" && <SpaceSwitcher store={store}/>}
         </div>}
       {main}
 
