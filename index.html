@@ -350,11 +350,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.9.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-13.3";
+const BUILD = "2026-07-13.4";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -846,6 +846,9 @@ function useStore(){
   const spacesRef = useRef(spaces); spacesRef.current = spaces;
   const defaultSpaceRef = useRef(defaultSpace); defaultSpaceRef.current = defaultSpace;
   const spacesSeededRef = useRef(lsGet("spacesSeeded", false));
+  // Reusable checklist templates, also in the meta blob: [{ id, name, items:[titles] }].
+  const [templates, setTemplates] = useState(() => lsGet("templates", []));
+  const templatesRef = useRef(templates); templatesRef.current = templates;
   // Active Space = the current focus (per-device). "all" = show everything. lastSpaceRef
   // remembers the last real Space so a new item created in "All" still gets a sensible one.
   const [activeSpace, setActiveSpaceState] = useState(() => lsGet("activeSpace", "all"));
@@ -872,6 +875,7 @@ function useStore(){
     if(spacesRef.current && spacesRef.current.length){
       m.spaces = spacesRef.current; m.defaultSpace = defaultSpaceRef.current; m.spacesSeeded = spacesSeededRef.current;
     }
+    if(templatesRef.current && templatesRef.current.length){ m.templates = templatesRef.current; }
     return m;
   };
   // Push the meta blob (cfg + spaces) to the per-user `meta` singleton. Same offline-defer
@@ -905,6 +909,12 @@ function useStore(){
   }, [pushCfg]);
   const setDefaultSpaceId = useCallback((id) => {
     defaultSpaceRef.current = id; setDefaultSpace(id); lsSet("defaultSpace", id);
+    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    pushCfg();
+  }, [pushCfg]);
+  // Save the checklist-template list (create / rename / delete) - persists to meta.
+  const saveTemplates = useCallback((next) => {
+    templatesRef.current = next; setTemplates(next); lsSet("templates", next);
     cfgDirtyRef.current = true; lsSet("cfgDirty", true);
     pushCfg();
   }, [pushCfg]);
@@ -1027,6 +1037,10 @@ function useStore(){
             spacesSeededRef.current = !!m.spacesSeeded; lsSet("spacesSeeded", !!m.spacesSeeded);
             log("SPACES","spaces <- meta ("+m.spaces.length+")");
           }
+          if(Array.isArray(m && m.templates)){
+            templatesRef.current = m.templates; setTemplates(m.templates); lsSet("templates", m.templates);
+            log("TEMPLATE","templates <- meta ("+m.templates.length+")");
+          }
         }catch(e){ log("ERROR","pull meta: "+e.message); }
       }
       setSync(FILES.some(f=>dirtyRef.current[f])?"pending":"idle"); setSyncMsg("");
@@ -1063,7 +1077,7 @@ function useStore(){
     // CLEAN from the server. Prevents one account's stale/dirty data from being shown
     // to - or pushed under - a different account on the same device (migration footgun).
     FILES.forEach(f => lsDel("cache:"+f));
-    ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty","spaces","defaultSpace","spacesSeeded"].forEach(k => lsDel(k));
+    ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty","spaces","defaultSpace","spacesSeeded","templates"].forEach(k => lsDel(k));
     const empty = {}; FILES.forEach(f => empty[f] = []);
     dataRef.current = empty; setData(empty);
     dirtyRef.current = {}; setDirty({});
@@ -1074,7 +1088,8 @@ function useStore(){
     spacesRef.current = null; setSpaces(null);
     defaultSpaceRef.current = DEFAULT_SPACE; setDefaultSpace(DEFAULT_SPACE);
     spacesSeededRef.current = false;
-    log("AUTH","signed out (local cache + config + spaces cleared)");
+    templatesRef.current = []; setTemplates([]);
+    log("AUTH","signed out (local cache + config + spaces + templates cleared)");
   }, []);
 
   // Self-serve signup. With email confirmation ON (Supabase setting), there is no
@@ -1219,6 +1234,18 @@ function useStore(){
     log("SAVE", file+" bulkAdd "+rows.length); pushDirty();
   }, [markDirty, pushDirty]);
 
+  // Spin up a Project from a checklist template: create the project, then one open todo per
+  // item under it. Both inherit the active Space (via upsert/bulkAdd). Returns the project.
+  const createFromTemplate = useCallback((tpl, name) => {
+    const proj = upsert("projects", { name: ((name||tpl.name||"Untitled").trim()) || "Untitled",
+      type:"", status:"active", outcome:"", description:"", deadline:"", goalId:null });
+    const rows = (tpl.items||[]).map(s=>String(s||"").trim()).filter(Boolean)
+      .map(title => ({ title, status:"next", projectId: proj.id }));
+    if(rows.length) bulkAdd("todos", rows);
+    log("TEMPLATE","new project from template '"+(tpl.name||"?")+"' ("+rows.length+" items)");
+    return proj;
+  }, [upsert, bulkAdd]);
+
   // Complete a todo. If it recurs, mark this instance done AND spawn the next
   // occurrence with the due date rolled forward. Centralized so every "done" path
   // (row checkbox, Now view) behaves the same.
@@ -1308,7 +1335,7 @@ function useStore(){
     return out;
   }, [data, activeSpace, spaces]);
 
-  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
+  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
 }
 
 /* ============================================================
@@ -1960,8 +1987,9 @@ function TodoRow({ store, todo, onOpen }){
 function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
   // Resume an unsaved review draft if one was left behind (survives close + reload).
   const initialPending = lsGet("pendingReview", []) || [];
-  const [mode,setMode]=useState(initialPending.length ? "review" : "menu"); // menu | quick | brain | photo | review
+  const [mode,setMode]=useState(initialPending.length ? "review" : "menu"); // menu | quick | brain | photo | review | template
   const [quick,setQuick]=useState("");
+  const [tplName,setTplName]=useState("");   // optional project name when creating from a template
   const [busy,setBusy]=useState(false);
   const [brain,setBrain]=useState("");
   const [results,setResults]=useState(initialPending); // AI extracted items pending review
@@ -2051,6 +2079,8 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
         <span className="act-ic">{Ic.idea}</span><span className="act-txt"><b>New idea</b><span>A thought to sit on</span></span></button>
       <button className="act-row" onClick={()=>{ onClose(); openEditor("project"); }}>
         <span className="act-ic">{Ic.project}</span><span className="act-txt"><b>New project</b><span>An outcome with many steps</span></span></button>
+      <button className="act-row" onClick={()=>{ setTplName(""); setMode("template"); }}>
+        <span className="act-ic">{Ic.lists}</span><span className="act-txt"><b>New from template</b><span>Reuse a saved checklist (e.g. packing)</span></span></button>
       <button className="act-row" onClick={()=>{ onClose(); openEditor("goal"); }}>
         <span className="act-ic">{Ic.goal}</span><span className="act-txt"><b>New goal</b><span>Longer-term objective</span></span></button>
       <div className="divider"></div>
@@ -2058,6 +2088,28 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
         <span className="act-ic">{Ic.camera}</span><span className="act-txt"><b>Photo / scan</b><span>Read tasks from a picture</span></span></button>
       <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}}
         onChange={e=>{ const f=e.target.files[0]; e.target.value=""; runPhoto(f); }}/>
+    </Sheet>
+  );
+
+  if(mode==="template") return (
+    <Sheet title="New from template" onClose={onClose}>
+      {(store.templates||[]).length===0
+        ? <><p className="hint">No templates yet. Open a project and tap <b>Save as template</b> to make a reusable checklist - like a packing list you reuse each trip.</p>
+            <button className="btn btn-ghost btn-block" style={{marginTop:12}} onClick={()=>setMode("menu")}>Back</button></>
+        : <>
+            <div className="field"><span className="label">Project name (optional)</span>
+              <input className="input" value={tplName} onChange={e=>setTplName(e.target.value)} placeholder="Defaults to the template name - e.g. Trip: Kansas City"/></div>
+            <div className="divider"></div>
+            {(store.templates||[]).map(tpl=>{ const n=(tpl.items||[]).length; return (
+              <button key={tpl.id} className="act-row" onClick={()=>{
+                const proj = store.createFromTemplate(tpl, tplName.trim()||tpl.name);
+                toast("Created \""+proj.name+"\" ("+n+" item"+(n===1?"":"s")+")"); onClose();
+              }}>
+                <span className="act-ic">{Ic.lists}</span>
+                <span className="act-txt"><b>{tpl.name}</b><span>{n} item{n===1?"":"s"}</span></span>
+              </button>); })}
+            <button className="btn btn-ghost btn-block" style={{marginTop:12}} onClick={()=>setMode("menu")}>Back</button>
+          </>}
     </Sheet>
   );
 
@@ -2373,9 +2425,54 @@ function MatrixView({ store, onOpen, typeFilter, setTypeFilter, locFilter, setLo
 /* ============================================================
    VIEW: PROJECTS
    ============================================================ */
-function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, onOpenTodo, del }){
+/* ============================================================
+   TEMPLATES - reusable checklists. Save a project's open todos as a named template, then
+   spin up a fresh project + those items in one tap (e.g. a packing list per trip). Stored
+   in the meta object (no backend change).
+   ============================================================ */
+function SaveTemplateSheet({ store, defaultName, items, onClose, toast }){
+  const [name,setName]=useState(defaultName||"");
+  const clean = (items||[]).map(s=>String(s||"").trim()).filter(Boolean);
+  function save(){
+    const n=name.trim(); if(!n){ toast&&toast("Name the template"); return; }
+    if(!clean.length){ toast&&toast("No open items to save"); return; }
+    const existing = store.templates||[];
+    const without = existing.filter(t=>(t.name||"").toLowerCase()!==n.toLowerCase());   // same name -> replace
+    store.saveTemplates([...without, { id:uid(), name:n, items:clean }]);
+    toast&&toast("Saved template \""+n+"\" ("+clean.length+" item"+(clean.length===1?"":"s")+")");
+    onClose();
+  }
+  return (
+    <Sheet title="Save as template" onClose={onClose}>
+      <div className="field"><span className="label">Template name</span>
+        <input className="input" value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Packing" autoFocus/></div>
+      <p className="hint" style={{marginTop:6}}>Saves this project's {clean.length} open item{clean.length===1?"":"s"} as a reusable checklist. Reuse it later with "New from template". Saving with an existing name replaces it.</p>
+      <button className="btn btn-primary btn-block" style={{marginTop:12}} onClick={save}>Save template</button>
+    </Sheet>
+  );
+}
+function TemplatesEditor({ store, toast }){
+  const list = store.templates||[];
+  if(!list.length) return <p className="hint" style={{margin:0}}>No templates yet. Open a project and tap <b>Template</b> to save its checklist (like a packing list you reuse each trip).</p>;
+  function rename(id, v){ const n=(v||"").trim(); if(n) store.saveTemplates(list.map(t=>t.id===id?{...t,name:n}:t)); }
+  function del(id){ store.saveTemplates(list.filter(t=>t.id!==id)); toast&&toast("Template deleted"); }
+  return (
+    <div>
+      {list.map(t=>
+        <div key={t.id+"|"+t.name} className="row" style={{alignItems:"center",gap:8,background:"var(--bg)",marginBottom:6}}>
+          <input className="input" defaultValue={t.name} onBlur={e=>rename(t.id,e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") e.target.blur(); }} style={{flex:1,minWidth:90}} aria-label="Template name"/>
+          <span className="chip" style={{flex:"0 0 auto"}}>{(t.items||[]).length}</span>
+          <button className="btn btn-ghost btn-sm" style={{flex:"0 0 auto"}} onClick={()=>del(t.id)}>Delete</button>
+        </div>)}
+      <p className="hint" style={{marginTop:6}}>Reuse a template from the <b>+</b> button or the Projects list. Tap a name to rename; the number is its item count.</p>
+    </div>
+  );
+}
+
+function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, onOpenTodo, del, toast }){
   const [active,setActive]=useState(null); // project detail
   const [showDone,setShowDone]=useShowDone(); // reveal completed to-dos inside a project
+  const [tplSheet,setTplSheet]=useState(false); // "save as template" sheet
   const projects = store.data.projects.filter(p=>(typeFilter==="all"||p.type===typeFilter)).sort(byOrder);
   if(active){
     const p = store.data.projects.find(x=>x.id===active.id)||active;
@@ -2389,7 +2486,10 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
         <div className="topbar" style={{padding:0,position:"static"}}>
           <button className="btn btn-ghost btn-sm" onClick={()=>setActive(null)}>{Ic.back} Projects</button>
           <div className="topbar-row" style={{marginTop:8}}><h1 className="title title-sm">{p.name}</h1>
-            <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("project",p)}>Edit</button></div>
+            <div style={{display:"flex",gap:6,flex:"0 0 auto"}}>
+              <button className="btn btn-ghost btn-sm" onClick={()=>setTplSheet(true)}>Template</button>
+              <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("project",p)}>Edit</button>
+            </div></div>
           <div className="item-meta" style={{marginTop:8}}>
             <TypeChip type={p.type}/><span className="chip">{p.status}</span>
             {p.deadline && <span className="chip amber">{fmtDate(p.deadline)}</span>}
@@ -2412,6 +2512,7 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
                 <div className="list">{doneShown.map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpenTodo(t)}/>)}</div>
               </>}
             </>}
+        {tplSheet && <SaveTemplateSheet store={store} defaultName={p.name} items={activeTodos.map(t=>t.title)} toast={toast} onClose={()=>setTplSheet(false)}/>}
       </div>
     );
   }
@@ -3217,6 +3318,9 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, upda
       <div className="set-group">Spaces</div>
       <div className="card"><SpacesEditor store={store} toast={toast}/></div>
 
+      <div className="set-group">Templates</div>
+      <div className="card"><TemplatesEditor store={store} toast={toast}/></div>
+
       <div className="set-group">Follow-up nudge</div>
       <div className="card">
         <div className="row" style={{alignItems:"center"}}>
@@ -3729,7 +3833,7 @@ function App(){
 
   // sub-views launched from More / Today
   let subView = null;
-  if(sub==="projects") subView=<ProjectsView store={store} openEditor={openEditor} onOpenTodo={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} del={deleteWithUndo}/>;
+  if(sub==="projects") subView=<ProjectsView store={store} openEditor={openEditor} onOpenTodo={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} del={deleteWithUndo} toast={toast}/>;
   else if(sub==="ideas") subView=<IdeasView store={store} openEditor={openEditor} typeFilter={typeFilter} setTypeFilter={setTypeFilter} del={deleteWithUndo}/>;
   else if(sub==="goals") subView=<GoalsView store={store} openEditor={openEditor} typeFilter={typeFilter} setTypeFilter={setTypeFilter} del={deleteWithUndo}/>;
   else if(sub==="review") subView=<WeeklyReview store={store} back={()=>setSub(null)} go={go}/>;
