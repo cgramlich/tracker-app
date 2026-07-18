@@ -356,11 +356,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.14.0";
+const APP_VERSION = "1.15.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-13.10";
+const BUILD = "2026-07-13.11";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -769,17 +769,22 @@ async function aiRelay({ task, model, max_tokens, system, messages }){
 
 // Step 1: question -> date window. Falls back to today..+6 months on any failure,
 // so a bad parse never blocks the question.
-async function calInferWindow(question){
+async function calInferWindow(question, history){
   const today = TODAY();
   const system = "You turn a question about someone's calendar into the date window that must be examined. "
     + "Today is " + today + ". Reply with ONLY a JSON object: {\"start\":\"YYYY-MM-DD\",\"end\":\"YYYY-MM-DD\"}. "
     + "Rules: a named month means that whole month (this year, or next year if it has already passed); "
     + "an open-ended lookup like \"my next X\" means today through today plus 6 months; "
     + "\"tomorrow\" / \"this week\" / \"next week\" mean exactly that range; a question about the past uses that past range. "
+    + "If the new question is a FOLLOW-UP that refines an earlier search (e.g. naming a specific person "
+    + "or event to look for), keep a window consistent with that earlier search rather than starting over. "
     + "Never span more than 12 months. Output JSON only, no prose.";
+  const convo = (history||[]).filter(m=>m.role==="user"||m.role==="assistant").slice(-4)
+    .map(m=>(m.role==="user"?"User: ":"Assistant: ")+m.text).join("\n");
+  const content = convo ? ("Conversation so far:\n"+convo+"\n\nNew question: "+question) : question;
   let txt = "";
   try{ txt = await aiRelay({ task:"calendar_window", model:"claude-haiku-4-5", max_tokens:200, system,
-                             messages:[{ role:"user", content:question }] }); }
+                             messages:[{ role:"user", content }] }); }
   catch(e){ log("AI","window inference failed: "+e.message); }
   let s=null, e2=null;
   const m = txt && txt.match(/\{[\s\S]*\}/);
@@ -792,19 +797,29 @@ async function calInferWindow(question){
   return { start:s, end:e2 };
 }
 
-// Step 2: answer, grounded strictly in the events we actually fetched.
-async function calAnswer(question, win, scopeLabel, eventLines, count){
+// Step 2: answer, grounded strictly in the events we actually fetched. `history` carries
+// the prior turns so follow-ups work ("no dentist found" -> "look for Dr Robinson, that's
+// my dentist") - the model keeps the thread AND gets the events re-supplied each turn.
+async function calAnswer(question, win, scopeLabel, eventLines, count, history){
   const wd = new Date(TODAY()+"T00:00:00").toLocaleDateString(undefined,{weekday:"long"});
   const system = "You answer questions about the user's calendar. Today is " + TODAY() + " (" + wd + "). "
     + "Use ONLY the events provided - never invent or assume events. Be concise and specific: name real events and dates. "
     + "If asked about free time, find gaps with NO events and say exactly which dates are free, accounting for weekends. "
-    + "If the provided events do not answer the question, say so plainly and suggest a wider window. "
-    + "Plain text, no markdown headers.";
+    + "This is a CONVERSATION: the user may correct or refine you (for example telling you that a "
+    + "particular person or event name IS the thing they were looking for). Take that at face value, "
+    + "re-scan the supplied events with it, and answer again. "
+    + "If the provided events do not answer the question, say so plainly and suggest a wider window "
+    + "or ask what the event might be called. Plain text, no markdown headers.";
   const user = "Question: " + question
     + "\n\nWindow examined: " + win.start + " to " + win.end + " (" + scopeLabel + ", " + count + " events)"
     + "\n\nEvents:\n" + (eventLines || "(no events in this window)");
-  return aiRelay({ task:"calendar_qa", model:"claude-sonnet-4-6", max_tokens:900, system,
-                   messages:[{ role:"user", content:user }] });
+  // Prior turns first (UI-only "sys" notes excluded). Drop a trailing user turn so the
+  // roles stay alternating when we append the new question.
+  const prior = (history||[]).filter(m=>m.role==="user"||m.role==="assistant").slice(-6);
+  while(prior.length && prior[prior.length-1].role==="user") prior.pop();
+  const messages = prior.map(m=>({ role:m.role, content:m.text }));
+  messages.push({ role:"user", content:user });
+  return aiRelay({ task:"calendar_qa", model:"claude-sonnet-4-6", max_tokens:900, system, messages });
 }
 
 // Build a compact snapshot of current data for the organizer's context.
@@ -3713,8 +3728,7 @@ function CalendarView({ store }){
   const [q,setQ]=useState("");
   const [qBusy,setQBusy]=useState(false);
   const [qErr,setQErr]=useState("");
-  const [qNote,setQNote]=useState("");
-  const [answer,setAnswer]=useState("");
+  const [msgs,setMsgs]=useState([]);   // {role:'user'|'assistant'|'sys', text} - 'sys' is UI-only
 
   // Compact, token-cheap event lines. Weekday is included so the model can reason
   // about weekends without having to derive it.
@@ -3732,9 +3746,12 @@ function CalendarView({ store }){
   async function ask(){
     const question = q.trim();
     if(!question || qBusy) return;
-    setQBusy(true); setQErr(""); setAnswer(""); setQNote("");
+    const history = msgs;                 // turns BEFORE this question drive the follow-up
+    setQ(""); setQErr("");
+    setMsgs(m=>[...m, { role:"user", text:question }]);
+    setQBusy(true);
     try{
-      let win = await calInferWindow(question);
+      let win = await calInferWindow(question, history);
       let res = await calEventsGet({ start:win.start, end:win.end, space:active });
       let evs = mergeAcrossFeeds((res && res.events) || []);
       // Open-ended lookups ("my next X") often sit past the inferred window. Widening
@@ -3747,8 +3764,11 @@ function CalendarView({ store }){
       }
       const nameOf = (id)=>{ const f=((res && res.feeds)||[]).find(x=>x.id===id); return f ? f.name : ""; };
       const scope = active==="all" ? "all spaces" : spaceName;
-      setQNote("Searched "+fmtDate(win.start)+" - "+fmtDate(win.end)+" ("+scope+", "+evs.length+" event"+(evs.length===1?"":"s")+")");
-      setAnswer(await calAnswer(question, win, scope, compactEvents(evs, nameOf), evs.length));
+      const text = await calAnswer(question, win, scope, compactEvents(evs, nameOf), evs.length, history);
+      setMsgs(m=>[...m,
+        { role:"assistant", text: text || "(no answer)" },
+        { role:"sys", text: "Searched "+fmtDate(win.start)+" - "+fmtDate(win.end)+" ("+scope+", "+evs.length+" event"+(evs.length===1?"":"s")+")" }
+      ]);
     }catch(e){ setQErr(e.message||"Couldn't answer that."); }
     finally{ setQBusy(false); }
   }
@@ -3771,19 +3791,25 @@ function CalendarView({ store }){
       </div>
 
       <div className="card" style={{marginTop:14,borderColor:"var(--amber-line)"}}>
-        <div className="label" style={{display:"flex",alignItems:"center",gap:6}}>{Ic.sparkle} Ask about your calendar</div>
+        <div className="topbar-row" style={{alignItems:"center"}}>
+          <div className="label" style={{display:"flex",alignItems:"center",gap:6}}>{Ic.sparkle} Ask about your calendar</div>
+          {msgs.length>0 && <button className="btn btn-ghost btn-sm" onClick={()=>{ setMsgs([]); setQErr(""); }}>Clear</button>}
+        </div>
+        {msgs.length>0 &&
+          <div className="chat-scroll" style={{marginTop:8}}>
+            {msgs.map((m,i)=><div key={i} className={"bubble "+(m.role==="user"?"user":m.role==="assistant"?"ai":"sys")}>{m.text}</div>)}
+            {qBusy && <div className="bubble ai" style={{color:"var(--ink-3)"}}>Checking your calendar...</div>}
+          </div>}
         <div className="row" style={{marginTop:8,alignItems:"center"}}>
           <input className="input" style={{flex:1}} value={q} onChange={e=>setQ(e.target.value)}
-            placeholder="e.g. when is my next dentist appointment?"
+            placeholder={msgs.length? "Ask a follow-up..." : "e.g. when is my next dentist appointment?"}
             onKeyDown={e=>{ if(e.key==="Enter") ask(); }}/>
           <button className="btn btn-primary btn-sm" style={{flex:"0 0 auto"}} disabled={qBusy||!q.trim()} onClick={ask}>
             {qBusy? <span className="spin"></span> : "Ask"}</button>
         </div>
         {qErr && <p className="hint danger-text" style={{marginTop:8}}>{qErr}</p>}
-        {!qErr && answer && <p style={{marginTop:10,lineHeight:1.5,whiteSpace:"pre-wrap"}}>{answer}</p>}
-        {qNote && !qErr && <p className="hint" style={{marginTop:8}}>{qNote}</p>}
-        {!answer && !qErr && !qBusy &&
-          <p className="hint" style={{marginTop:8}}>Ask anything - "any 5-day gap in October including a weekend?", "what do I have Thursday?", "when is my next dentist appointment?". Answers come only from your real events.</p>}
+        {msgs.length===0 && !qErr && !qBusy &&
+          <p className="hint" style={{marginTop:8}}>Ask anything - "any 5-day gap in October including a weekend?", "when is my next dentist appointment?". It's a conversation, so you can correct it: "look for Dr Robinson, that's my dentist". Answers come only from your real events.</p>}
       </div>
 
       {err && <p className="hint danger-text" style={{marginTop:10}}>{err}</p>}
