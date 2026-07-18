@@ -361,11 +361,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.16.0";
+const APP_VERSION = "1.17.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-13.12";
+const BUILD = "2026-07-13.13";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -603,6 +603,80 @@ const calEventsGet = (p) => {
   return calFetch("/api/calendar/events?"+q.toString());
 };
 const calFeedDelete = (id) => calFetch("/api/calendar/feeds/"+encodeURIComponent(id), { method:"DELETE" });
+
+/* Shared by the Calendar view AND the Dashboard card, so both dedupe and format
+   identically - one implementation, no drift. */
+
+// The same meeting often sits on two calendars. Merge those into ONE row carrying
+// BOTH calendars. Title+start is the PRIMARY key: the same meeting on two different
+// SYSTEMS (Outlook/Teams vs Google) has DIFFERENT UIDs, so a uid-first match would
+// never merge them. uid+start is a second signal (an invite titled differently on
+// each side) - and it MUST include start, because a recurring series shares ONE uid
+// across every occurrence and a bare-uid match would collapse the whole series.
+function mergeCalendarEvents(list){
+  const norm = (s)=> String(s||"").trim().toLowerCase().replace(/\s+/g," ");
+  const byKey = new Map(), byUid = new Map(), out = [];
+  (list||[]).forEach(ev=>{
+    const k  = norm(ev.title)+"|"+(ev.start||"");
+    const uk = ev.uid ? (ev.uid+"|"+(ev.start||"")) : null;
+    const hit = byKey.get(k) || (uk ? byUid.get(uk) : null);
+    if(hit){
+      if(hit.feedIds.indexOf(ev.feed_id) < 0){ hit.feedIds.push(ev.feed_id); hit.colors.push(ev.color||"#6f9bc4"); }
+      if(!hit.location && ev.location) hit.location = ev.location;
+      if(!hit.end && ev.end) hit.end = ev.end;
+      if(!byKey.has(k)) byKey.set(k, hit);
+      if(uk && !byUid.has(uk)) byUid.set(uk, hit);
+      return;
+    }
+    const row = { ...ev, feedIds:[ev.feed_id], colors:[ev.color||"#6f9bc4"] };
+    byKey.set(k, row);
+    if(uk) byUid.set(uk, row);
+    out.push(row);
+  });
+  return out;
+}
+
+// Flag every TIMED event that overlaps another timed event, so the UI can badge it as a
+// conflict. All-day entries (PTO, birthdays) are context rather than a booking, so they
+// never create a conflict - otherwise a single PTO day would flag everything on it.
+// Touching edges (10:00-10:30 then 10:30-11:00) are back-to-back, NOT a conflict.
+function markConflicts(list){
+  const timed = (list||[]).filter(e=>!e.all_day && e.start && e.end);
+  const span  = timed.map(e=>[+new Date(e.start), +new Date(e.end)]);
+  timed.forEach((a,i)=>{
+    const [as,ae] = span[i];
+    a.conflict = timed.some((b,j)=> j!==i && as < span[j][1] && span[j][0] < ae);
+  });
+  return list;
+}
+
+// Calendar color dots for an event (one per calendar it appears on). The dots live in an
+// inline-flex wrapper so the gap BETWEEN them is uniform and there is a single consistent
+// gap before the title. Hand-rolled per-dot margins made a merged 2-dot event look uneven.
+function CalDots({ colors }){
+  const list = (colors||[]).filter(Boolean).slice(0,4);
+  if(!list.length) return null;
+  return (
+    <span style={{display:"inline-flex",alignItems:"center",gap:3,verticalAlign:"middle",marginRight:6}}>
+      {list.map((c,i)=><span key={i} className="space-dot" style={{background:c}}></span>)}
+    </span>
+  );
+}
+
+// "All day", "9:00 AM - 9:30 AM", or "10:00 PM - Jul 20" when it crosses a day.
+function fmtEventTime(ev){
+  if(ev.all_day) return "All day";
+  try{
+    const hhmm = (d)=> d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+    const d = new Date(ev.start);
+    let s = hhmm(d);
+    if(ev.end){
+      const e2 = new Date(ev.end);
+      s += todayKey(e2)!==todayKey(d) ? (" - "+fmtDate(todayKey(e2))) : (" - "+hhmm(e2));
+    }
+    return s;
+  }catch(_){ return ""; }
+}
 
 /* ============================================================
    AI - routed through our backend relay (POST /api/ai/relay) so the Anthropic
@@ -3678,65 +3752,20 @@ function CalendarView({ store }){
   const feedName = (id)=>{ const f = feeds.find(x=>x.id===id); return f ? f.name : ""; };
   const problems = feeds.filter(f=>f.status==="error" || f.status==="parse_error" || f.status==="stale");
 
-  // The SAME meeting often sits on two calendars (a work invite that also lands on
-  // personal). Merge those into ONE row carrying BOTH calendars, keyed on uid+start -
-  // recurring instances share a UID but differ by start, so they stay separate.
-  // Falls back to title+end+start when a feed omits UID.
-  function mergeAcrossFeeds(list){
-    const norm = (s)=> String(s||"").trim().toLowerCase().replace(/\s+/g," ");
-    const byKey = new Map();   // normalized title + start -> merged row
-    const byUid = new Map();   // uid + start -> merged row
-    const out = [];
-    (list||[]).forEach(ev=>{
-      // Title+start is the PRIMARY key. The same meeting living on two different
-      // SYSTEMS (Outlook/Teams vs Google) carries DIFFERENT UIDs, so a uid-first
-      // match would never merge them - that was the original bug. UID is a SECOND
-      // signal (catches an invite titled differently on each side), but it MUST
-      // include start: a recurring series shares ONE uid across every occurrence,
-      // so matching on a bare uid would collapse the whole series into one row.
-      const k  = norm(ev.title)+"|"+(ev.start||"");
-      const uk = ev.uid ? (ev.uid+"|"+(ev.start||"")) : null;
-      const hit = byKey.get(k) || (uk ? byUid.get(uk) : null);
-      if(hit){
-        if(hit.feedIds.indexOf(ev.feed_id) < 0){ hit.feedIds.push(ev.feed_id); hit.colors.push(ev.color||"#6f9bc4"); }
-        if(!hit.location && ev.location) hit.location = ev.location;
-        if(!hit.end && ev.end) hit.end = ev.end;
-        if(!byKey.has(k)) byKey.set(k, hit);
-        if(uk && !byUid.has(uk)) byUid.set(uk, hit);
-        return;
-      }
-      const row = { ...ev, feedIds:[ev.feed_id], colors:[ev.color||"#6f9bc4"] };
-      byKey.set(k, row);
-      if(uk) byUid.set(uk, row);
-      out.push(row);
-    });
-    return out;
-  }
+  // Dedupe + time formatting come from the shared module-level helpers, so this view
+  // and the Dashboard card can never drift apart.
+  const fmtWhen = fmtEventTime;
 
   // Group into LOCAL days (all-day events are already date-only - slice the string
   // rather than parsing, which would shift them a day behind UTC).
   const groups = [];
   if(data && data.events){
     const map = {};
-    mergeAcrossFeeds(data.events).forEach(ev=>{
+    markConflicts(mergeCalendarEvents(data.events)).forEach(ev=>{
       const k = ev.all_day ? String(ev.start||"").slice(0,10) : todayKey(new Date(ev.start));
       (map[k] = map[k] || []).push(ev);
     });
     Object.keys(map).sort().forEach(k=>groups.push({ key:k, events:map[k] }));
-  }
-
-  const hhmm = (d)=> d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
-  function fmtWhen(ev){
-    if(ev.all_day) return "All day";
-    try{
-      const d = new Date(ev.start);
-      let s = hhmm(d);
-      if(ev.end){
-        const e2 = new Date(ev.end);
-        s += todayKey(e2)!==todayKey(d) ? (" - "+fmtDate(todayKey(e2))) : (" - "+hhmm(e2));
-      }
-      return s;
-    }catch(_){ return ""; }
   }
   function dayLabel(k){
     if(k===TODAY()) return "Today";
@@ -3776,14 +3805,14 @@ function CalendarView({ store }){
     try{
       let win = await calInferWindow(question, history);
       let res = await calEventsGet({ start:win.start, end:win.end, space:active });
-      let evs = mergeAcrossFeeds((res && res.events) || []);
+      let evs = mergeCalendarEvents((res && res.events) || []);
       // Open-ended lookups ("my next X") often sit past the inferred window. Widening
       // once costs nothing extra in AI - it's just another fetch.
       if(evs.length === 0){
         const f = new Date(); f.setMonth(f.getMonth()+12);
         win = { start: TODAY(), end: todayKey(f) };
         res = await calEventsGet({ start:win.start, end:win.end, space:active });
-        evs = mergeAcrossFeeds((res && res.events) || []);
+        evs = mergeCalendarEvents((res && res.events) || []);
       }
       const nameOf = (id)=>{ const f=((res && res.feeds)||[]).find(x=>x.id===id); return f ? f.name : ""; };
       const scope = active==="all" ? "all spaces" : spaceName;
@@ -3857,9 +3886,7 @@ function CalendarView({ store }){
               <div key={g.key+"-"+i} className="item" style={{cursor:"pointer"}} onClick={()=>setDetail(ev)}>
                 <div className="item-body">
                   <div className="item-title">
-                    {(ev.colors||[ev.color||"#6f9bc4"]).slice(0,4).map((c,ci)=>
-                      <span key={ci} className="space-dot" style={{background:c,marginRight:ci===(ev.colors||[1]).length-1?6:3,display:"inline-block",verticalAlign:"middle"}}></span>)}
-                    {ev.title||"(no title)"}
+                    <CalDots colors={ev.colors||[ev.color]}/>{ev.title||"(no title)"}
                   </div>
                   <div className="item-meta">
                     <span className="chip">{fmtWhen(ev)}</span>
@@ -3868,6 +3895,7 @@ function CalendarView({ store }){
                       return names.length ? <span className="chip">{names.join(" + ")}</span> : null; })()}
                   </div>
                 </div>
+                {ev.conflict && <span className="chip red" style={{flex:"0 0 auto"}} title="Overlaps another event">Conflict</span>}
               </div>))}
           </div>
         </div>))}
@@ -3929,6 +3957,28 @@ function DashboardView({ store, onOpen, openEditor }){
     </div>
   );
 
+  // Today's schedule (read-only calendar overlay). Fetched separately from the task data
+  // and deliberately NON-BLOCKING: if the calendar API fails, the card says so and the
+  // rest of the dashboard still renders.
+  const [sched,setSched]=useState(null);      // null = still loading
+  const [schedErr,setSchedErr]=useState("");
+  useEffect(()=>{
+    let alive = true;
+    (async ()=>{
+      setSchedErr("");
+      try{
+        const s=new Date(); s.setHours(0,0,0,0);
+        const e=new Date(s); e.setDate(e.getDate()+1);
+        const j = await calEventsGet({ start:s.toISOString(), end:e.toISOString(), space:active });
+        if(alive) setSched(j);
+      }catch(ex){ if(alive){ setSchedErr(ex.message||"Couldn't load your schedule."); setSched({ events:[], feeds:[] }); } }
+    })();
+    return ()=>{ alive=false; };
+  },[active]);
+  const schedFeeds  = (sched && sched.feeds) || [];
+  const schedEvents = markConflicts(mergeCalendarEvents((sched && sched.events) || []));
+  const schedName   = (id)=>{ const f=schedFeeds.find(x=>x.id===id); return f ? f.name : ""; };
+
   // AI brief (optional, button-triggered so it never auto-spends). Summarizes the CURRENT
   // (space-scoped) snapshot. Grounded: the prompt says use only the provided items.
   const [brief,setBrief]=useState("");
@@ -3941,6 +3991,8 @@ function DashboardView({ store, onOpen, openEditor }){
       if(t.quad==="q1") bits.push("Do First"); if(t.starredToday) bits.push("flagged");
       if(bits.length) s+=" ("+bits.join(", ")+")"; return s; };
     const L=["Space: "+spaceName];
+    // Today's meetings go in too, so the brief can weigh tasks against actual booked time.
+    if(schedEvents.length) L.push("Today's schedule ("+schedEvents.length+"): "+schedEvents.slice(0,12).map(ev=>'"'+(ev.title||"")+'" '+fmtEventTime(ev)).join("; "));
     if(todayOverdue.length) L.push("Due/overdue ("+todayOverdue.length+"): "+todayOverdue.slice(0,12).map(line).join("; "));
     if(priorities.length)   L.push("Priorities ("+priorities.length+"): "+priorities.slice(0,10).map(line).join("; "));
     if(activeProjects.length) L.push("Active projects ("+activeProjects.length+"): "+activeProjects.slice(0,10).map(p=>'"'+p.name+'" - '+openCount(p.id)+" open"+(p.deadline?(", deadline "+p.deadline):"")).join("; "));
@@ -3962,7 +4014,7 @@ function DashboardView({ store, onOpen, openEditor }){
       <div className="topbar" style={{padding:0,position:"static"}}>
         <div className="eyebrow">Overview</div>
         <div className="topbar-row"><h1 className="title">Dashboard</h1></div>
-        <div className="subtle" style={{marginTop:2}}>{spaceName}{" · "}{todayOverdue.length} due/overdue{" · "}{activeProjects.length} active project{activeProjects.length===1?"":"s"}</div>
+        <div className="subtle" style={{marginTop:2}}>{spaceName}{" · "}{todayOverdue.length} due/overdue{" · "}{activeProjects.length} active project{activeProjects.length===1?"":"s"}{schedEvents.length? (" · "+schedEvents.length+" today") : ""}</div>
       </div>
 
       <div className="card" style={{marginTop:16,borderColor:"var(--amber-line)"}}>
@@ -3975,6 +4027,28 @@ function DashboardView({ store, onOpen, openEditor }){
         {!briefErr && !brief && !briefBusy &&
           <p className="hint" style={{marginTop:8}}>{hasData ? ("Tap Summarize for a quick read on what needs your attention"+(isAll?" across all Spaces.":" in "+spaceName+".")) : "Nothing to brief right now."}</p>}
       </div>
+
+      {/* Today's schedule sits directly above today's tasks - meetings and tasks in one
+          glance, so "an hour on RTR" is planned against what's actually booked. Hidden
+          entirely when no calendars are connected, so it never clutters. */}
+      {(sched===null || schedFeeds.length>0 || schedErr) &&
+        <Section title="Today's schedule" n={schedEvents.length}
+          empty={schedErr ? schedErr : (sched===null ? "Loading your schedule..." : "Nothing scheduled today.")}
+          children={schedEvents.length ? <div className="list">{schedEvents.map((ev,i)=>(
+            <div key={"sch"+i} className="item">
+              <div className="item-body">
+                <div className="item-title">
+                  <CalDots colors={ev.colors||[ev.color]}/>{ev.title||"(no title)"}
+                </div>
+                <div className="item-meta">
+                  <span className="chip">{fmtEventTime(ev)}</span>
+                  {ev.location && <span className="chip">{ev.location}</span>}
+                  {(()=>{ const names=(ev.feedIds||[ev.feed_id]).map(schedName).filter(Boolean);
+                    return names.length ? <span className="chip">{names.join(" + ")}</span> : null; })()}
+                </div>
+              </div>
+              {ev.conflict && <span className="chip red" style={{flex:"0 0 auto"}} title="Overlaps another event">Conflict</span>}
+            </div>))}</div> : null}/>}
 
       <Section title="Today / Overdue" n={todayOverdue.length} empty="Nothing due or overdue. Nice."
         children={todayOverdue.length ? <><div className="list">{todayOverdue.slice(0,10).map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div><More n={todayOverdue.length-10}/></> : null}/>
