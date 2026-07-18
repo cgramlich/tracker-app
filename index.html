@@ -244,6 +244,11 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
   background:var(--bg-3);border:1px solid var(--line-2);color:var(--ink-2);transition:.15s;}
 .icon-btn:active{border-color:var(--amber-line);background:var(--bg-4);}
 .icon-btn svg{width:21px;height:21px;stroke:currentColor;fill:none;stroke-width:1.8;}
+/* Compact round icon button for inline affordances (e.g. the "how this works" (i)). */
+.icon-btn-sm{flex:0 0 auto;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;
+  background:var(--bg-3);border:1px solid var(--line-2);color:var(--ink-3);transition:.15s;}
+.icon-btn-sm:active{border-color:var(--amber-line);background:var(--bg-4);}
+.icon-btn-sm svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;}
 /* Space switcher - the top-level focus/mute control. A horizontal pill row (All + each
    Space); the active pill takes the Space's own color so the current focus is unmistakable. */
 .space-switch{display:flex;gap:8px;overflow-x:auto;margin-top:10px;padding-bottom:2px;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
@@ -356,11 +361,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.15.0";
+const APP_VERSION = "1.16.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-13.11";
+const BUILD = "2026-07-13.12";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1473,6 +1478,7 @@ const Ic = {
   // Agenda glyph for the Calendar tab - deliberately distinct from `today` (a plain
   // calendar), so the nav never shows two identical calendar icons.
   schedule: <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4M7 13h4M7 17h4M14.5 13h2.5M14.5 17h2.5"/></svg>,
+  info:    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8v.01"/></svg>,
   more:    <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>,
   plus:    <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>,
   bolt:    <svg viewBox="0 0 24 24"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>,
@@ -3677,17 +3683,32 @@ function CalendarView({ store }){
   // recurring instances share a UID but differ by start, so they stay separate.
   // Falls back to title+end+start when a feed omits UID.
   function mergeAcrossFeeds(list){
-    const byKey = new Map(); const out = [];
+    const norm = (s)=> String(s||"").trim().toLowerCase().replace(/\s+/g," ");
+    const byKey = new Map();   // normalized title + start -> merged row
+    const byUid = new Map();   // uid + start -> merged row
+    const out = [];
     (list||[]).forEach(ev=>{
-      const key = (ev.uid ? ("u:"+ev.uid) : ("t:"+(ev.title||"")+"|"+(ev.end||""))) + "|" + (ev.start||"");
-      const hit = byKey.get(key);
+      // Title+start is the PRIMARY key. The same meeting living on two different
+      // SYSTEMS (Outlook/Teams vs Google) carries DIFFERENT UIDs, so a uid-first
+      // match would never merge them - that was the original bug. UID is a SECOND
+      // signal (catches an invite titled differently on each side), but it MUST
+      // include start: a recurring series shares ONE uid across every occurrence,
+      // so matching on a bare uid would collapse the whole series into one row.
+      const k  = norm(ev.title)+"|"+(ev.start||"");
+      const uk = ev.uid ? (ev.uid+"|"+(ev.start||"")) : null;
+      const hit = byKey.get(k) || (uk ? byUid.get(uk) : null);
       if(hit){
         if(hit.feedIds.indexOf(ev.feed_id) < 0){ hit.feedIds.push(ev.feed_id); hit.colors.push(ev.color||"#6f9bc4"); }
         if(!hit.location && ev.location) hit.location = ev.location;
-      } else {
-        const m = { ...ev, feedIds:[ev.feed_id], colors:[ev.color||"#6f9bc4"] };
-        byKey.set(key, m); out.push(m);
+        if(!hit.end && ev.end) hit.end = ev.end;
+        if(!byKey.has(k)) byKey.set(k, hit);
+        if(uk && !byUid.has(uk)) byUid.set(uk, hit);
+        return;
       }
+      const row = { ...ev, feedIds:[ev.feed_id], colors:[ev.color||"#6f9bc4"] };
+      byKey.set(k, row);
+      if(uk) byUid.set(uk, row);
+      out.push(row);
     });
     return out;
   }
@@ -3729,6 +3750,8 @@ function CalendarView({ store }){
   const [qBusy,setQBusy]=useState(false);
   const [qErr,setQErr]=useState("");
   const [msgs,setMsgs]=useState([]);   // {role:'user'|'assistant'|'sys', text} - 'sys' is UI-only
+  const [qOpen,setQOpen]=useState(true);   // collapse the thread without losing it
+  const [qInfo,setQInfo]=useState(false);  // the how-to text, tucked behind an (i)
 
   // Compact, token-cheap event lines. Weekday is included so the model can reason
   // about weekends without having to derive it.
@@ -3747,7 +3770,7 @@ function CalendarView({ store }){
     const question = q.trim();
     if(!question || qBusy) return;
     const history = msgs;                 // turns BEFORE this question drive the follow-up
-    setQ(""); setQErr("");
+    setQ(""); setQErr(""); setQOpen(true);   // asking always reveals the thread again
     setMsgs(m=>[...m, { role:"user", text:question }]);
     setQBusy(true);
     try{
@@ -3793,13 +3816,22 @@ function CalendarView({ store }){
       <div className="card" style={{marginTop:14,borderColor:"var(--amber-line)"}}>
         <div className="topbar-row" style={{alignItems:"center"}}>
           <div className="label" style={{display:"flex",alignItems:"center",gap:6}}>{Ic.sparkle} Ask about your calendar</div>
-          {msgs.length>0 && <button className="btn btn-ghost btn-sm" onClick={()=>{ setMsgs([]); setQErr(""); }}>Clear</button>}
+          <div style={{display:"flex",gap:6,alignItems:"center",flex:"0 0 auto"}}>
+            <button className="icon-btn-sm" aria-label="How this works" title="How this works"
+              onClick={()=>setQInfo(v=>!v)}>{Ic.info}</button>
+            {msgs.length>0 && <button className="btn btn-ghost btn-sm" onClick={()=>setQOpen(v=>!v)}>{qOpen?"Hide":"Show"}</button>}
+            {msgs.length>0 && <button className="btn btn-ghost btn-sm" onClick={()=>{ setMsgs([]); setQErr(""); setQOpen(true); }}>Clear</button>}
+          </div>
         </div>
-        {msgs.length>0 &&
+        {qInfo &&
+          <p className="hint" style={{marginTop:8}}>Ask anything - "any 5-day gap in October including a weekend?", "what do I have Thursday?", "when is my next dentist appointment?". It's a conversation, so you can correct it: "look for Dr Robinson, that's my dentist". Answers come only from your real events, and each reply shows the window it searched.</p>}
+        {msgs.length>0 && qOpen &&
           <div className="chat-scroll" style={{marginTop:8}}>
             {msgs.map((m,i)=><div key={i} className={"bubble "+(m.role==="user"?"user":m.role==="assistant"?"ai":"sys")}>{m.text}</div>)}
             {qBusy && <div className="bubble ai" style={{color:"var(--ink-3)"}}>Checking your calendar...</div>}
           </div>}
+        {msgs.length>0 && !qOpen &&
+          <p className="hint" style={{marginTop:8}}>{Math.ceil(msgs.filter(m=>m.role!=="sys").length/2)} exchange{Math.ceil(msgs.filter(m=>m.role!=="sys").length/2)===1?"":"s"} hidden - tap Show.</p>}
         <div className="row" style={{marginTop:8,alignItems:"center"}}>
           <input className="input" style={{flex:1}} value={q} onChange={e=>setQ(e.target.value)}
             placeholder={msgs.length? "Ask a follow-up..." : "e.g. when is my next dentist appointment?"}
@@ -3808,8 +3840,6 @@ function CalendarView({ store }){
             {qBusy? <span className="spin"></span> : "Ask"}</button>
         </div>
         {qErr && <p className="hint danger-text" style={{marginTop:8}}>{qErr}</p>}
-        {msgs.length===0 && !qErr && !qBusy &&
-          <p className="hint" style={{marginTop:8}}>Ask anything - "any 5-day gap in October including a weekend?", "when is my next dentist appointment?". It's a conversation, so you can correct it: "look for Dr Robinson, that's my dentist". Answers come only from your real events.</p>}
       </div>
 
       {err && <p className="hint danger-text" style={{marginTop:10}}>{err}</p>}
@@ -3834,7 +3864,8 @@ function CalendarView({ store }){
                   <div className="item-meta">
                     <span className="chip">{fmtWhen(ev)}</span>
                     {ev.location && <span className="chip">{ev.location}</span>}
-                    {(ev.feedIds||[ev.feed_id]).map(fid=>{ const n=feedName(fid); return n ? <span key={fid} className="chip">{n}</span> : null; })}
+                    {(()=>{ const names=(ev.feedIds||[ev.feed_id]).map(feedName).filter(Boolean);
+                      return names.length ? <span className="chip">{names.join(" + ")}</span> : null; })()}
                   </div>
                 </div>
               </div>))}
