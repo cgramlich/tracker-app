@@ -229,7 +229,9 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
   padding-bottom:env(safe-area-inset-bottom);
   background:rgba(28,22,17,.92);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
   border-top:1px solid var(--line-2);display:flex;align-items:center;justify-content:space-around;max-width:680px;margin:0 auto;}
-.nav-btn{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--ink-3);font-size:10px;font-weight:600;letter-spacing:.03em;padding:8px 0;transition:.15s;}
+/* 6 tabs + the capture FAB share this row, so labels are sized to survive a 375px
+   phone without wrapping (nowrap = clip rather than break onto a second line). */
+.nav-btn{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--ink-3);font-size:9px;font-weight:600;letter-spacing:.01em;padding:8px 0;transition:.15s;white-space:nowrap;overflow:hidden;}
 .nav-btn.on{color:var(--amber);}
 .nav-btn svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;}
 /* top search bar - clearly labeled, opens the full search view */
@@ -354,11 +356,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.11.0";
+const APP_VERSION = "1.12.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-13.7";
+const BUILD = "2026-07-13.8";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -3590,11 +3592,32 @@ function CalendarView({ store }){
   const feedName = (id)=>{ const f = feeds.find(x=>x.id===id); return f ? f.name : ""; };
   const problems = feeds.filter(f=>f.status==="error" || f.status==="parse_error" || f.status==="stale");
 
-  // Group into LOCAL days (all-day events are already date-only).
+  // The SAME meeting often sits on two calendars (a work invite that also lands on
+  // personal). Merge those into ONE row carrying BOTH calendars, keyed on uid+start -
+  // recurring instances share a UID but differ by start, so they stay separate.
+  // Falls back to title+end+start when a feed omits UID.
+  function mergeAcrossFeeds(list){
+    const byKey = new Map(); const out = [];
+    (list||[]).forEach(ev=>{
+      const key = (ev.uid ? ("u:"+ev.uid) : ("t:"+(ev.title||"")+"|"+(ev.end||""))) + "|" + (ev.start||"");
+      const hit = byKey.get(key);
+      if(hit){
+        if(hit.feedIds.indexOf(ev.feed_id) < 0){ hit.feedIds.push(ev.feed_id); hit.colors.push(ev.color||"#6f9bc4"); }
+        if(!hit.location && ev.location) hit.location = ev.location;
+      } else {
+        const m = { ...ev, feedIds:[ev.feed_id], colors:[ev.color||"#6f9bc4"] };
+        byKey.set(key, m); out.push(m);
+      }
+    });
+    return out;
+  }
+
+  // Group into LOCAL days (all-day events are already date-only - slice the string
+  // rather than parsing, which would shift them a day behind UTC).
   const groups = [];
   if(data && data.events){
     const map = {};
-    data.events.forEach(ev=>{
+    mergeAcrossFeeds(data.events).forEach(ev=>{
       const k = ev.all_day ? String(ev.start||"").slice(0,10) : todayKey(new Date(ev.start));
       (map[k] = map[k] || []).push(ev);
     });
@@ -3653,13 +3676,14 @@ function CalendarView({ store }){
               <div key={g.key+"-"+i} className="item" style={{cursor:"pointer"}} onClick={()=>setDetail(ev)}>
                 <div className="item-body">
                   <div className="item-title">
-                    <span className="space-dot" style={{background:ev.color||"#6f9bc4",marginRight:6,display:"inline-block",verticalAlign:"middle"}}></span>
+                    {(ev.colors||[ev.color||"#6f9bc4"]).slice(0,4).map((c,ci)=>
+                      <span key={ci} className="space-dot" style={{background:c,marginRight:ci===(ev.colors||[1]).length-1?6:3,display:"inline-block",verticalAlign:"middle"}}></span>)}
                     {ev.title||"(no title)"}
                   </div>
                   <div className="item-meta">
                     <span className="chip">{fmtWhen(ev)}</span>
                     {ev.location && <span className="chip">{ev.location}</span>}
-                    {feedName(ev.feed_id) && <span className="chip">{feedName(ev.feed_id)}</span>}
+                    {(ev.feedIds||[ev.feed_id]).map(fid=>{ const n=feedName(fid); return n ? <span key={fid} className="chip">{n}</span> : null; })}
                   </div>
                 </div>
               </div>))}
@@ -3675,7 +3699,9 @@ function CalendarView({ store }){
             {dayLabel(detail.all_day ? String(detail.start||"").slice(0,10) : todayKey(new Date(detail.start)))} &middot; {fmtWhen(detail)}
           </p>
           {detail.location && <div className="field"><span className="label">Location</span><div>{detail.location}</div></div>}
-          <div className="field"><span className="label">Calendar</span><div>{feedName(detail.feed_id)||"-"}</div></div>
+          <div className="field"><span className="label">{(detail.feedIds||[]).length>1?"Calendars":"Calendar"}</span>
+            <div>{((detail.feedIds||[detail.feed_id]).map(feedName).filter(Boolean).join(", "))||"-"}</div></div>
+          {(detail.feedIds||[]).length>1 && <p className="hint" style={{marginTop:0}}>This event appears on more than one of your calendars.</p>}
           {detail.tz && <div className="field"><span className="label">Time zone</span><div>{detail.tz}</div></div>}
           <p className="hint" style={{marginTop:10}}>Read-only. Edit this event in the calendar it came from.</p>
         </Sheet>}
@@ -3803,7 +3829,6 @@ function DashboardView({ store, onOpen, openEditor }){
    ============================================================ */
 function MoreView({ store, go }){
   const rows = [
-    { k:"calendar", ic:Ic.today,   b:"Calendar", s:"Your schedule, by Space" },
     { k:"ideas",    ic:Ic.idea,    b:"Ideas", s:store.data.ideas.length+" captured" },
     { k:"aichat",   ic:Ic.sparkle, b:"Organize with AI", s:"Brain-dump, then approve a plan" },
     { k:"matrix",   ic:Ic.matrix,  b:"Matrix", s:"Eisenhower priorities" },
@@ -4126,7 +4151,7 @@ function App(){
   function navTo(t){ setTab(t); setSub(null); }
   // Promote Ideas/Goals/Search to nav items: clear the main tab so only the sub lights up.
   function goNav(s){ setTab(""); setSub(s); }
-  const NAV_SUBS = ["dashboard","projects","search"]; // not "owned" by the More tab highlight
+  const NAV_SUBS = ["dashboard","calendar","projects","search"]; // not "owned" by the More tab highlight
   const moreActive = tab==="more" || (sub && !NAV_SUBS.includes(sub));
 
   const syncLabel = store.sync==="idle"?"Synced":store.sync==="busy"?(store.syncMsg||"Working"):store.sync==="pending"?"Queued offline":store.syncMsg||"Sync error";
@@ -4158,6 +4183,7 @@ function App(){
         <button className={"nav-btn"+(tab==="lists"&&!sub?" on":"")} onClick={()=>navTo("lists")}><NavIc d={Ic.lists}/>To-Dos</button>
         <button className={"nav-btn"+(sub==="dashboard"?" on":"")} onClick={()=>goNav("dashboard")}><NavIc d={Ic.dashboard}/>Dashboard</button>
         <button className="nav-btn nav-fab" onClick={()=>setCapture(true)}><span className="fab">{Ic.plus}</span></button>
+        <button className={"nav-btn"+(sub==="calendar"?" on":"")} onClick={()=>goNav("calendar")}><NavIc d={Ic.today}/>Calendar</button>
         <button className={"nav-btn"+(sub==="projects"?" on":"")} onClick={()=>goNav("projects")}><NavIc d={Ic.project}/>Projects</button>
         <button className={"nav-btn"+(moreActive?" on":"")} onClick={()=>navTo("more")}><NavIc d={Ic.more}/>More</button>
       </div>
