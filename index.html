@@ -354,11 +354,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.9.1";
+const APP_VERSION = "1.10.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-13.5";
+const BUILD = "2026-07-13.6";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -555,6 +555,38 @@ async function metaPut(obj){
   log("API","PUT meta ok");
   return true;
 }
+
+/* ============================================================
+   CALENDAR FEEDS API (read-only .ics overlay). These live SERVER-SIDE only -
+   they are deliberately NOT part of the synced store/meta, because the feed URL
+   is a secret. We send a URL exactly once (POST body) and never receive it back;
+   the server returns only { id, name, space, color, enabled, host_hint }.
+   Nothing here ever logs the URL.
+   ============================================================ */
+async function calFetch(path, opts){
+  const token = await authToken();
+  if(!token) throw new Error("Not signed in");
+  const o = opts || {};
+  const r = await fetch(API_BASE + path, {
+    method: o.method || "GET",
+    headers: { "Content-Type":"application/json", "Authorization":"Bearer "+token },
+    body: o.body,
+  });
+  if(!r.ok){
+    let detail = ""; try{ detail = (await r.text()).slice(0,160); }catch(_){}
+    log("ERROR","calendar "+(o.method||"GET")+" "+path+" "+r.status+" "+detail);   // never the url
+    if(r.status===401) throw new Error("Session expired - sign in again.");
+    if(r.status===503) throw new Error("Calendar service unavailable.");
+    let msg = "Calendar error ("+r.status+")";
+    try{ const j = JSON.parse(detail); if(j && j.detail) msg = j.detail; }catch(_){}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+const calFeedsGet   = () => calFetch("/api/calendar/feeds");
+const calFeedAdd    = (body) => calFetch("/api/calendar/feeds", { method:"POST", body: JSON.stringify(body) });
+const calFeedPatch  = (id, body) => calFetch("/api/calendar/feeds/"+encodeURIComponent(id), { method:"PATCH", body: JSON.stringify(body) });
+const calFeedDelete = (id) => calFetch("/api/calendar/feeds/"+encodeURIComponent(id), { method:"DELETE" });
 
 /* ============================================================
    AI - routed through our backend relay (POST /api/ai/relay) so the Anthropic
@@ -2722,6 +2754,101 @@ function countUses(store, field, val){
    MANAGE SPACES editor (Settings): add / rename / recolor / reorder / archive.
    Reuses the list + DragList patterns. Spaces live in meta via store.saveSpaces.
    ============================================================ */
+/* ============================================================
+   MANAGE CALENDARS (Settings): add / rename / recolor / reassign Space / enable /
+   delete .ics feeds. These are NOT in the synced store - they live server-side
+   because the feed URL is a secret. We send the URL once and only ever get back
+   { id, name, space, color, enabled, host_hint }.
+   ============================================================ */
+function CalendarsEditor({ store, toast }){
+  const spaces = (store.spaces||[]).filter(s=>!s.archived).slice().sort((a,b)=>(a.order||0)-(b.order||0));
+  const defSpace = (store.activeSpace && store.activeSpace!=="all") ? store.activeSpace : (store.defaultSpace||DEFAULT_SPACE);
+  const [feeds,setFeeds]=useState(null);      // null = still loading
+  const [err,setErr]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [name,setName]=useState("");
+  const [url,setUrl]=useState("");
+  const [space,setSpace]=useState(defSpace);
+  const [color,setColor]=useState("#6f9bc4");
+
+  const load = useCallback(async ()=>{
+    setErr("");
+    try{ const j = await calFeedsGet(); setFeeds((j && j.feeds) || []); }
+    catch(e){ setErr(e.message||"Couldn't load calendars."); setFeeds([]); }
+  },[]);
+  useEffect(()=>{ load(); },[load]);
+
+  async function add(){
+    const n=name.trim(), u=url.trim();
+    if(!n){ toast&&toast("Name the calendar"); return; }
+    if(!u){ toast&&toast("Paste the .ics URL"); return; }
+    setBusy(true); setErr("");
+    try{
+      const f = await calFeedAdd({ name:n, url:u, space, color });
+      setUrl(""); setName("");                 // clear the secret out of the form immediately
+      setFeeds(list=>[...(list||[]), f]);
+      toast&&toast("Added \""+f.name+"\"");
+    }catch(e){ setErr(e.message||"Couldn't add that feed."); }
+    finally{ setBusy(false); }
+  }
+  async function patch(id, changes){
+    try{
+      const updated = await calFeedPatch(id, changes);
+      setFeeds(list=>(list||[]).map(f=>f.id===id?updated:f));
+    }catch(e){ setErr(e.message||"Update failed."); }
+  }
+  async function del(id, nm){
+    try{
+      await calFeedDelete(id);
+      setFeeds(list=>(list||[]).filter(f=>f.id!==id));
+      toast&&toast("Removed \""+nm+"\"");
+    }catch(e){ setErr(e.message||"Delete failed."); }
+  }
+
+  return (
+    <div>
+      {err && <p className="hint danger-text" style={{marginTop:0}}>{err}</p>}
+      {feeds===null && <p className="hint" style={{margin:0}}>Loading calendars...</p>}
+      {feeds && feeds.length===0 && !err && <p className="hint" style={{margin:0}}>No calendars yet. Add one below.</p>}
+      {feeds && feeds.map(f=>(
+        <div key={f.id} className="row" style={{alignItems:"center",gap:8,flexWrap:"wrap",background:"var(--bg)",marginBottom:8}}>
+          <input type="color" value={f.color||"#6f9bc4"} onChange={e=>patch(f.id,{color:e.target.value})} aria-label="Calendar color"
+            style={{flex:"0 0 auto",width:34,height:34,padding:2,border:"1px solid var(--line-2)",borderRadius:9,background:"transparent"}}/>
+          <input className="input" defaultValue={f.name} key={f.id+"|"+f.name} aria-label="Calendar name"
+            onBlur={e=>{ const v=e.target.value.trim(); if(v && v!==f.name) patch(f.id,{name:v}); }}
+            onKeyDown={e=>{ if(e.key==="Enter") e.target.blur(); }} style={{flex:1,minWidth:110}}/>
+          {spaces.length>0 &&
+            <select className="select" style={{flex:"0 0 auto",width:120}} value={f.space} onChange={e=>patch(f.id,{space:e.target.value})}>
+              {spaces.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>}
+          <button className="btn btn-ghost btn-sm" style={{flex:"0 0 auto"}} onClick={()=>patch(f.id,{enabled:!f.enabled})}>{f.enabled?"On":"Off"}</button>
+          <button className="btn btn-ghost btn-sm" style={{flex:"0 0 auto"}} onClick={()=>del(f.id,f.name)}>Delete</button>
+          {f.host_hint && <span className="chip" style={{flex:"0 0 auto"}}>{f.host_hint}</span>}
+        </div>
+      ))}
+
+      <div className="divider"></div>
+      <div className="field">
+        <span className="label">Add a calendar</span>
+        <input className="input" value={name} onChange={e=>setName(e.target.value)} placeholder="Name (e.g. RTR work)" autoCapitalize="words"/>
+        <input className="input" style={{marginTop:8}} value={url} onChange={e=>setUrl(e.target.value)}
+          placeholder="Paste the .ics feed URL" autoCapitalize="none" autoCorrect="off" spellCheck="false"/>
+        <div className="row" style={{marginTop:8,alignItems:"center"}}>
+          {spaces.length>0 &&
+            <select className="select" style={{flex:1}} value={space} onChange={e=>setSpace(e.target.value)}>
+              {spaces.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>}
+          <input type="color" value={color} onChange={e=>setColor(e.target.value)} aria-label="New calendar color"
+            style={{flex:"0 0 auto",width:34,height:34,padding:2,border:"1px solid var(--line-2)",borderRadius:9,background:"transparent"}}/>
+          <button className="btn btn-primary btn-sm" style={{flex:"0 0 auto"}} disabled={busy} onClick={add}>{busy? <span className="spin"></span> : "Add"}</button>
+        </div>
+      </div>
+      <p className="hint" style={{marginTop:6}}>Google Calendar &gt; Settings &gt; pick a calendar &gt; Integrate calendar &gt; <b>Secret address in iCal format</b>. The URL is stored on the server and never shown again - only its host is displayed here.</p>
+      <p className="hint" style={{marginTop:6}}>Heads up: Google refreshes these secret .ics feeds on its own schedule, so very recent edits can take a while to show up.</p>
+    </div>
+  );
+}
+
 function SpacesEditor({ store, toast }){
   const all = (store.spaces||[]).slice().sort((a,b)=>(a.order||0)-(b.order||0));
   const active = all.filter(s=>!s.archived);
@@ -3324,6 +3451,9 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, upda
 
       <div className="set-group">Templates</div>
       <div className="card"><TemplatesEditor store={store} toast={toast}/></div>
+
+      <div className="set-group">Calendars</div>
+      <div className="card"><CalendarsEditor store={store} toast={toast}/></div>
 
       <div className="set-group">Follow-up nudge</div>
       <div className="card">
