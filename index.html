@@ -354,11 +354,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.10.0";
+const APP_VERSION = "1.11.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-13.6";
+const BUILD = "2026-07-13.7";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -586,6 +586,15 @@ async function calFetch(path, opts){
 const calFeedsGet   = () => calFetch("/api/calendar/feeds");
 const calFeedAdd    = (body) => calFetch("/api/calendar/feeds", { method:"POST", body: JSON.stringify(body) });
 const calFeedPatch  = (id, body) => calFetch("/api/calendar/feeds/"+encodeURIComponent(id), { method:"PATCH", body: JSON.stringify(body) });
+// Events for a window. Only non-secret params ride the query string (dates / space / refresh).
+const calEventsGet = (p) => {
+  const q = new URLSearchParams();
+  if(p.start) q.set("start", p.start);
+  if(p.end) q.set("end", p.end);
+  if(p.space && p.space!=="all") q.set("space", p.space);
+  if(p.refresh) q.set("refresh", "1");
+  return calFetch("/api/calendar/events?"+q.toString());
+};
 const calFeedDelete = (id) => calFetch("/api/calendar/feeds/"+encodeURIComponent(id), { method:"DELETE" });
 
 /* ============================================================
@@ -3550,6 +3559,132 @@ function SearchView({ store, openEditor, back }){
    item type) and respects the active Space (store.data is already space-scoped): focus a
    Space -> its dashboard; All -> a cross-Space roll-up (with a Space dot on each row).
    ============================================================ */
+/* ============================================================
+   VIEW: CALENDAR (read-only .ics agenda). Events come from the backend, which
+   fetches + parses the feeds server-side. Space-aware: the active Space filters
+   which feeds are queried; "All" shows everything with a per-feed color dot.
+   READ-ONLY by design - no create/edit/delete affordances anywhere.
+   ============================================================ */
+function CalendarView({ store }){
+  const [mode,setMode]=useState("week");     // today | week
+  const [data,setData]=useState(null);
+  const [err,setErr]=useState("");
+  const [busy,setBusy]=useState(false);
+  const [detail,setDetail]=useState(null);
+  const active = store.activeSpace || "all";
+  const spaceName = active==="all" ? "All spaces" : (((store.spaces||[]).find(s=>s.id===active)||{}).name || "Space");
+
+  const load = useCallback(async (refresh)=>{
+    setBusy(true); setErr("");
+    try{
+      const s = new Date(); s.setHours(0,0,0,0);
+      const e = new Date(s); e.setDate(e.getDate() + (mode==="today" ? 1 : 7));
+      // Local midnight -> ISO instant, so the server's window matches the user's day.
+      setData(await calEventsGet({ start:s.toISOString(), end:e.toISOString(), space:active, refresh }));
+    }catch(ex){ setErr(ex.message||"Couldn't load your calendar."); setData(null); }
+    finally{ setBusy(false); }
+  },[mode, active]);
+  useEffect(()=>{ load(false); },[load]);
+
+  const feeds = (data && data.feeds) || [];
+  const feedName = (id)=>{ const f = feeds.find(x=>x.id===id); return f ? f.name : ""; };
+  const problems = feeds.filter(f=>f.status==="error" || f.status==="parse_error" || f.status==="stale");
+
+  // Group into LOCAL days (all-day events are already date-only).
+  const groups = [];
+  if(data && data.events){
+    const map = {};
+    data.events.forEach(ev=>{
+      const k = ev.all_day ? String(ev.start||"").slice(0,10) : todayKey(new Date(ev.start));
+      (map[k] = map[k] || []).push(ev);
+    });
+    Object.keys(map).sort().forEach(k=>groups.push({ key:k, events:map[k] }));
+  }
+
+  const hhmm = (d)=> d.toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+  function fmtWhen(ev){
+    if(ev.all_day) return "All day";
+    try{
+      const d = new Date(ev.start);
+      let s = hhmm(d);
+      if(ev.end){
+        const e2 = new Date(ev.end);
+        s += todayKey(e2)!==todayKey(d) ? (" - "+fmtDate(todayKey(e2))) : (" - "+hhmm(e2));
+      }
+      return s;
+    }catch(_){ return ""; }
+  }
+  function dayLabel(k){
+    if(k===TODAY()) return "Today";
+    const d = new Date(k+"T00:00:00");
+    if(isNaN(d)) return k;
+    return d.toLocaleDateString(undefined,{weekday:"long", month:"short", day:"numeric"});
+  }
+
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="eyebrow">Schedule</div>
+        <div className="topbar-row"><h1 className="title">Calendar</h1>
+          <button className="btn btn-ghost btn-sm" disabled={busy} onClick={()=>load(true)}>{busy? <span className="spin"></span> : "Refresh"}</button></div>
+        <div className="subtle" style={{marginTop:2}}>{spaceName} &middot; read-only</div>
+      </div>
+
+      <div className="sortrow" style={{marginTop:12}}>
+        <div className="seg">
+          <button className={"seg-b"+(mode==="today"?" on":"")} onClick={()=>setMode("today")}>Today</button>
+          <button className={"seg-b"+(mode==="week"?" on":"")} onClick={()=>setMode("week")}>This week</button>
+        </div>
+        <span className="sortlbl">{feeds.length? (feeds.length+" calendar"+(feeds.length===1?"":"s")) : ""}</span>
+      </div>
+
+      {err && <p className="hint danger-text" style={{marginTop:10}}>{err}</p>}
+      {problems.length>0 &&
+        <p className="hint" style={{marginTop:10}}>Couldn't refresh: {problems.map(f=>f.name).join(", ")} - showing the last copy we have.</p>}
+      {!err && data===null && busy && <p className="hint" style={{marginTop:12}}>Loading your schedule...</p>}
+      {!err && data && groups.length===0 &&
+        <Empty glyph={"—"} title="Nothing scheduled" sub={feeds.length? "No events in this window." : "Add a calendar in Settings > Calendars."}/>}
+
+      {groups.map(g=>(
+        <div key={g.key} style={{marginTop:16}}>
+          <div className="eyebrow" style={{marginBottom:8}}>{dayLabel(g.key)}</div>
+          <div className="list">
+            {g.events.map((ev,i)=>(
+              <div key={g.key+"-"+i} className="item" style={{cursor:"pointer"}} onClick={()=>setDetail(ev)}>
+                <div className="item-body">
+                  <div className="item-title">
+                    <span className="space-dot" style={{background:ev.color||"#6f9bc4",marginRight:6,display:"inline-block",verticalAlign:"middle"}}></span>
+                    {ev.title||"(no title)"}
+                  </div>
+                  <div className="item-meta">
+                    <span className="chip">{fmtWhen(ev)}</span>
+                    {ev.location && <span className="chip">{ev.location}</span>}
+                    {feedName(ev.feed_id) && <span className="chip">{feedName(ev.feed_id)}</span>}
+                  </div>
+                </div>
+              </div>))}
+          </div>
+        </div>))}
+
+      {data && data.truncated && <p className="hint" style={{marginTop:12}}>Showing the first {(data.events||[]).length} events for this window.</p>}
+
+      {detail &&
+        <Sheet title="Event" onClose={()=>setDetail(null)}>
+          <h3 style={{fontFamily:"Fraunces",fontSize:19,marginBottom:6}}>{detail.title||"(no title)"}</h3>
+          <p className="hint" style={{marginTop:0}}>
+            {dayLabel(detail.all_day ? String(detail.start||"").slice(0,10) : todayKey(new Date(detail.start)))} &middot; {fmtWhen(detail)}
+          </p>
+          {detail.location && <div className="field"><span className="label">Location</span><div>{detail.location}</div></div>}
+          <div className="field"><span className="label">Calendar</span><div>{feedName(detail.feed_id)||"-"}</div></div>
+          {detail.tz && <div className="field"><span className="label">Time zone</span><div>{detail.tz}</div></div>}
+          <p className="hint" style={{marginTop:10}}>Read-only. Edit this event in the calendar it came from.</p>
+        </Sheet>}
+
+      <div style={{height:20}}></div>
+    </div>
+  );
+}
+
 function DashboardView({ store, onOpen, openEditor }){
   const active = store.activeSpace;
   const isAll = !active || active==="all";
@@ -3668,6 +3803,7 @@ function DashboardView({ store, onOpen, openEditor }){
    ============================================================ */
 function MoreView({ store, go }){
   const rows = [
+    { k:"calendar", ic:Ic.today,   b:"Calendar", s:"Your schedule, by Space" },
     { k:"ideas",    ic:Ic.idea,    b:"Ideas", s:store.data.ideas.length+" captured" },
     { k:"aichat",   ic:Ic.sparkle, b:"Organize with AI", s:"Brain-dump, then approve a plan" },
     { k:"matrix",   ic:Ic.matrix,  b:"Matrix", s:"Eisenhower priorities" },
@@ -3975,6 +4111,7 @@ function App(){
   else if(sub==="search") subView=<SearchView store={store} openEditor={openEditor} back={()=>setSub(null)}/>;
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(sub==="dashboard") subView=<DashboardView store={store} onOpen={openTodo} openEditor={openEditor}/>;
+  else if(sub==="calendar") subView=<CalendarView store={store}/>;
   else if(sub==="export") subView=<ExportView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="aichat") subView=<AIChat store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go} onCheckUpdate={checkUpdate} updMsg={updMsg} update={update} onApplyUpdate={applyUpdate}/>;
