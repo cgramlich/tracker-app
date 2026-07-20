@@ -70,6 +70,25 @@
   footer a{color:var(--ink2);}
   .eyebrow{font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);font-weight:600;}
   @media (max-width:520px){ header{padding-top:46px;} .rule{margin:46px 0;} }
+
+  /* A printed / PDF copy of this page. Two things break without it:
+     1. Browsers drop background colors when printing, which would leave gold text
+        on white. print-color-adjust:exact keeps the design intact.
+     2. The CTA buttons are links, and a link is dead on paper - so the real URL is
+        revealed in print only. */
+  .print-only{display:none;}
+  @media print{
+    html,body{background:var(--bg) !important;
+      -webkit-print-color-adjust:exact; print-color-adjust:exact;}
+    @page{margin:14mm;}
+    .wrap{max-width:none;padding:0;}
+    header{padding-top:0;}
+    .cta{box-shadow:none;}
+    .print-only{display:block;color:var(--gold2);font-size:13px;margin-top:12px;
+      word-break:break-all;}
+    .feat,.step{break-inside:avoid;page-break-inside:avoid;}
+    .rule{margin:30px 0;}
+  }
 </style>
 </head>
 <body>
@@ -82,6 +101,7 @@
        Pick one area and everything else goes quiet.</p>
     <a class="cta" href="index.html">Create your account</a>
     <span class="cta-note">Free while it's early. Works best added to your phone's Home Screen.</span>
+    <span class="print-only">https://cgramlich.github.io/tracker-app/</span>
   </header>
 
   <div class="rule"></div>
@@ -158,6 +178,7 @@
   <div style="text-align:center;margin-top:36px;">
     <a class="cta" href="index.html">Get started</a>
     <span class="cta-note">Your data is yours. It syncs to your account so it follows you across devices.</span>
+    <span class="print-only">https://cgramlich.github.io/tracker-app/</span>
   </div>
 
   <footer>

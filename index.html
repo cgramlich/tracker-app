@@ -87,6 +87,18 @@ a{color:var(--amber);}
 /* Settings section label - groups a labelled header above each settings card (matches
    the MenuCaptain settings pattern). Muted, small caps; sits in the page gutter. */
 .set-group{font-family:'Outfit';font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);font-weight:600;margin:22px 4px 9px;}
+/* In-app user guide (ported from the MenuCaptain help pattern, retuned to this palette).
+   The guide itself is one markdown string (HELP_DOC) rendered by renderHelpMarkdown. */
+.help-body{padding-bottom:40px;}
+.help-h1{font-family:'Fraunces',serif;font-size:25px;color:var(--ink);margin:6px 0 4px;}
+.help-h2{font-family:'Fraunces',serif;font-size:19px;color:var(--ink);margin:24px 0 8px;}
+.help-h3{font-size:13px;font-weight:600;color:var(--ink);margin:16px 0 6px;text-transform:uppercase;letter-spacing:.05em;}
+.help-p{font-size:14.5px;line-height:1.62;color:var(--ink-2);margin:0 0 12px;}
+.help-p strong,.help-ul strong{color:var(--ink);font-weight:600;}
+.help-p em,.help-ul em{color:var(--ink);font-style:italic;}
+.help-ul{margin:0 0 14px;padding-left:20px;}
+.help-ul li{font-size:14.5px;line-height:1.6;color:var(--ink-2);margin-bottom:7px;}
+.help-hr{border:none;border-top:1px solid var(--line);margin:22px 0;}
 /* About / update row: the Check-for-updates or Update-to-build action, centered with
    its status text beside it (matches the MenuCaptain "refresh + update" presentation). */
 .updrow{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;padding:4px 0 2px;}
@@ -361,11 +373,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.19.0";
+const APP_VERSION = "1.20.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-20.2";
+const BUILD = "2026-07-20.3";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -4171,6 +4183,319 @@ function DashboardView({ store, onOpen, openEditor }){
 /* ============================================================
    VIEW: MORE (hub)
    ============================================================ */
+/* ============================================================
+   IN-APP USER GUIDE
+   One markdown string + a tiny renderer, ported from MenuCaptain. Doc-currency
+   rule 5: this must reflect every noteworthy feature, updated in the SAME change
+   that ships the feature. New users read this, not the code.
+   NOTE: it is a template literal, so no backticks and no dollar-brace inside.
+   ============================================================ */
+const HELP_DOC = `# Priority Captain - User Guide
+
+*Updated July 20, 2026*
+
+Priority Captain is one place for everything you are carrying. Tasks, the projects
+they belong to, the goals behind those, stray ideas, and your real calendar sitting
+next to all of it.
+
+The idea it is built around: you can only think about one part of your life at a
+time. So you split things into **Spaces**, pick one, and everything else goes quiet
+until you want it back.
+
+Everything you save lives in your own private account. Your items are yours alone.
+
+---
+
+## Getting set up
+
+Create an account with an email address and a password. You are in right away, with
+no confirmation email to chase. If you forget your password later, use "Forgot
+password" on the sign-in screen, so it is worth getting your email right.
+
+Signing in on another phone or computer is just your email and password again. Your
+data follows the account, not the device.
+
+**Add it to your Home Screen.** Open the app in Safari or Chrome on your phone, tap
+Share, then "Add to Home Screen". After that it opens full screen with its own icon
+and behaves like any other app. This is the step people skip, and it is the one that
+makes the whole thing feel different.
+
+---
+
+## Getting around
+
+There is a bar across the bottom with six spots and a **+** button in the middle:
+
+- **Today** is what you should be looking at right now. Due today, overdue, and
+  anything you flagged.
+- **To-Dos** is the full list, grouped by status.
+- **Dashboard** is the roll-up: what needs attention across everything.
+- **+** is the quick add, from anywhere.
+- **Calendar** is your real schedule, read only.
+- **Projects** holds the bigger efforts.
+- **More** has everything else, including Settings and this guide.
+
+---
+
+## Spaces
+
+A Space is an area of your life. Personal, Work, Family, whatever fits. Every item
+belongs to exactly one.
+
+Tap the Space switcher at the top and the entire app narrows to that Space. Lists,
+Dashboard, calendar, search, all of it. Pick **All** to see everything at once.
+
+That is the whole point. "I will give the next hour to work" turns into something
+you can actually do, instead of something you say while looking at a list that
+includes buying dog food.
+
+New items land in the Space you are currently in, so you rarely have to think about
+it.
+
+### Managing Spaces
+
+In Settings, under Manage Spaces, you can add, rename, recolor and drag to reorder.
+Two ways to get rid of one:
+
+- **Archive** hides it and keeps its items on it. Reversible any time.
+- **Remove** deletes it, and asks where its items should go first. Nothing is
+  orphaned, and you get an undo.
+
+Whichever Space is the default cannot be archived or removed. Make another one the
+default first.
+
+---
+
+## Getting things out of your head
+
+Three ways in, depending on how formed the thought is:
+
+- **The + button** for one thing you already know how to say.
+- **Organize with AI** in More, when it is a jumble. Dump everything on your mind
+  in one box and it comes back sorted into to-dos, projects and ideas. Nothing is
+  saved until you look it over and approve it.
+- **A photo**, for a handwritten list or a whiteboard. It reads it and turns it into
+  items, same approve step.
+
+---
+
+## To-dos
+
+### Status
+
+Every to-do sits in one of five:
+
+- **Inbox** is unsorted. Things land here so you can keep moving.
+- **Next** is ready to act on.
+- **Waiting** is blocked on somebody else. If one sits too long the app flags it, and
+  you can set how long in Settings.
+- **Someday** is parked without being forgotten.
+- **Done** is done.
+
+### Priority
+
+Each item can take one of four Eisenhower quadrants: **Do First** for urgent and
+important, **Schedule** for important but not urgent, **Do Quick** for urgent but
+not important, and **Not Right Now** for neither. The **Matrix** in More lays all
+four out at once.
+
+### Dates and snoozing
+
+Give something a due date and it turns up in Today when it is time. **Snooze** pushes
+it out of sight for a while without losing it, which is the honest version of
+repeatedly scrolling past something.
+
+### Locations and categories
+
+**Locations** are contexts: the errands you can only do out, the calls you can only
+make at your desk. **Categories** are the kind of thing it is. Both are just labels
+you can filter by, and both are fully editable in Settings. Rename one and every item
+using it updates. Rename one onto another to merge them.
+
+---
+
+## Projects, goals and ideas
+
+**Projects** group to-dos that add up to one outcome. A project with no next action
+is a stalled project, and the Weekly Review calls those out.
+
+**Goals** sit above projects. They are the reason the projects exist.
+
+**Ideas** are for things that are not tasks yet. Somewhere to put a thought so it
+stops circling.
+
+---
+
+## The Dashboard
+
+One question: what needs my attention. Today and overdue, your priorities, projects
+in flight, goals, what you touched recently, and today's schedule from your
+calendars.
+
+It respects the Space you are in, so it is a focused view when you are focused and a
+roll-up when you are in All.
+
+---
+
+## Your calendars
+
+The calendar is **read only** on purpose. It shows you your real commitments so you
+can plan tasks against the time you actually have, but it never writes to your
+calendar or changes anything.
+
+### Connecting one
+
+In Settings, under Calendars, add a calendar's secret address, the one ending in
+.ics. Google Calendar has it under Settings for that calendar, as the private
+address. Outlook has one too, under publish or share.
+
+Treat that address like a password, because anyone holding it can read that calendar.
+Yours is stored on the server, never in the app on your phone, and the app never
+shows it back to you.
+
+Give each calendar a name and a color, and assign it to a Space so work calendars
+stay in Work.
+
+### Reading it
+
+Events show in day order with your tasks alongside. A few things it does quietly:
+
+- **The same event on two calendars appears once**, with a dot for each calendar it
+  came from. This works even when the two copies came from different systems and
+  look nothing alike underneath.
+- **Overlapping events get a Conflict flag** in the corner. All day entries never
+  count as conflicts, and back to back is not a conflict.
+
+---
+
+## Asking about your calendar
+
+On the Calendar screen there is a box where you can ask plain questions about your
+own schedule:
+
+- "Is there a five day window in October I could take off, including a weekend?"
+- "When is my next dentist appointment?"
+- "How many evenings am I busy next week?"
+
+It answers from your real events. It also follows a conversation, so if it comes back
+with nothing you can say "look for Dr Robinson, that is my dentist" and it will try
+again with that.
+
+**Hide** collapses the conversation without losing it, **Clear** wipes it, and the
+small **i** explains it in place.
+
+---
+
+## Templates
+
+For a list you rebuild often. Packing for a trip, a weekly routine, anything you redo.
+
+Save any project's open items as a template, then spin up a fresh copy in one tap
+whenever you need it again. Manage them in Settings.
+
+---
+
+## The other tools in More
+
+- **Weekly Review** walks the GTD checklist: empty the inbox, check next actions,
+  nudge what is waiting, make sure every active project has a next step.
+- **Now / Focus** shows one thing at a time when a list is too much.
+- **Matrix** is all four priority quadrants side by side.
+- **Search** looks across everything in the current Space.
+- **Export** gives you a plain text list or a full JSON backup of your data.
+
+---
+
+## Settings
+
+Under the gear in the top right, or from More:
+
+- **Appearance**: name the app whatever you like, pick an accent color and a theme.
+- **Spaces, Categories, Locations, Templates, Calendars**: all editable, all with
+  undo where something could be lost.
+- **Follow-up nudge**: how long a Waiting item sits before it gets flagged.
+- **Diagnostics**: a log, if something is misbehaving and you want to tell us what
+  it said.
+
+---
+
+## Keeping the app up to date
+
+The app checks for a new version on its own and shows a banner when one is ready.
+You can also check by hand in Settings, which tells you the version you are on and
+whether it is current.
+
+If you added it to your Home Screen, updates still arrive normally. There is nothing
+to reinstall.
+
+---
+
+## Your data
+
+Everything syncs to your account, so it is on every device you sign in on. It also
+keeps working with no signal: changes queue up and go out when you are back.
+
+Your items are private to your account. Other people using the app cannot see them.
+Export any time from More if you want your own copy.
+
+---
+
+## About the AI
+
+The AI features (organizing a brain dump, reading a photo, the calendar questions,
+the daily brief) run through the app's own connection, so there is nothing for you
+to set up and no key to paste.
+
+There is a monthly ceiling on AI use per person. If you reach it the app tells you
+plainly, and it resets on the first of the month. Everything that is not AI keeps
+working normally.
+`;
+
+function renderHelpInline(text, kp){
+  const nodes=[]; const re=/\*\*([^*]+)\*\*|\*([^*]+)\*/g;
+  let last=0, m, k=0;
+  while((m=re.exec(text))){
+    if(m.index>last) nodes.push(text.slice(last,m.index));
+    if(m[1]!=null) nodes.push(<strong key={kp+"b"+(k++)}>{m[1]}</strong>);
+    else nodes.push(<em key={kp+"i"+(k++)}>{m[2]}</em>);
+    last=re.lastIndex;
+  }
+  if(last<text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+function renderHelpMarkdown(doc){
+  const lines=(doc||"").split("\n");
+  const out=[]; let key=0; let para=[]; let bullets=null;
+  const flushPara=()=>{ if(para.length){ out.push(<p key={"p"+(key++)} className="help-p">{renderHelpInline(para.join(" "),"p"+key)}</p>); para=[]; } };
+  const flushBullets=()=>{ if(bullets){ const b=bullets; out.push(<ul key={"u"+(key++)} className="help-ul">{b.map((t,bi)=><li key={bi}>{renderHelpInline(t,"u"+key+"_"+bi)}</li>)}</ul>); bullets=null; } };
+  for(const raw of lines){
+    const line=raw.replace(/\s+$/,"");
+    if(/^-{3,}$/.test(line.trim())){ flushPara(); flushBullets(); out.push(<hr key={"h"+(key++)} className="help-hr" />); continue; }
+    if(/^#\s+/.test(line)){ flushPara(); flushBullets(); out.push(<h1 key={"t"+(key++)} className="help-h1">{line.replace(/^#\s+/,"")}</h1>); continue; }
+    if(/^##\s+/.test(line)){ flushPara(); flushBullets(); out.push(<h2 key={"s"+(key++)} className="help-h2">{line.replace(/^##\s+/,"")}</h2>); continue; }
+    if(/^###\s+/.test(line)){ flushPara(); flushBullets(); out.push(<h3 key={"x"+(key++)} className="help-h3">{line.replace(/^###\s+/,"")}</h3>); continue; }
+    if(/^-\s+/.test(line)){ flushPara(); (bullets=bullets||[]).push(line.replace(/^-\s+/,"")); continue; }
+    if(/^\s+\S/.test(raw) && bullets && bullets.length){ bullets[bullets.length-1]+=" "+line.trim(); continue; }
+    if(line.trim()===""){ flushPara(); flushBullets(); continue; }
+    flushBullets(); para.push(line.trim());
+  }
+  flushPara(); flushBullets();
+  return out;
+}
+function GuideView({ back }){
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="eyebrow">Help</div><h1 className="title">Guide</h1>
+      </div>
+      <div className="help-body" style={{marginTop:10}}>
+        {renderHelpMarkdown(HELP_DOC)}
+      </div>
+      <button className="btn btn-ghost btn-block" style={{marginTop:4}} onClick={back}>Back</button>
+    </div>
+  );
+}
+
 function MoreView({ store, go }){
   const rows = [
     { k:"ideas",    ic:Ic.idea,    b:"Ideas", s:store.data.ideas.length+" captured" },
@@ -4181,6 +4506,7 @@ function MoreView({ store, go }){
     { k:"now",      ic:Ic.now,     b:"Now / Focus", s:"One thing at a time" },
     { k:"export",   ic:Ic.lists,   b:"Export", s:"Text list or JSON backup" },
     { k:"settings", ic:Ic.gear,    b:"Settings", s:"Connection, locations, diagnostics" },
+    { k:"guide",    ic:Ic.info,    b:"Guide", s:"How everything works" },
   ];
   return (
     <div className="screen">
@@ -4504,6 +4830,7 @@ function App(){
   else if(sub==="aichat") subView=<AIChat store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go} onCheckUpdate={checkUpdate} updMsg={updMsg} update={update} onApplyUpdate={applyUpdate}/>;
   else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
+  else if(sub==="guide") subView=<GuideView back={()=>setSub(null)}/>;
 
   let main;
   if(sub && sub!=="more") main=subView;
