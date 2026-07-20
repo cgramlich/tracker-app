@@ -361,11 +361,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.18.0";
+const APP_VERSION = "1.19.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-20.1";
+const BUILD = "2026-07-20.2";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -3055,12 +3055,13 @@ function CalendarsEditor({ store, toast }){
   );
 }
 
-function SpacesEditor({ store, toast }){
+function SpacesEditor({ store, toast, toastUndo }){
   const all = (store.spaces||[]).slice().sort((a,b)=>(a.order||0)-(b.order||0));
   const active = all.filter(s=>!s.archived);
   const archived = all.filter(s=>s.archived);
   const def = store.defaultSpace;
   const [adding,setAdding]=useState("");
+  const [removing,setRemoving]=useState(null);   // {space, to} - a pending remove+reassign
   const patch = (id, changes) => store.saveSpaces(all.map(s=>s.id===id?{...s,...changes}:s));
   function rename(id, v){ const n=(v||"").trim(); if(n) patch(id,{name:n}); }
   function archive(id){
@@ -3068,6 +3069,35 @@ function SpacesEditor({ store, toast }){
     store.saveSpaces(all.map(s=>s.id===id?{...s,archived:true}:s));
     if(store.activeSpace===id) store.setActiveSpace("all");
     toast&&toast("Space archived");
+  }
+  // Remove a Space for real. Unlike Archive, this deletes it from the list - so its
+  // items MUST be reassigned first, or ensureSpaces would find them pointing at a
+  // space that no longer exists and sweep them all into the default on the next pull.
+  // That reassignment is the whole reason this is a two-step flow and not a button.
+  function askRemove(s){
+    if(s.id===def){ toast&&toast("Make another Space the default first"); return; }
+    if(all.length<2){ toast&&toast("You need at least one Space"); return; }
+    const fallback = (all.find(x=>x.id===def) || all.find(x=>x.id!==s.id));
+    setRemoving({ space:s, to: fallback.id });
+  }
+  function doRemove(){
+    const { space, to } = removing;
+    const prevSpaces = all.map(s=>({...s}));                 // snapshot for undo
+    const affected = [];
+    FILES.forEach(f => ((store.allData||store.data)[f]||[]).forEach(x => {
+      if(x.space===space.id) affected.push({ file:f, id:x.id });
+    }));
+    const n = store.relabel("space", space.id, to);           // move the items FIRST
+    store.saveSpaces(all.filter(s=>s.id!==space.id));         // then drop the space
+    if(store.activeSpace===space.id) store.setActiveSpace("all");
+    setRemoving(null);
+    const toName = (all.find(s=>s.id===to)||{}).name || "another Space";
+    toastUndo
+      ? toastUndo("Removed \""+space.name+"\""+(n?(" - moved "+n+" item"+(n===1?"":"s")+" to "+toName):""), ()=>{
+          store.saveSpaces(prevSpaces);
+          if(affected.length) store.restoreLabel("space", affected, space.id);
+        })
+      : toast&&toast("Removed \""+space.name+"\"");
   }
   function reorder(movedId, newIds){
     const om={}; newIds.forEach((id,i)=>om[id]=i*10); let base=newIds.length*10;
@@ -3091,6 +3121,7 @@ function SpacesEditor({ store, toast }){
         ? <span className="chip amber" style={{flex:"0 0 auto"}}>Default</span>
         : <button className="btn btn-ghost btn-sm" style={{flex:"0 0 auto"}} onClick={()=>store.setDefaultSpaceId(s.id)}>Make default</button>}
       <button className="btn btn-ghost btn-sm" style={{flex:"0 0 auto"}} onClick={()=>archive(s.id)}>Archive</button>
+      <button className="btn btn-ghost btn-sm" style={{flex:"0 0 auto"}} onClick={()=>askRemove(s)}>Remove</button>
     </div>
   );
   return (
@@ -3101,7 +3132,29 @@ function SpacesEditor({ store, toast }){
           onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:3}} autoCapitalize="words"/>
         <button className="btn btn-ghost btn-sm" onClick={add} style={{flex:1}}>Add</button>
       </div>
-      <p className="hint" style={{marginTop:6}}>Drag to reorder. Tap a name to rename, or the swatch to recolor. Archiving hides a Space (its items keep it); the default can't be archived.</p>
+      <p className="hint" style={{marginTop:6}}>Drag to reorder. Tap a name to rename, or the swatch to recolor. Archive hides a Space and keeps its items on it; Remove deletes it and moves its items to a Space you pick. The default can't be archived or removed.</p>
+      {removing && (()=>{
+        const n = countUses(store, "space", removing.space.id);
+        const targets = all.filter(s=>s.id!==removing.space.id);
+        return (
+          <Sheet title={"Remove \""+removing.space.name+"\"?"} onClose={()=>setRemoving(null)}>
+            <p className="hint" style={{fontSize:14,marginBottom:14}}>
+              {n>0
+                ? ("This Space has "+n+" item"+(n===1?"":"s")+". They won't be deleted - pick where they should go.")
+                : "This Space has no items."}
+            </p>
+            {n>0 && <>
+              <span className="label">Move its items to</span>
+              <select className="input" value={removing.to} style={{marginBottom:16}}
+                onChange={e=>setRemoving({...removing, to:e.target.value})}>
+                {targets.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </>}
+            <button className="btn btn-danger btn-block" onClick={doRemove}>Remove</button>
+            <button className="btn btn-ghost btn-block" style={{marginTop:10}} onClick={()=>setRemoving(null)}>Cancel</button>
+          </Sheet>
+        );
+      })()}
       {archived.length>0 && <>
         <div className="set-group">Archived</div>
         {archived.map(s=>
@@ -3653,7 +3706,7 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, upda
       <div className="card"><AppearanceEditor store={store}/></div>
 
       <div className="set-group">Spaces</div>
-      <div className="card"><SpacesEditor store={store} toast={toast}/></div>
+      <div className="card"><SpacesEditor store={store} toast={toast} toastUndo={toastUndo}/></div>
 
       <div className="set-group">Templates</div>
       <div className="card"><TemplatesEditor store={store} toast={toast}/></div>
