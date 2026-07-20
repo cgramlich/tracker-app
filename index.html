@@ -361,11 +361,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.17.1";
+const APP_VERSION = "1.18.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-19.1";
+const BUILD = "2026-07-20.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -960,7 +960,10 @@ const QUADRANTS = {
 // GTD contexts / locations. Seeded with the user's places; editable in Settings.
 // A todo's location is stored as a plain label string so it travels with the data
 // and syncs across devices without an id->label map.
-const DEFAULT_LOCATIONS = ["Office", "656", "6821", "Car"];
+// Neutral GTD contexts. These seed a NEW account only: knownLocations() unions in any
+// location already used on an item, so an existing account never loses its own labels
+// even if its saved cfg were somehow missing.
+const DEFAULT_LOCATIONS = ["Home", "Office", "Errands", "Car"];
 function knownLocations(store){
   const seed = (store.cfg.locations && store.cfg.locations.length) ? store.cfg.locations : DEFAULT_LOCATIONS;
   const used = (store.data.todos || []).map(t=>t.location).filter(Boolean);
@@ -969,7 +972,11 @@ function knownLocations(store){
 
 // Life-area categories. Editable in Settings (stored in config), with any category
 // already used on an item kept available so options stay valid across devices.
-const DEFAULT_CATEGORIES = ["CG","KG","Kids","RTR","STB","MHN"];
+// Deliberately a DIFFERENT axis from Spaces (which are areas of life). If categories
+// also seeded Personal/Work/Family a new user would face two competing partitions and
+// no way to tell them apart. These are kinds of work instead. Same union rule as
+// locations: knownCategories() keeps any category already used on an item.
+const DEFAULT_CATEGORIES = ["Admin","Health","Home","Money","Social"];
 function knownCategories(store){
   const seed = (store.cfg.categories && store.cfg.categories.length) ? store.cfg.categories : DEFAULT_CATEGORIES;
   const used = [];
@@ -1013,10 +1020,24 @@ const DEFAULT_CFG = { locations:DEFAULT_LOCATIONS, categories:DEFAULT_CATEGORIES
    The active-Space selection (Step 2) is per-device; the list here is synced.
    ============================================================ */
 const DEFAULT_SPACE = "personal";
-const SEED_SPACES = [
+// TWO seeds, chosen by whether the account already has items (see ensureSpaces).
+//
+// LEGACY is the original owner-shaped seed. It must stay EXACTLY as it was, because
+// ensureSpaces step 2 reassigns any item whose space is not in the seeded list - so
+// seeding an existing RTR/Kids account with the neutral list below would silently
+// collapse those items into Personal and lose the partition.
+const SEED_SPACES_LEGACY = [
   { id:"personal", name:"Personal", color:"#6f9bc4", order:0, archived:false },
   { id:"rtr",      name:"RTR",      color:"#7fa66a", order:1, archived:false },
   { id:"kids",     name:"Kids",     color:"#c98aa6", order:2, archived:false },
+];
+// NEW accounts (zero items) get neutral areas instead of the owner's. Nobody but the
+// owner knows what "RTR" is, and it was the first thing a new user saw. Renameable in
+// Manage Spaces, so this is a starting point, not a constraint.
+const SEED_SPACES_NEW = [
+  { id:"personal", name:"Personal", color:"#6f9bc4", order:0, archived:false },
+  { id:"work",     name:"Work",     color:"#7fa66a", order:1, archived:false },
+  { id:"family",   name:"Family",   color:"#c98aa6", order:2, archived:false },
 ];
 // Where an existing item migrates, from its category (`type`). Category-aware seed
 // (chosen 2026-07-13): the RTR/Kids categories move into their Spaces; everything else
@@ -1179,11 +1200,16 @@ function useStore(){
     let metaChanged = false;
     // 1) Seed the Space list if this account has none yet.
     if(!spacesRef.current || !spacesRef.current.length){
-      const seeded = SEED_SPACES.map(s => ({ ...s }));
+      // Which seed? An account with ZERO items is genuinely new, so give it neutral
+      // areas. An account that already HAS items is mid-migration and must get the
+      // legacy owner seed, or step 2 below would find their rtr/kids spaces invalid
+      // and reassign every one of those items to Personal.
+      const hasItems = FILES.some(f => (dataRef.current[f] || []).length > 0);
+      const seeded = (hasItems ? SEED_SPACES_LEGACY : SEED_SPACES_NEW).map(s => ({ ...s }));
       spacesRef.current = seeded; setSpaces(seeded); lsSet("spaces", seeded);
       defaultSpaceRef.current = DEFAULT_SPACE; setDefaultSpace(DEFAULT_SPACE); lsSet("defaultSpace", DEFAULT_SPACE);
       metaChanged = true;
-      log("SPACES","seeded space list: "+seeded.map(s=>s.id).join(","));
+      log("SPACES","seeded space list ("+(hasItems?"legacy":"new account")+"): "+seeded.map(s=>s.id).join(","));
     }
     // 2) Backfill `space` on any item missing one (or pointing at a space that no longer exists).
     const valid = new Set((spacesRef.current||[]).map(s => s.id));
@@ -1193,7 +1219,12 @@ function useStore(){
       if(!list.some(x => !x.space || !valid.has(x.space))){ after += list.length; return; }
       const nextList = list.map(x => {
         if(x.space && valid.has(x.space)) return x;
-        const sp = spaceForType(x.type); tally[sp] = (tally[sp]||0) + 1;
+        // Clamp to a space that actually exists. spaceForType maps a category named
+        // "RTR"/"Kids" to those space ids, but a NEW account has no such spaces - the
+        // item would fail `valid` on the next pull, be rewritten, and churn forever.
+        const guess = spaceForType(x.type);
+        const sp = valid.has(guess) ? guess : (defaultSpaceRef.current || DEFAULT_SPACE);
+        tally[sp] = (tally[sp]||0) + 1;
         return { ...x, space: sp };
       });
       nd[f] = nextList; after += nextList.length; markDirty(f, nextList); wrote = true;
