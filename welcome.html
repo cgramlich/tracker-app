@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>Priority Captain - Everything you're carrying, in one place.</title>
+<meta name="description" content="Tasks, projects, goals and your real calendar, organized by the areas of your life. Focus on one and mute the rest." />
+<meta name="theme-color" content="#1c1611" />
+
+<!-- Link previews (iMessage, WhatsApp, Slack, etc.) -->
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Priority Captain" />
+<meta property="og:description" content="Everything you're carrying, in one place. Focus on one area of your life and mute the rest." />
+<meta property="og:image" content="https://cgramlich.github.io/tracker-app/icon-512.png" />
+<meta property="og:url" content="https://cgramlich.github.io/tracker-app/welcome.html" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Priority Captain" />
+<meta name="twitter:description" content="Everything you're carrying, in one place." />
+<meta name="twitter:image" content="https://cgramlich.github.io/tracker-app/icon-512.png" />
+
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#1c1611; --bg2:#241c15; --bg3:#2e251c; --line:#3a2f23; --line2:#4a3d2e;
+    --ink:#f3ead9; --ink2:#cbbca4; --ink3:#998a73;
+    --gold:#e0a33e; --gold2:#e7b96c; --green:#3fae63;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--ink);font-family:'Outfit',system-ui,sans-serif;
+       font-size:17px;line-height:1.6;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:760px;margin:0 auto;padding:0 22px;}
+  h1,h2,h3{font-family:'Fraunces',Georgia,serif;font-weight:600;line-height:1.15;}
+
+  header{padding:64px 0 8px;text-align:center;}
+  .mark{width:96px;height:96px;border-radius:22px;display:block;margin:0 auto 26px;box-shadow:0 10px 30px rgba(0,0,0,.45);}
+  h1{font-size:clamp(34px,7vw,50px);letter-spacing:-.01em;}
+  .lede{color:var(--ink2);font-size:clamp(17px,2.4vw,20px);margin-top:18px;max-width:34em;
+        margin-left:auto;margin-right:auto;}
+  .cta{display:inline-flex;align-items:center;gap:10px;margin-top:34px;padding:15px 30px;border-radius:999px;
+       background:var(--gold);color:#241a0c;font-weight:600;font-size:17px;text-decoration:none;
+       box-shadow:0 8px 22px rgba(224,163,62,.22);transition:transform .15s ease;}
+  .cta:active{transform:scale(.98);}
+  .cta-note{display:block;color:var(--ink3);font-size:14px;margin-top:14px;}
+
+  .rule{height:1px;background:var(--line);margin:64px 0;}
+
+  .feat{display:flex;gap:18px;align-items:flex-start;padding:22px 0;border-bottom:1px solid var(--line);}
+  .feat:last-child{border-bottom:none;}
+  .dot{flex:0 0 auto;width:11px;height:11px;border-radius:50%;margin-top:9px;}
+  .feat h3{font-size:20px;margin-bottom:5px;}
+  .feat p{color:var(--ink2);font-size:16px;}
+  .feat em{color:var(--ink);font-style:normal;font-weight:500;}
+
+  .quote{background:var(--bg2);border:1px solid var(--line2);border-radius:16px;padding:22px 24px;margin-top:26px;}
+  .quote p{color:var(--ink2);font-size:16px;}
+  .quote p + p{margin-top:10px;}
+  .q{color:var(--gold2);font-weight:500;}
+
+  .steps{counter-reset:s;margin-top:8px;}
+  .step{display:flex;gap:14px;padding:12px 0;align-items:flex-start;}
+  .step .n{flex:0 0 auto;width:26px;height:26px;border-radius:50%;background:var(--bg3);border:1px solid var(--line2);
+           color:var(--gold2);font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;}
+  .step p{color:var(--ink2);font-size:16px;}
+
+  footer{padding:56px 0 70px;text-align:center;color:var(--ink3);font-size:14px;}
+  footer a{color:var(--ink2);}
+  .eyebrow{font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);font-weight:600;}
+  @media (max-width:520px){ header{padding-top:46px;} .rule{margin:46px 0;} }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <img class="mark" src="icon-512.png" alt="Priority Captain" />
+    <h1>Everything you're carrying,<br/>in one place.</h1>
+    <p class="lede">Tasks, projects, goals and your real calendar, organized by the areas of your life.
+       Pick one area and everything else goes quiet.</p>
+    <a class="cta" href="index.html">Create your account</a>
+    <span class="cta-note">Free while it's early. Works best added to your phone's Home Screen.</span>
+  </header>
+
+  <div class="rule"></div>
+
+  <p class="eyebrow">What it does</p>
+
+  <div class="feat">
+    <span class="dot" style="background:#7fa66a"></span>
+    <div>
+      <h3>Spaces</h3>
+      <p>Split everything into the areas of your life. Personal, work, kids. Tap one and the whole app
+         narrows to it, so <em>"I'll give the next hour to work"</em> is something you can actually do
+         instead of something you say.</p>
+    </div>
+  </div>
+
+  <div class="feat">
+    <span class="dot" style="background:var(--gold)"></span>
+    <div>
+      <h3>A dashboard that answers one question</h3>
+      <p>What needs my attention right now. Today and overdue, your priorities, projects in flight,
+         goals, and what you touched last. Nothing to configure.</p>
+    </div>
+  </div>
+
+  <div class="feat">
+    <span class="dot" style="background:#6f9bc4"></span>
+    <div>
+      <h3>Your real calendar, alongside your tasks</h3>
+      <p>Bring in your calendars and see meetings and to-dos together, so you plan against the time you
+         actually have. Double-booked slots get flagged, and an event on two calendars shows up once.</p>
+    </div>
+  </div>
+
+  <div class="feat">
+    <span class="dot" style="background:#c98aa6"></span>
+    <div>
+      <h3>Just ask it</h3>
+      <p>Plain questions about your own schedule, answered from your real events.</p>
+      <div class="quote">
+        <p><span class="q">"Is there a five day window in October I could take off, including a weekend?"</span></p>
+        <p><span class="q">"When is my next dentist appointment?"</span></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="feat">
+    <span class="dot" style="background:#a98bc4"></span>
+    <div>
+      <h3>Capture the way your brain works</h3>
+      <p>Dump everything on your mind in one box and it comes back as clean to-dos, projects and ideas
+         that you approve before anything is saved. Snap a photo of a list and it reads it.</p>
+    </div>
+  </div>
+
+  <div class="feat">
+    <span class="dot" style="background:#5fb0a3"></span>
+    <div>
+      <h3>Lists you reuse</h3>
+      <p>Save a checklist once and spin it up again in a tap. Packing for a trip, a weekly review,
+         whatever you redo often.</p>
+    </div>
+  </div>
+
+  <div class="rule"></div>
+
+  <p class="eyebrow">Getting started</p>
+  <div class="steps">
+    <div class="step"><span class="n">1</span><p>Tap the button below and create your account with an email and password.</p></div>
+    <div class="step"><span class="n">2</span><p>Open it in Safari or Chrome on your phone, then <em>Share &rarr; Add to Home Screen</em>. It behaves like a real app from there.</p></div>
+    <div class="step"><span class="n">3</span><p>Start with one brain dump. Everything else can wait.</p></div>
+  </div>
+
+  <div style="text-align:center;margin-top:36px;">
+    <a class="cta" href="index.html">Get started</a>
+    <span class="cta-note">Your data is yours. It syncs to your account so it follows you across devices.</span>
+  </div>
+
+  <footer>
+    Priority Captain is early and being built in the open, so expect it to keep getting better.<br/>
+    Found something broken or missing? Tell Chris.
+  </footer>
+</div>
+
+</body>
+</html>
