@@ -373,11 +373,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.20.0";
+const APP_VERSION = "1.20.1";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-20.3";
+const BUILD = "2026-07-21.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -483,6 +483,20 @@ const lsSet = (k, v) => { try { localStorage.setItem(NS+k, JSON.stringify(v)); }
 const lsDel = (k) => { try { localStorage.removeItem(NS+k); } catch(e){} };
 
 const FILES = ["todos","ideas","projects","goals"]; // one JSON file per entity
+
+// Turn a raw fetch rejection into something a person can read. A network-level failure
+// arrives as a bare TypeError whose message is browser-specific jargon - Safari says
+// "Load failed", Chrome "Failed to fetch" - which is what the user ends up staring at.
+// Anything we threw ourselves (an HTTP status, "Session expired") is already readable
+// and passes through untouched.
+function syncErrText(e){
+  const m = (e && e.message) ? String(e.message) : "";
+  if(!m) return "Sync failed";
+  if(/load failed|failed to fetch|networkerror|network request failed/i.test(m)){
+    return navigator.onLine ? "Couldn't reach the server" : "You're offline";
+  }
+  return m;
+}
 
 /* ============================================================
    BACKEND + AUTH CONFIG
@@ -1106,6 +1120,9 @@ function useStore(){
   const dirtyRef = useRef(dirty); dirtyRef.current = dirty;
   const dataRef = useRef(data); dataRef.current = data;
   const authedRef = useRef(false);
+  // Mirrors `sync` for the resume handler, which reads it from inside a listener closure
+  // and must see the CURRENT status (an error should retry at once, not wait out the gap).
+  const syncRef = useRef(sync); syncRef.current = sync;
 
   // Assemble the whole per-user meta blob (backend replaces it wholesale on PUT, so a
   // partial PUT would drop keys). Reads refs, so it's always current. Spaces are included
@@ -1129,7 +1146,7 @@ function useStore(){
       await metaPut(buildMeta());
       cfgDirtyRef.current = false; lsSet("cfgDirty", false);
       log("SYNC","meta (cfg+spaces) pushed");
-    }catch(e){ setSync("error"); setSyncMsg(e.message||"Sync failed"); log("ERROR","pushCfg: "+e.message); }
+    }catch(e){ setSync("error"); setSyncMsg(syncErrText(e)); log("ERROR","pushCfg: "+e.message); }
   }, []);
 
   // persist config (local + per-user meta). Keep cfgRef current so pushCfg sends
@@ -1181,7 +1198,7 @@ function useStore(){
       setSync("idle"); setSyncMsg("");
       log("SYNC","push complete");
     }catch(e){
-      setSync("error"); setSyncMsg(e.message||"Sync failed");
+      setSync("error"); setSyncMsg(syncErrText(e));
       log("ERROR","pushDirty: "+e.message);
     }
   }, []);
@@ -1299,7 +1316,7 @@ function useStore(){
       ensureSpaces();
       await pushDirty();
       await pushCfg();
-    }catch(e){ setSync("error"); setSyncMsg(e.message||"Sync failed"); log("ERROR","pull: "+e.message); }
+    }catch(e){ setSync("error"); setSyncMsg(syncErrText(e)); log("ERROR","pull: "+e.message); }
   }, [pushDirty, pushCfg, ensureOrders, ensureSpaces]);
 
   // ----- Auth: track the Supabase session and pull on sign-in -----
@@ -1393,13 +1410,35 @@ function useStore(){
     return () => { if(sub) sub.unsubscribe(); };
   }, [applySession]);
 
-  // online/offline listeners
+  // online/offline listeners. Coming back online must PULL as well as push - a failed
+  // pull used to leave the error chip up with nothing that would ever clear it.
   useEffect(() => {
-    const on = () => { setOnline(true); log("SYNC","online"); pushDirty(); pushCfg(); };
+    const on = () => { setOnline(true); log("SYNC","online"); pushDirty(); pushCfg(); pull(); };
     const off = () => { setOnline(false); log("SYNC","offline"); setSync("pending"); };
     window.addEventListener("online", on); window.addEventListener("offline", off);
     return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
-  }, [pushDirty, pushCfg]);
+  }, [pushDirty, pushCfg, pull]);
+
+  // Re-sync when the app is RESUMED. An installed PWA is almost always resumed from the
+  // background rather than cold-launched, and iOS routinely fires a resumed app's first
+  // fetch before the network stack is back - which lands as a bare TypeError ("Load
+  // failed" in Safari). Without this, that one failure stuck: nothing else re-pulled
+  // (the 30s interval only PUSHES) so the error chip stayed up until a full relaunch.
+  // Debounced like the update check so a burst of resumes can't hammer the backend.
+  useEffect(() => {
+    let last = 0; const GAP = 30 * 1000;
+    const maybe = () => {
+      if(!authedRef.current || !navigator.onLine) return;
+      const now = Date.now();
+      // Always retry immediately when we are sitting on an error; otherwise debounce.
+      if(syncRef.current !== "error" && now - last < GAP) return;
+      last = now; log("SYNC","resume -> pull"); pull();
+    };
+    const onVis = () => { if(document.visibilityState === "visible") maybe(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onVis);
+    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); };
+  }, [pull]);
 
   // seed manual order for whatever is already cached (covers offline launches)
   useEffect(() => { ensureOrders(); }, [ensureOrders]);
@@ -4861,8 +4900,14 @@ function App(){
             {sub!=="settings" &&
               <button className="icon-btn" aria-label="Settings" onClick={()=>setSub("settings")}>{Ic.gear}</button>}
           </div>
-          {sub!=="settings" && store.sync!=="idle" &&
-            <div className={"sync "+store.sync} style={{marginTop:10}}><span className="dot"></span>{syncLabel}</div>}
+          {sub!=="settings" && store.sync!=="idle" && (
+            store.sync==="error"
+              // A sync error the user can't act on is worse than none. Tap to retry.
+              ? <button className={"sync "+store.sync} style={{marginTop:10}} onClick={()=>store.pull()}>
+                  <span className="dot"></span>{syncLabel}<span style={{opacity:.75,marginLeft:6}}>Tap to retry</span>
+                </button>
+              : <div className={"sync "+store.sync} style={{marginTop:10}}><span className="dot"></span>{syncLabel}</div>
+          )}
           {sub!=="settings" && <SpaceSwitcher store={store}/>}
         </div>}
       {main}
