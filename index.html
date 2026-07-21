@@ -106,6 +106,20 @@ a{color:var(--amber);}
 .title-sm{font-size:22px;}
 .subtle{color:var(--ink-3);font-size:13px;}
 
+/* ---------- routines card (compact rows, deliberately lighter than a todo card) ---------- */
+.rt-row{display:flex;align-items:center;gap:11px;padding:7px 0;}
+.rt-row + .rt-row{border-top:1px solid var(--line);}
+.rt-box{flex:0 0 auto;width:22px;height:22px;border-radius:7px;border:1.5px solid var(--line-2);
+  display:flex;align-items:center;justify-content:center;background:transparent;transition:.15s;}
+.rt-box svg{width:14px;height:14px;stroke-width:3;}
+.rt-box.on{background:var(--green);border-color:var(--green);color:#10240f;}
+.rt-box:disabled{cursor:default;}
+.rt-title{flex:1;text-align:left;font-size:14.5px;line-height:1.35;padding:0;}
+/* The base svg{} rule sets stroke/fill but NOT size, so every icon needs a sizing rule
+   from its container class - without one it collapses to nothing in a flex row. */
+.rt-chev{flex:0 0 auto;display:flex;color:var(--ink-3);transition:transform .2s;}
+.rt-chev svg{width:18px;height:18px;}
+
 /* ---------- sync banner ---------- */
 .sync{display:flex;align-items:center;gap:8px;font-size:12px;padding:7px 12px;border-radius:999px;
   margin-top:10px;border:1px solid var(--line-2);background:var(--bg-2);width:fit-content;transition:.3s;}
@@ -373,11 +387,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.20.1";
+const APP_VERSION = "1.21.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-21.1";
+const BUILD = "2026-07-21.2";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -462,6 +476,30 @@ function nextDue(due, recur){
   return n;
 }
 const RECUR_LABEL = { daily:"Repeats daily", weekly:"Repeats weekly", monthly:"Repeats monthly" };
+
+/* ---------- ROUTINES ----------
+   A routine is a habit (exercise, meds), NOT a task with a deadline. The difference
+   that matters: missing one does NOT leave a debt. Recurrence only advanced on
+   COMPLETION, so a skipped daily item froze at its old due date and read
+   "Overdue Jun 29" for weeks - which is what trains you to stop seeing it.
+
+   So a routine's due date rolls forward on its own to the next occurrence that is not
+   in the past. Miss a day and it simply reads "Today" again.
+
+   `routine` is an explicit per-item flag, not inferred at read time: daily items
+   default to routine (nobody means "you owe me 22 exercises"), weekly/monthly default
+   to off, because a missed "pay rent" IS a real debt that should stay overdue. */
+function isRoutine(t){ return !!(t && t.routine && t.recur && t.recur!=="none"); }
+// Sensible default when recurrence is first switched on.
+function defaultRoutineFor(recur){ return recur === "daily"; }
+// Roll a due date to the first occurrence that is >= today (unlike nextDue, which is
+// always strictly AFTER today - that is for spawning the next one after completion).
+function rollToToday(due, recur){
+  if(!due) return TODAY();
+  let d = due, guard = 0;
+  while(d < TODAY() && guard < 500){ d = addInterval(d, recur); guard++; }
+  return d;
+}
 
 // UTF-8 safe base64 (btoa breaks on multibyte). Used for GitHub Contents API.
 function utf8ToB64(str){
@@ -1267,6 +1305,39 @@ function useStore(){
     if(wrote || metaChanged){ pushDirty(); pushCfg(); }
   }, [markDirty, pushDirty, pushCfg]);
 
+  // One-time migration + every-load roll-forward for routines. Runs from pull() on
+  // authoritative data, like ensureOrders/ensureSpaces, and is idempotent.
+  //   1) MIGRATE: an existing DAILY recurring todo with no `routine` flag becomes a
+  //      routine. Weekly/monthly are left alone - a missed "pay rent" is a real debt.
+  //   2) ROLL: any routine whose due date is in the past moves to the next occurrence
+  //      that is not past, so a skipped day reads "Today" instead of piling up red.
+  // Mutating (rather than computing at render) keeps every downstream consumer -
+  // todayItems, overdue chips, Dashboard, Now - correct with no changes.
+  const ensureRoutines = useCallback(() => {
+    const list = dataRef.current.todos || [];
+    let migrated = 0, rolled = 0;
+    const next = list.map(t => {
+      let o = t;
+      if(o.routine === undefined && o.recur && o.recur !== "none"){
+        o = { ...o, routine: defaultRoutineFor(o.recur) };
+        if(o.routine) migrated++;
+      }
+      // Only live routines roll; a completed instance keeps its historical date.
+      if(isRoutine(o) && o.status !== "done"){
+        const due = o.due || TODAY();
+        const r = rollToToday(due, o.recur);
+        if(r !== o.due){ o = { ...o, due:r }; rolled++; }
+      }
+      return o;
+    });
+    if(migrated || rolled){
+      const nd = { ...dataRef.current, todos: next };
+      dataRef.current = nd; setData(nd); markDirty("todos", next);
+      log("ROUTINE","migrated "+migrated+", rolled forward "+rolled);
+      pushDirty();
+    }
+  }, [markDirty, pushDirty]);
+
   // pull from the backend (only overwrites files that are NOT locally dirty)
   const pull = useCallback(async () => {
     if(!authedRef.current || !navigator.onLine) return;
@@ -1314,10 +1385,11 @@ function useStore(){
       log("SYNC","pull complete");
       ensureOrders();
       ensureSpaces();
+      ensureRoutines();
       await pushDirty();
       await pushCfg();
     }catch(e){ setSync("error"); setSyncMsg(syncErrText(e)); log("ERROR","pull: "+e.message); }
-  }, [pushDirty, pushCfg, ensureOrders, ensureSpaces]);
+  }, [pushDirty, pushCfg, ensureOrders, ensureSpaces, ensureRoutines]);
 
   // ----- Auth: track the Supabase session and pull on sign-in -----
   // applySession runs on the initial check AND on every auth change. It pulls only
@@ -1654,6 +1726,7 @@ const Ic = {
   check:   <svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"/></svg>,
   sparkle: <svg viewBox="0 0 24 24"><path d="M12 3l1.7 4.8L18.5 9.5l-4.8 1.7L12 16l-1.7-4.8L5.5 9.5l4.8-1.7zM18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8z"/></svg>,
   back:    <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>,
+  chevron: <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>,
   trash:   <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>,
   star:    <svg viewBox="0 0 24 24"><path d="M12 2l3 7 7 .5-5.3 4.5L18 21l-6-3.8L6 21l1.3-7L2 9.5 9 9z"/></svg>,
   clock:   <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
@@ -1793,6 +1866,11 @@ function TodoEditor({ store, todo, onClose, toast }){
   const [due,setDue]=useState(t.due||"");
   const [defer,setDefer]=useState(t.defer||"");
   const [recur,setRecur]=useState(t.recur||"none");
+  const [routine,setRoutine]=useState(
+    t.routine !== undefined ? !!t.routine : defaultRoutineFor(t.recur||"none"));
+  // Switching the cadence re-applies the sensible default (daily = routine), which is
+  // what you want when turning repetition on; you can still override it below.
+  function changeRecur(v){ setRecur(v); setRoutine(defaultRoutineFor(v)); }
   const [tags,setTags]=useState((t.tags||[]).join(", "));
   const [projectId,setProjectId]=useState(t.projectId||"");
   const [url,setUrl]=useState(t.url||"");
@@ -1820,8 +1898,13 @@ function TodoEditor({ store, todo, onClose, toast }){
       }
     }
     // A recurring todo needs an anchor; if none given, start it today.
-    const dueAnchored = (recur!=="none" && !due) ? TODAY() : due;
-    store.upsert("todos",{ id:t.id, title:title.trim(), status, type, quad, due:dueAnchored, defer, recur, space,
+    let dueAnchored = (recur!=="none" && !due) ? TODAY() : due;
+    const isRt = recur!=="none" && routine;
+    // A routine must never be saved already-overdue - that is the whole point of the
+    // flag. Ticking "it's a routine" on a long-stale item fixes it here and now,
+    // rather than waiting for the next pull to roll it.
+    if(isRt && dueAnchored && dueAnchored < TODAY()) dueAnchored = rollToToday(dueAnchored, recur);
+    store.upsert("todos",{ id:t.id, title:title.trim(), status, type, quad, due:dueAnchored, defer, recur, routine:isRt, space,
       tags: tags.split(",").map(s=>s.trim()).filter(Boolean), projectId:finalProjectId, url:url.trim(), notes, location,
       waitingOn: status==="waiting"?waitingOn:"", subtasks,
       starredToday: t.starredToday||false, completedAt: t.completedAt||null });
@@ -1858,13 +1941,23 @@ function TodoEditor({ store, todo, onClose, toast }){
           <input className="input" type="date" value={defer} onChange={e=>setDefer(e.target.value)}/></div>
       </div>
       <div className="field"><span className="label">Repeat</span>
-        <select className="select" value={recur} onChange={e=>setRecur(e.target.value)}>
+        <select className="select" value={recur} onChange={e=>changeRecur(e.target.value)}>
           <option value="none">Does not repeat</option>
           <option value="daily">Daily</option>
           <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
         </select>
-        {recur!=="none" && <p className="hint">Starts on the due date{!due?" (today, since none set)":""}. Completing it creates the next one automatically.</p>}</div>
+        {recur!=="none" && <>
+          <p className="hint" style={{marginTop:6}}>Starts on the due date{!due?" (today, since none set)":""}. Completing it creates the next one automatically.</p>
+          <label className="row" style={{alignItems:"center",gap:10,marginTop:10,cursor:"pointer"}}>
+            <input type="checkbox" checked={routine} onChange={e=>setRoutine(e.target.checked)}
+              style={{width:18,height:18,flex:"0 0 auto",accentColor:"var(--blue)"}}/>
+            <span style={{flex:1}}>
+              <b style={{display:"block",fontSize:14}}>It's a routine</b>
+              <span className="hint">Never goes overdue - a missed day just rolls to today. Groups together on Today instead of taking a card each.</span>
+            </span>
+          </label>
+        </>}</div>
       <div className="field"><span className="label">Project (optional)</span>
         <select className="select" value={projectId} onChange={e=>setProjectId(e.target.value)}>
           <option value="">None</option>
@@ -2503,8 +2596,62 @@ function reorderItem(store, file, movedId, idsInOrder, items){
 /* ============================================================
    VIEW: TODAY  (+ entry to Now/Focus)
    ============================================================ */
+/* Routines roll up into ONE card instead of a full-size card each. Deliberately still
+   VISIBLE by default (collapsed-by-default would make an already-ignored thing invisible);
+   the win is weight, not hiding. Today's COMPLETED routines stay listed so you can see
+   what you have done - completing one drops it from todayItems and spawns tomorrow's
+   copy, so without this the card would just shrink and you would lose the payoff. */
+function RoutinesCard({ store, rows, onOpen }){
+  const [open,setOpen] = useState(() => lsGet("routinesOpen", true));
+  const toggle = () => { const v=!open; setOpen(v); lsSet("routinesOpen", v); };
+  const done = rows.filter(t=>t.status==="done").length;
+  const pct  = rows.length ? Math.round((done/rows.length)*100) : 0;
+  const all  = done === rows.length;
+  return (
+    <div className="card" style={{marginTop:14,padding:"12px 14px"}}>
+      <button onClick={toggle} style={{display:"flex",alignItems:"center",gap:10,width:"100%",padding:0}}>
+        <span style={{flex:1,textAlign:"left"}}>
+          <b style={{fontFamily:"Fraunces",fontSize:15,display:"block"}}>Routines</b>
+          <span className="hint">{all ? "All done today" : done+" of "+rows.length+" done"}</span>
+        </span>
+        <span className="chip" style={{flex:"0 0 auto",borderColor:all?"var(--green)":"var(--line-2)",color:all?"var(--green)":"var(--ink-2)"}}>
+          {done}/{rows.length}
+        </span>
+        <span className="rt-chev" style={{transform:open?"rotate(180deg)":"none"}}>{Ic.chevron}</span>
+      </button>
+      <div style={{height:4,borderRadius:99,background:"var(--bg-3)",marginTop:10,overflow:"hidden"}}>
+        <div style={{height:"100%",width:pct+"%",background:all?"var(--green)":"var(--blue)",transition:"width .3s"}}></div>
+      </div>
+      {open && <div style={{marginTop:8}}>
+        {rows.map(t=>{
+          const isDone = t.status==="done";
+          return (
+            <div key={t.id} className="rt-row">
+              {/* A done routine is display-only: completing it already spawned tomorrow's
+                  copy, so un-ticking would have to hunt that down and delete it. Matches
+                  TodoRow, which also only acts on the un-done -> done direction. */}
+              <button className={"rt-box"+(isDone?" on":"")} aria-label={isDone?"Done":"Mark done"}
+                disabled={isDone} onClick={()=>store.completeTodo(t)}>{isDone?Ic.check:null}</button>
+              <button className="rt-title" onClick={()=>onOpen(t)}
+                style={{opacity:isDone?.55:1,textDecoration:isDone?"line-through":"none"}}>{t.title}</button>
+            </div>
+          );
+        })}
+      </div>}
+    </div>
+  );
+}
+
 function TodayView({ store, onOpen, goNow, typeFilter, del }){
-  let items = todayItems(store.data.todos).filter(t=>typeFilter==="all"||t.type===typeFilter).sort(sortTodos);
+  const inFilter = t => typeFilter==="all" || t.type===typeFilter;
+  // Routines come out of the main list and into their own card.
+  let items = todayItems(store.data.todos).filter(inFilter).filter(t=>!isRoutine(t)).sort(sortTodos);
+  // Gathered from ALL todos, not todayItems, so a routine completed today still shows
+  // (completing sets status=done, which todayItems excludes) and the count stays honest.
+  const routineRows = store.data.todos.filter(t => isRoutine(t) && inFilter(t) && (
+      (t.status!=="done" && !isDeferredAway(t) && (isToday(t.due) || isOverdue(t.due))) ||
+      (t.status==="done" && t.completedAt && todayKey(new Date(t.completedAt))===TODAY())
+    )).sort((a,b)=>(a.title||"").localeCompare(b.title||""));
   const thr = waitThreshold(store);
   const followUps = store.data.todos
     .filter(t=>t.status==="waiting" && (typeFilter==="all"||t.type===typeFilter))
@@ -2536,6 +2683,7 @@ function TodayView({ store, onOpen, goNow, typeFilter, del }){
           <b style={{fontFamily:"Fraunces",fontSize:15}}>Revisit your ideas</b>
           <p className="hint" style={{marginTop:4}}>{staleIdeas.length} idea{staleIdeas.length===1?"":"s"} untouched 30+ days. A quick review keeps the system trusted.</p>
         </div>}
+      {routineRows.length>0 && <RoutinesCard store={store} rows={routineRows} onOpen={onOpen}/>}
       {items.length===0 ? <Empty glyph={"\u2600"} title="Nothing scheduled" sub="Star items for today, or set a due date."/> :
         <div className="list">{items.map(t=><SwipeRow key={t.id} onDelete={()=>del("todos",t)}><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/></SwipeRow>)}</div>}
     </div>
@@ -4231,7 +4379,7 @@ function DashboardView({ store, onOpen, openEditor }){
    ============================================================ */
 const HELP_DOC = `# Priority Captain - User Guide
 
-*Updated July 20, 2026*
+*Updated July 21, 2026*
 
 Priority Captain is one place for everything you are carrying. Tasks, the projects
 they belong to, the goals behind those, stray ideas, and your real calendar sitting
@@ -4350,6 +4498,29 @@ repeatedly scrolling past something.
 make at your desk. **Categories** are the kind of thing it is. Both are just labels
 you can filter by, and both are fully editable in Settings. Rename one and every item
 using it updates. Rename one onto another to merge them.
+
+---
+
+## Routines
+
+Exercise, medication, a daily call. Things you do on a rhythm rather than things you
+owe by a deadline.
+
+Set a to-do to repeat and tick **It's a routine**. Daily items are treated as routines
+automatically; weekly and monthly ones are not, because a missed "pay rent" really is
+still owed and should stay overdue.
+
+Two things change once something is a routine:
+
+- **It never goes overdue.** Miss a day and it just rolls to today. A habit you skipped
+  on Tuesday isn't still pending on Tuesday, and an app that shows you three weeks of red
+  for it only teaches you to stop looking.
+- **They group together.** All your routines share one card on Today showing how many
+  you've done, instead of taking a full card each and crowding out real work. Tap the
+  card to fold it away, tap a name to open it.
+
+Ticked routines stay on the card for the rest of the day, so you can see what you've
+already done rather than watching the list shrink.
 
 ---
 
