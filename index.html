@@ -387,11 +387,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.21.1";
+const APP_VERSION = "1.21.2";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-21.3";
+const BUILD = "2026-07-21.4";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -4187,7 +4187,7 @@ function CalendarView({ store }){
         </div>}
       {!err && data===null && busy && <p className="hint" style={{marginTop:12}}>Loading your schedule...</p>}
       {!err && data && groups.length===0 &&
-        <Empty glyph={"â€”"} title="Nothing scheduled" sub={feeds.length? "No events in this window." : "Add a calendar in Settings > Calendars."}/>}
+        <Empty glyph={"—"} title="Nothing scheduled" sub={feeds.length? "No events in this window." : "Add a calendar in Settings > Calendars."}/>}
 
       {groups.map(g=>(
         <div key={g.key} style={{marginTop:16}}>
@@ -4325,7 +4325,7 @@ function DashboardView({ store, onOpen, openEditor }){
       <div className="topbar" style={{padding:0,position:"static"}}>
         <div className="eyebrow">Overview</div>
         <div className="topbar-row"><h1 className="title">Dashboard</h1></div>
-        <div className="subtle" style={{marginTop:2}}>{spaceName}{" Â· "}{todayOverdue.length} due/overdue{" Â· "}{activeProjects.length} active project{activeProjects.length===1?"":"s"}{schedEvents.length? (" Â· "+schedEvents.length+" today") : ""}</div>
+        <div className="subtle" style={{marginTop:2}}>{spaceName}{" · "}{todayOverdue.length} due/overdue{" · "}{activeProjects.length} active project{activeProjects.length===1?"":"s"}{schedEvents.length? (" · "+schedEvents.length+" today") : ""}</div>
       </div>
 
       <div className="card" style={{marginTop:16,borderColor:"var(--amber-line)"}}>
