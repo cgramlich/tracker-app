@@ -1,4 +1,4 @@
-/* Priority Captain service worker - app shell offline (Phase 1).
+﻿/* Priority Captain service worker - app shell offline (Phase 1).
    ===========================================================================
    Ported from the MenuCaptain worker, adapted for one crucial difference:
    THIS APP IS SERVED FROM A SUBPATH (https://cgramlich.github.io/tracker-app/),
@@ -17,7 +17,7 @@
      bytes is what makes the browser install the new worker.
 */
 
-const VERSION      = "1.21.0";                  // keep in lockstep with APP_VERSION
+const VERSION      = "1.21.1";                  // keep in lockstep with APP_VERSION
 const SHELL_CACHE  = "pc-shell-" + VERSION;
 const ASSET_CACHE  = "pc-assets-" + VERSION;
 const DATA_CACHE   = "pc-data-v1";              // user collections; UN-versioned so it
