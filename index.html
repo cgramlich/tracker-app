@@ -387,11 +387,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.21.2";
+const APP_VERSION = "1.22.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-21.4";
+const BUILD = "2026-07-22.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -4752,6 +4752,11 @@ function MoreView({ store, go }){
           <span className="act-ic">{r.ic}</span><span className="act-txt"><b>{r.b}</b><span>{r.s}</span></span></button>)}
       </div>
       <p className="hint" style={{textAlign:"center",marginTop:18,opacity:.6}}>{(store.cfg.appName||"Priority Captain")} v{APP_VERSION}</p>
+      <p className="hint" style={{textAlign:"center",marginTop:6,opacity:.6,fontSize:12.5}}>
+        <a href="privacy.html" target="_blank" rel="noopener" style={{color:"var(--ink-3)",textDecoration:"underline"}}>Privacy</a>
+        {"  ·  "}
+        <a href="terms.html" target="_blank" rel="noopener" style={{color:"var(--ink-3)",textDecoration:"underline"}}>Terms</a>
+      </p>
     </div>
   );
 }
@@ -4853,6 +4858,13 @@ function Login({ store, toast }){
         {err && <p className="hint danger-text">{err}</p>}
         <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={busy} onClick={submit}>
           {busy? <span className="spin"></span> : (isSignup?"Create account":"Sign in")}</button>
+        {isSignup &&
+          <p className="hint" style={{textAlign:"center",marginTop:10,fontSize:12.5}}>
+            By creating an account you agree to our{" "}
+            <a href="terms.html" target="_blank" rel="noopener" style={{color:"var(--ink-2)",textDecoration:"underline"}}>Terms</a>{" "}
+            and{" "}
+            <a href="privacy.html" target="_blank" rel="noopener" style={{color:"var(--ink-2)",textDecoration:"underline"}}>Privacy Policy</a>.
+          </p>}
       </div>
       <button className="btn btn-ghost btn-block" style={{marginTop:12}} disabled={busy}
         onClick={()=>{ setErr(""); setMode(isSignup?"signin":"signup"); }}>
