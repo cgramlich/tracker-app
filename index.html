@@ -143,6 +143,23 @@ a{color:var(--amber);}
 .cal-dots{display:flex;gap:2px;min-height:5px;}
 .cal-d{width:5px;height:5px;border-radius:50%;}
 
+/* ---------- RTR rundown board ---------- */
+.rd-item{background:var(--bg-2);border:1px solid var(--line);border-radius:12px;padding:11px 13px;margin-bottom:8px;cursor:pointer;}
+.rd-item.dropped{opacity:.55;}
+.rd-item.dropped .rd-name{text-decoration:line-through;}
+.rd-head{display:flex;align-items:baseline;gap:8px;}
+.rd-name{font-size:15px;line-height:1.35;flex:1;}
+.rd-chip{flex:0 0 auto;font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:999px;border:1px solid;background:transparent;}
+.rd-chip.rs-live{color:var(--green);border-color:var(--green);}
+.rd-chip.rs-waiting{color:var(--amber);border-color:var(--amber);}
+.rd-chip.rs-onice{color:var(--blue);border-color:var(--blue);}
+.rd-chip.rs-won{background:#e0a33e;color:#241a0c;border-color:#e0a33e;}
+.rd-chip.rs-dropped{color:var(--ink-3);border-color:var(--line-2);}
+.rd-line{font-size:13px;color:var(--ink-2);margin-top:5px;line-height:1.4;}
+.rd-line b{font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.04em;margin-right:6px;}
+.rd-next{color:var(--green);}
+.rd-block{color:var(--red);}
+
 /* ---------- sync banner ---------- */
 .sync{display:flex;align-items:center;gap:8px;font-size:12px;padding:7px 12px;border-radius:999px;
   margin-top:10px;border:1px solid var(--line-2);background:var(--bg-2);width:fit-content;transition:.3s;}
@@ -417,11 +434,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.27.0";
+const APP_VERSION = "1.28.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-22.7";
+const BUILD = "2026-07-22.8";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1263,6 +1280,11 @@ function useStore(){
   // Reusable checklist templates, also in the meta blob: [{ id, name, items:[titles] }].
   const [templates, setTemplates] = useState(() => lsGet("templates", []));
   const templatesRef = useRef(templates); templatesRef.current = templates;
+  // RTR Rundown: an awareness board that rides on meta (like templates/spaces). null until
+  // first use. Shape: { workstreams:[{id,name,order}], items:[{id,workstreamId,name,status,
+  // nextStep,blocker,note,order,updatedAt}] }. See SCOPE-rtr-rundown.md.
+  const [rundown, setRundown] = useState(() => lsGet("rundown", null));
+  const rundownRef = useRef(rundown); rundownRef.current = rundown;
   // Active Space = the current focus (per-device). "all" = show everything. lastSpaceRef
   // remembers the last real Space so a new item created in "All" still gets a sensible one.
   const [activeSpace, setActiveSpaceState] = useState(() => lsGet("activeSpace", "all"));
@@ -1293,6 +1315,7 @@ function useStore(){
       m.spaces = spacesRef.current; m.defaultSpace = defaultSpaceRef.current; m.spacesSeeded = spacesSeededRef.current;
     }
     if(templatesRef.current && templatesRef.current.length){ m.templates = templatesRef.current; }
+    if(rundownRef.current){ m.rundown = rundownRef.current; }
     return m;
   };
   // Push the meta blob (cfg + spaces) to the per-user `meta` singleton. Same offline-defer
@@ -1332,6 +1355,11 @@ function useStore(){
   // Save the checklist-template list (create / rename / delete) - persists to meta.
   const saveTemplates = useCallback((next) => {
     templatesRef.current = next; setTemplates(next); lsSet("templates", next);
+    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    pushCfg();
+  }, [pushCfg]);
+  const saveRundown = useCallback((next) => {
+    rundownRef.current = next; setRundown(next); lsSet("rundown", next);
     cfgDirtyRef.current = true; lsSet("cfgDirty", true);
     pushCfg();
   }, [pushCfg]);
@@ -1500,6 +1528,10 @@ function useStore(){
           if(Array.isArray(m && m.templates)){
             templatesRef.current = m.templates; setTemplates(m.templates); lsSet("templates", m.templates);
             log("TEMPLATE","templates <- meta ("+m.templates.length+")");
+          }
+          if(m && m.rundown && typeof m.rundown==="object"){
+            rundownRef.current = m.rundown; setRundown(m.rundown); lsSet("rundown", m.rundown);
+            log("RUNDOWN","rundown <- meta ("+((m.rundown.items||[]).length)+" items)");
           }
         }catch(e){ log("ERROR","pull meta: "+e.message); }
       }
@@ -1841,7 +1873,7 @@ function useStore(){
     return out;
   }, [data, activeSpace, spaces]);
 
-  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, deleteAccount, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
+  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, rundown, saveRundown, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, deleteAccount, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
 }
 
 /* ============================================================
@@ -4898,6 +4930,11 @@ whenever you need it again. Manage them in Settings.
 
 ## The other tools in More
 
+- **Rundown** is an awareness board for everything in flight on a venture or project.
+  You group items into workstreams; each item shows a status (live, waiting, on ice, won,
+  dropped) and, if it has one, a next step or a blocker. Flip between the whole board and
+  just what needs you, and hide the dropped ones when you want a clean view. Good when the
+  point is *seeing all the moving pieces at once*, not working a checklist.
 - **Weekly Review** walks the GTD checklist: empty the inbox, check next actions,
   nudge what is waiting, make sure every active project has a next step.
 - **Now / Focus** shows one thing at a time when a list is too much.
@@ -5001,9 +5038,207 @@ function GuideView({ back }){
   );
 }
 
+/* ============================================================
+   RTR RUNDOWN - an awareness board (one unified "tracked item" type).
+   Rides on meta.rundown. An item needs only a name + workstream; status, next
+   step, and blocker are all optional (a pure-awareness item has none). See
+   SCOPE-rtr-rundown.md. Stage 1: the board + CRUD + hide-dropped / needs-me.
+   ============================================================ */
+const RUNDOWN_STATUSES = [
+  { k:"live",    label:"Live",    cls:"rs-live" },
+  { k:"waiting", label:"Waiting", cls:"rs-waiting" },
+  { k:"onice",   label:"On ice",  cls:"rs-onice" },
+  { k:"won",     label:"Won",     cls:"rs-won" },
+  { k:"dropped", label:"Dropped", cls:"rs-dropped" },
+];
+const RUNDOWN_STATUS_MAP = Object.fromEntries(RUNDOWN_STATUSES.map(s=>[s.k,s]));
+// Start EMPTY - neutral for every user (do not seed one person's workstreams onto
+// another's board, same rule as the Spaces/category seeds). The user adds their own,
+// or the paste importer (Stage 2) creates them from a pasted note.
+function seedRundown(){ return { workstreams: [], items: [] }; }
+function rundownHasAction(it){ return !!((it.nextStep&&it.nextStep.trim()) || (it.blocker&&it.blocker.trim())); }
+
+function RundownItemSheet({ item, workstreams, onSave, onDelete, onClose }){
+  const isNew = !item.id;
+  const [name,setName]=useState(item.name||"");
+  const [workstreamId,setWs]=useState(item.workstreamId || (workstreams[0]&&workstreams[0].id) || "");
+  const [status,setStatus]=useState(item.status||"");
+  const [nextStep,setNext]=useState(item.nextStep||"");
+  const [blocker,setBlocker]=useState(item.blocker||"");
+  const [note,setNote]=useState(item.note||"");
+  function save(){
+    const n=name.trim(); if(!n) return;
+    onSave({ id:item.id, workstreamId, name:n, status, nextStep:nextStep.trim(), blocker:blocker.trim(), note:note.trim() });
+  }
+  return (
+    <Sheet title={isNew?"Add item":"Edit item"} onClose={onClose}>
+      <div className="field"><span className="label">What is it</span>
+        <input className="input" value={name} autoFocus onChange={e=>setName(e.target.value)}
+          placeholder="e.g. Tapp Engine" onKeyDown={e=>{ if(e.key==="Enter") save(); }}/></div>
+      <div className="field"><span className="label">Workstream</span>
+        <select className="select" value={workstreamId} onChange={e=>setWs(e.target.value)}>
+          {workstreams.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}
+        </select></div>
+      <div className="field"><span className="label">Status</span>
+        <select className="select" value={status} onChange={e=>setStatus(e.target.value)}>
+          <option value="">None (just awareness)</option>
+          {RUNDOWN_STATUSES.map(s=><option key={s.k} value={s.k}>{s.label}</option>)}
+        </select></div>
+      <div className="field"><span className="label">Next step (optional)</span>
+        <input className="input" value={nextStep} onChange={e=>setNext(e.target.value)}
+          placeholder="an action, or a wait (e.g. hear back from Eric)"/></div>
+      <div className="field"><span className="label">Blocker (optional)</span>
+        <input className="input" value={blocker} onChange={e=>setBlocker(e.target.value)}
+          placeholder="what's in the way / who you're waiting on"/></div>
+      <div className="field"><span className="label">Note (optional)</span>
+        <textarea className="input" rows={2} value={note} onChange={e=>setNote(e.target.value)}
+          placeholder="context, numbers, links"/></div>
+      <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={!name.trim()} onClick={save}>
+        {isNew?"Add":"Save"}</button>
+      {!isNew && <button className="btn btn-ghost btn-block" style={{marginTop:10,color:"var(--red)"}}
+        onClick={()=>onDelete(item.id)}>Delete</button>}
+    </Sheet>
+  );
+}
+
+function RundownWorkstreamsSheet({ rundown, onSave, onClose }){
+  const [ws,setWs]=useState(()=> (rundown.workstreams||[]).slice().sort((a,b)=>(a.order||0)-(b.order||0)));
+  const [adding,setAdding]=useState("");
+  const itemCount = (id)=> (rundown.items||[]).filter(i=>i.workstreamId===id).length;
+  function commit(next){ setWs(next); onSave(next); }
+  function rename(id,v){ const n=(v||"").trim(); if(n) commit(ws.map(w=>w.id===id?{...w,name:n}:w)); }
+  function add(){ const n=adding.trim(); if(!n) return;
+    commit([...ws, { id:uid(), name:n, order:(ws.reduce((m,w)=>Math.max(m,w.order||0),0))+1 }]); setAdding(""); }
+  function del(id){ if(itemCount(id)>0) return; commit(ws.filter(w=>w.id!==id)); }
+  return (
+    <Sheet title="Workstreams" onClose={onClose}>
+      {ws.map(w=>(
+        <div key={w.id} className="row" style={{alignItems:"center",gap:8,background:"var(--bg)",marginBottom:6}}>
+          <input className="input" defaultValue={w.name} key={w.id+"|"+w.name} style={{flex:1}}
+            onBlur={e=>rename(w.id,e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") e.target.blur(); }}/>
+          {itemCount(w.id)>0
+            ? <span className="chip" style={{flex:"0 0 auto"}}>{itemCount(w.id)}</span>
+            : <button className="btn btn-ghost btn-sm" style={{flex:"0 0 auto"}} onClick={()=>del(w.id)}>Remove</button>}
+        </div>
+      ))}
+      <div className="row" style={{marginTop:6}}>
+        <input className="input" value={adding} onChange={e=>setAdding(e.target.value)} placeholder="Add a workstream"
+          onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:3}}/>
+        <button className="btn btn-ghost btn-sm" onClick={add} style={{flex:1}}>Add</button>
+      </div>
+      <p className="hint" style={{marginTop:6}}>Tap a name to rename. A workstream with items can't be removed until it's empty.</p>
+    </Sheet>
+  );
+}
+
+function RundownView({ store, toast, toastUndo }){
+  const rundown = store.rundown;
+  const [hideDropped,setHideDropped]=useState(()=>lsGet("rdHideDropped", false));
+  const [needsMe,setNeedsMe]=useState(false);
+  const [edit,setEdit]=useState(null);      // item object being edited/created; null = closed
+  const [manageWs,setManageWs]=useState(false);
+
+  // Seed on first open (once). store.rundown starts null.
+  useEffect(()=>{ if(store.rundown===null) store.saveRundown(seedRundown()); }, []);
+
+  if(!rundown){
+    return <div className="screen"><div className="topbar" style={{padding:0,position:"static"}}>
+      <div className="eyebrow">Awareness</div><h1 className="title">Rundown</h1></div>
+      <p className="hint" style={{marginTop:16}}>Setting up your board...</p></div>;
+  }
+
+  const ws = (rundown.workstreams||[]).slice().sort((a,b)=>(a.order||0)-(b.order||0));
+  const items = rundown.items||[];
+  const toggleHide=()=>{ const v=!hideDropped; setHideDropped(v); lsSet("rdHideDropped", v); };
+
+  function visibleFor(wsId){
+    return items.filter(it=>it.workstreamId===wsId)
+      .filter(it=> hideDropped ? it.status!=="dropped" : true)
+      .filter(it=> needsMe ? rundownHasAction(it) : true)
+      .sort((a,b)=>(a.order||0)-(b.order||0));
+  }
+  function saveItem(it){
+    const list = items.slice();
+    if(it.id){ const i=list.findIndex(x=>x.id===it.id); if(i>=0) list[i]={...list[i],...it,updatedAt:nowISO()}; }
+    else { const order=(list.filter(x=>x.workstreamId===it.workstreamId).reduce((m,x)=>Math.max(m,x.order||0),0))+10;
+           list.push({ ...it, id:uid(), order, updatedAt:nowISO() }); }
+    store.saveRundown({ ...rundown, items:list }); setEdit(null);
+    toast && toast(it.id?"Saved":"Added");
+  }
+  function deleteItem(id){
+    const removed = items.find(x=>x.id===id);
+    store.saveRundown({ ...rundown, items: items.filter(x=>x.id!==id) }); setEdit(null);
+    toastUndo && toastUndo("Item removed", ()=>{ const cur=store.rundown||rundown;
+      store.saveRundown({ ...cur, items:[...(cur.items||[]), removed] }); });
+  }
+  const totalOpen = items.filter(rundownHasAction).length;
+
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <div className="eyebrow">Awareness</div>
+        <div className="topbar-row"><h1 className="title">Rundown</h1>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setManageWs(true)}>Workstreams</button></div>
+        <div className="subtle" style={{marginTop:2}}>{items.length} item{items.length===1?"":"s"} &middot; {totalOpen} need{totalOpen===1?"s":""} a next step or unblock</div>
+      </div>
+
+      {ws.length===0 &&
+        <div className="card" style={{marginTop:16}}>
+          <b style={{fontFamily:"Fraunces",fontSize:16}}>Set up your Rundown</b>
+          <p className="hint" style={{marginTop:6}}>Your awareness board: everything in flight, grouped into workstreams, each item showing where it stands. Start with a workstream (like &ldquo;Opportunities&rdquo; or &ldquo;Deals&rdquo;), then add items to it.</p>
+          <button className="btn btn-primary btn-block" style={{marginTop:10}} onClick={()=>setManageWs(true)}>Add your first workstream</button>
+        </div>}
+
+      {ws.length>0 && <>
+        <div className="sortrow" style={{marginTop:12}}>
+          <div className="seg">
+            <button className={"seg-b"+(!needsMe?" on":"")} onClick={()=>setNeedsMe(false)}>Everything</button>
+            <button className={"seg-b"+(needsMe?" on":"")} onClick={()=>setNeedsMe(true)}>Needs me</button>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={toggleHide}>{hideDropped?"Show dropped":"Hide dropped"}</button>
+        </div>
+        <button className="btn btn-primary btn-block" style={{marginTop:12}}
+          onClick={()=>setEdit({ workstreamId: ws[0]&&ws[0].id })}>{Ic.plus} Add item</button>
+      </>}
+
+      {ws.map(w=>{
+        const vis = visibleFor(w.id);
+        if(needsMe && vis.length===0) return null;   // in needs-me, hide empty workstreams
+        return (
+          <div key={w.id} style={{marginTop:18}}>
+            <div className="eyebrow" style={{marginBottom:8}}>{w.name}</div>
+            {vis.length===0
+              ? <p className="hint" style={{opacity:.6}}>Nothing here.</p>
+              : vis.map(it=>{
+                  const st = RUNDOWN_STATUS_MAP[it.status];
+                  return (
+                    <div key={it.id} className={"rd-item"+(it.status==="dropped"?" dropped":"")} onClick={()=>setEdit(it)}>
+                      <div className="rd-head">
+                        {st && <span className={"rd-chip "+st.cls}>{st.label}</span>}
+                        <span className="rd-name">{it.name}</span>
+                      </div>
+                      {it.nextStep && it.nextStep.trim() && <div className="rd-line"><b className="rd-next">Next</b> {it.nextStep}</div>}
+                      {it.blocker && it.blocker.trim() && <div className="rd-line"><b className="rd-block">Blocked</b> {it.blocker}</div>}
+                    </div>
+                  );
+                })}
+          </div>
+        );
+      })}
+
+      <div style={{height:24}}></div>
+
+      {edit && <RundownItemSheet item={edit} workstreams={ws} onSave={saveItem} onDelete={deleteItem} onClose={()=>setEdit(null)}/>}
+      {manageWs && <RundownWorkstreamsSheet rundown={rundown} onClose={()=>setManageWs(false)}
+        onSave={(nextWs)=>store.saveRundown({ ...store.rundown, workstreams: nextWs })}/>}
+    </div>
+  );
+}
+
 function MoreView({ store, go }){
   const rows = [
     { k:"ideas",    ic:Ic.idea,    b:"Ideas", s:store.data.ideas.length+" captured" },
+    { k:"rundown",  ic:Ic.review,  b:"Rundown", s:"Awareness board for everything in flight" },
     { k:"aichat",   ic:Ic.sparkle, b:"Organize with AI", s:"Brain-dump, then approve a plan" },
     { k:"matrix",   ic:Ic.matrix,  b:"Matrix", s:"Eisenhower priorities" },
     { k:"goals",    ic:Ic.goal,    b:"Goals", s:store.data.goals.filter(g=>g.status==="active").length+" active" },
@@ -5365,6 +5600,7 @@ function App(){
   else if(sub==="settings") subView=<SettingsView store={store} toast={toast} toastUndo={toastUndo} go={go} onCheckUpdate={checkUpdate} updMsg={updMsg} update={update} onApplyUpdate={applyUpdate}/>;
   else if(sub==="diagnostics") subView=<Diagnostics back={()=>setSub("settings")}/>;
   else if(sub==="guide") subView=<GuideView back={()=>setSub(null)}/>;
+  else if(sub==="rundown") subView=<RundownView store={store} toast={toast} toastUndo={toastUndo}/>;
 
   let main;
   if(sub && sub!=="more") main=subView;
