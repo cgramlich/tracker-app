@@ -400,11 +400,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.25.0";
+const APP_VERSION = "1.26.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-22.5";
+const BUILD = "2026-07-22.6";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -468,6 +468,11 @@ function waitingDays(todo){
 function addInterval(dateStr, recur){
   const d = dateStr ? new Date(dateStr+"T00:00:00") : new Date();
   if(recur==="daily") d.setDate(d.getDate()+1);
+  // Weekdays/weekends advance by SKIPPING, not a fixed interval: from Friday the
+  // next weekday occurrence is Monday. rollToToday/nextDue loop addInterval, so
+  // they inherit this correctly (each hop lands on the next valid day).
+  else if(recur==="weekdays"){ do { d.setDate(d.getDate()+1); } while(d.getDay()===0 || d.getDay()===6); }
+  else if(recur==="weekends"){ do { d.setDate(d.getDate()+1); } while(d.getDay()!==0 && d.getDay()!==6); }
   else if(recur==="weekly") d.setDate(d.getDate()+7);
   else if(recur==="monthly"){
     // Avoid the Jan-31 -> Mar-3 overflow: change month on the 1st, then clamp the
@@ -488,7 +493,7 @@ function nextDue(due, recur){
   while(n <= TODAY() && guard < 500){ n = addInterval(n, recur); guard++; }
   return n;
 }
-const RECUR_LABEL = { daily:"Repeats daily", weekly:"Repeats weekly", monthly:"Repeats monthly" };
+const RECUR_LABEL = { daily:"Repeats daily", weekdays:"Repeats every weekday", weekends:"Repeats every weekend", weekly:"Repeats weekly", monthly:"Repeats monthly" };
 
 /* ---------- NATURAL-LANGUAGE DUE DATES (local, no AI) ----------
    Parse a due date out of quick-add text like "call dentist thursday" or
@@ -588,7 +593,10 @@ function fmtDueShort(ymd){
    to off, because a missed "pay rent" IS a real debt that should stay overdue. */
 function isRoutine(t){ return !!(t && t.routine && t.recur && t.recur!=="none"); }
 // Sensible default when recurrence is first switched on.
-function defaultRoutineFor(recur){ return recur === "daily"; }
+// Habit cadences (daily / weekdays / weekends) default to routine=true - they're
+// the "never let it go overdue, group on Today" kind. Weekly/monthly default off,
+// since a missed "pay rent" IS a real debt that should stay overdue.
+function defaultRoutineFor(recur){ return recur === "daily" || recur === "weekdays" || recur === "weekends"; }
 // Roll a due date to the first occurrence that is >= today (unlike nextDue, which is
 // always strictly AFTER today - that is for spawning the next one after completion).
 function rollToToday(due, recur){
@@ -2066,6 +2074,8 @@ function TodoEditor({ store, todo, onClose, toast }){
         <select className="select" value={recur} onChange={e=>changeRecur(e.target.value)}>
           <option value="none">Does not repeat</option>
           <option value="daily">Daily</option>
+          <option value="weekdays">Every weekday (Mon-Fri)</option>
+          <option value="weekends">Every weekend (Sat-Sun)</option>
           <option value="weekly">Weekly</option>
           <option value="monthly">Monthly</option>
         </select>
@@ -4699,9 +4709,13 @@ using it updates. Rename one onto another to merge them.
 Exercise, medication, a daily call. Things you do on a rhythm rather than things you
 owe by a deadline.
 
-Set a to-do to repeat and tick **It's a routine**. Daily items are treated as routines
-automatically; weekly and monthly ones are not, because a missed "pay rent" really is
-still owed and should stay overdue.
+Set a to-do to repeat and tick **It's a routine**. You can repeat it daily, every
+weekday (Mon to Fri), every weekend, weekly, or monthly. The habit cadences (daily,
+weekdays, weekends) are treated as routines automatically; weekly and monthly ones
+are not, because a missed "pay rent" really is still owed and should stay overdue.
+
+A weekday routine only shows on weekdays, and a weekend routine only on weekends, so
+"check work email every weekday" quietly stays out of your Saturday.
 
 Two things change once something is a routine:
 
