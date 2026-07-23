@@ -434,11 +434,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.29.0";
+const APP_VERSION = "1.29.1";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-23.1";
+const BUILD = "2026-07-23.2";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -5089,13 +5089,25 @@ function parseRundownPaste(text){
 
 function RundownImportSheet({ onImport, onClose }){
   const [text,setText]=useState("");
+  const fileRef = useRef(null);
   const parsed = text.trim() ? parseRundownPaste(text) : { workstreams:[], items:[] };
+  function onFile(e){
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";              // allow re-picking the same file
+    if(!f) return;
+    const r = new FileReader();
+    r.onload = () => setText(String(r.result||""));
+    r.readAsText(f);
+  }
   return (
-    <Sheet title="Paste a note" onClose={onClose}>
-      <p className="hint" style={{marginBottom:10}}>Paste your rundown. Lines starting with <b>#</b> become
+    <Sheet title="Import a note" onClose={onClose}>
+      <p className="hint" style={{marginBottom:10}}>Choose a text file, or paste below. Lines starting with <b>#</b> become
         workstreams; every other line becomes an item. Add <b>[won]</b>, <b>[waiting]</b>, <b>[on ice]</b>,
         <b>[live]</b> or <b>[dropped]</b> to set a status.</p>
-      <textarea className="input" rows={10} value={text} onChange={e=>setText(e.target.value)}
+      <input ref={fileRef} type="file" accept=".txt,.md,text/plain,text/markdown" style={{display:"none"}} onChange={onFile}/>
+      <button className="btn btn-ghost btn-block" style={{marginBottom:10}} onClick={()=>fileRef.current&&fileRef.current.click()}>
+        {Ic.lists} Choose a file</button>
+      <textarea className="input" rows={9} value={text} onChange={e=>setText(e.target.value)}
         placeholder={"# Opportunities\nTapp Engine [waiting]\nBureaus [on ice]\n..."} style={{fontFamily:"inherit"}}/>
       {text.trim() && <p className="hint" style={{marginTop:8}}>Found {parsed.workstreams.length} workstream{parsed.workstreams.length===1?"":"s"} and {parsed.items.length} item{parsed.items.length===1?"":"s"}.</p>}
       <button className="btn btn-primary btn-block" style={{marginTop:12}} disabled={!parsed.items.length}
