@@ -159,6 +159,12 @@ a{color:var(--amber);}
 .rd-line b{font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.04em;margin-right:6px;}
 .rd-next{color:var(--green);}
 .rd-block{color:var(--red);}
+.rd-item.pinned{border-color:var(--amber);background:var(--bg-3);}
+.rd-star{flex:0 0 auto;display:inline-flex;align-items:center;}
+.rd-star svg{width:14px;height:14px;fill:var(--amber);stroke:var(--amber);}
+.rd-note{color:var(--ink-3);font-size:12.5px;}
+.rd-modes{margin-bottom:2px;}
+.rd-modes .seg-b{font-size:12.5px;padding:7px 4px;}
 
 /* ---------- sync banner ---------- */
 .sync{display:flex;align-items:center;gap:8px;font-size:12px;padding:7px 12px;border-radius:999px;
@@ -434,11 +440,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.29.2";
+const APP_VERSION = "1.30.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-23.3";
+const BUILD = "2026-07-23.4";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -4932,9 +4938,14 @@ whenever you need it again. Manage them in Settings.
 
 - **Rundown** is an awareness board for everything in flight on a venture or project.
   You group items into areas; each item shows a status (live, waiting, on ice, won,
-  dropped) and, if it has one, a next step or a blocker. Flip between the whole board and
-  just what needs you, and hide the dropped ones when you want a clean view. Good when the
-  point is *seeing all the moving pieces at once*, not working a checklist.
+  dropped) and, if it has one, a next step or a blocker. It has four views along the top:
+  **Overview** is the glance - your pinned north-star initiatives, recent wins, and what
+  needs you; **Board** is the full picture by area (flip between everything and just what
+  needs you, hide dropped when you want it clean); **Initiatives** tracks your big bets, with
+  the top ones pinned as north stars; **Wins** is a running log of deals won. Mark an item a
+  strategic initiative (and optionally pin it) in the item editor. Good when the point is
+  *seeing all the moving pieces at once*, not working a checklist. You can seed the whole
+  thing by pasting a note (Import).
 - **Weekly Review** walks the GTD checklist: empty the inbox, check next actions,
   nudge what is waiting, make sure every active project has a next step.
 - **Now / Focus** shows one thing at a time when a list is too much.
@@ -5125,12 +5136,15 @@ function RundownItemSheet({ item, workstreams, onSave, onDelete, onClose }){
   const [nextStep,setNext]=useState(item.nextStep||"");
   const [blocker,setBlocker]=useState(item.blocker||"");
   const [note,setNote]=useState(item.note||"");
+  const [initiative,setInitiative]=useState(!!item.initiative);
+  const [pinned,setPinned]=useState(!!item.pinned);
   function save(){
     const n=name.trim(); if(!n) return;
-    onSave({ id:item.id, workstreamId, name:n, status, nextStep:nextStep.trim(), blocker:blocker.trim(), note:note.trim() });
+    onSave({ id:item.id, workstreamId, name:n, status, nextStep:nextStep.trim(), blocker:blocker.trim(),
+      note:note.trim(), initiative, pinned: initiative && pinned });
   }
   return (
-    <Sheet title={isNew?"Add item":"Edit item"} onClose={onClose}>
+    <Sheet title={isNew?(item.initiative?"Add initiative":"Add item"):"Edit item"} onClose={onClose}>
       <div className="field"><span className="label">What is it</span>
         <input className="input" value={name} autoFocus onChange={e=>setName(e.target.value)}
           placeholder="e.g. Tapp Engine" onKeyDown={e=>{ if(e.key==="Enter") save(); }}/></div>
@@ -5152,7 +5166,20 @@ function RundownItemSheet({ item, workstreams, onSave, onDelete, onClose }){
       <div className="field"><span className="label">Note (optional)</span>
         <textarea className="input" rows={2} value={note} onChange={e=>setNote(e.target.value)}
           placeholder="context, numbers, links"/></div>
-      <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={!name.trim()} onClick={save}>
+      <label className="row" style={{alignItems:"center",gap:10,marginTop:4,cursor:"pointer"}}>
+        <input type="checkbox" checked={initiative} onChange={e=>setInitiative(e.target.checked)}
+          style={{width:18,height:18,flex:"0 0 auto",accentColor:"var(--blue)"}}/>
+        <span style={{flex:1}}><b style={{display:"block",fontSize:14}}>Strategic initiative</b>
+          <span className="hint">A big bet, tracked on its own tier - not a tactical item</span></span>
+      </label>
+      {initiative &&
+        <label className="row" style={{alignItems:"center",gap:10,marginTop:8,cursor:"pointer"}}>
+          <input type="checkbox" checked={pinned} onChange={e=>setPinned(e.target.checked)}
+            style={{width:18,height:18,flex:"0 0 auto",accentColor:"var(--amber)"}}/>
+          <span style={{flex:1}}><b style={{display:"block",fontSize:14}}>Pin as a north star</b>
+            <span className="hint">Keep it up top on the Overview</span></span>
+        </label>}
+      <button className="btn btn-primary btn-block" style={{marginTop:12}} disabled={!name.trim()} onClick={save}>
         {isNew?"Add":"Save"}</button>
       {!isNew && <button className="btn btn-ghost btn-block" style={{marginTop:10,color:"var(--red)"}}
         onClick={()=>onDelete(item.id)}>Delete</button>}
@@ -5194,9 +5221,11 @@ function RundownView({ store, toast, toastUndo }){
   const rundown = store.rundown;
   const [hideDropped,setHideDropped]=useState(()=>lsGet("rdHideDropped", false));
   const [needsMe,setNeedsMe]=useState(false);
+  const [mode,setMode]=useState(()=>lsGet("rdMode","overview"));   // overview | board | initiatives | wins
   const [edit,setEdit]=useState(null);      // item object being edited/created; null = closed
   const [manageWs,setManageWs]=useState(false);
   const [importing,setImporting]=useState(false);
+  const goMode=(m)=>{ setMode(m); lsSet("rdMode", m); };
 
   // Seed on first open (once). store.rundown starts null.
   useEffect(()=>{ if(store.rundown===null) store.saveRundown(seedRundown()); }, []);
@@ -5211,11 +5240,28 @@ function RundownView({ store, toast, toastUndo }){
   const items = rundown.items||[];
   const toggleHide=()=>{ const v=!hideDropped; setHideDropped(v); lsSet("rdHideDropped", v); };
 
+  // Tactical board = items that are NOT strategic initiatives (those get their own tier).
   function visibleFor(wsId){
-    return items.filter(it=>it.workstreamId===wsId)
+    return items.filter(it=>it.workstreamId===wsId && !it.initiative)
       .filter(it=> hideDropped ? it.status!=="dropped" : true)
       .filter(it=> needsMe ? rundownHasAction(it) : true)
       .sort((a,b)=>(a.order||0)-(b.order||0));
+  }
+  const byUpdated = (a,b)=> (b.updatedAt||"").localeCompare(a.updatedAt||"");
+  function renderItemCard(it, showNote){
+    const st = RUNDOWN_STATUS_MAP[it.status];
+    return (
+      <div key={it.id} className={"rd-item"+(it.status==="dropped"?" dropped":"")+(it.pinned?" pinned":"")} onClick={()=>setEdit(it)}>
+        <div className="rd-head">
+          {it.pinned && <span className="rd-star">{Ic.star}</span>}
+          {st && <span className={"rd-chip "+st.cls}>{st.label}</span>}
+          <span className="rd-name">{it.name}</span>
+        </div>
+        {it.nextStep && it.nextStep.trim() && <div className="rd-line"><b className="rd-next">Next</b> {it.nextStep}</div>}
+        {it.blocker && it.blocker.trim() && <div className="rd-line"><b className="rd-block">Blocked</b> {it.blocker}</div>}
+        {showNote && it.note && it.note.trim() && <div className="rd-line rd-note">{it.note}</div>}
+      </div>
+    );
   }
   function saveItem(it){
     const list = items.slice();
@@ -5254,6 +5300,41 @@ function RundownView({ store, toast, toastUndo }){
     setImporting(false);
     toast && toast("Imported "+added+" item"+(added===1?"":"s"));
   }
+  function renderInitiatives(){
+    const inits = items.filter(it=>it.initiative);
+    const pinned = inits.filter(it=>it.pinned).sort(byUpdated);
+    const rest = inits.filter(it=>!it.pinned).sort(byUpdated);
+    return (
+      <>
+        <button className="btn btn-primary btn-block" style={{marginTop:12}}
+          onClick={()=>setEdit({ workstreamId: ws[0]&&ws[0].id, initiative:true })}>{Ic.plus} Add initiative</button>
+        {inits.length===0 && <p className="hint" style={{marginTop:16,opacity:.7}}>No initiatives yet. Add your big bets, and pin the top ones as north stars.</p>}
+        {pinned.length>0 && <><div className="eyebrow" style={{marginTop:18,marginBottom:8}}>North stars</div>{pinned.map(it=>renderItemCard(it,true))}</>}
+        {rest.length>0 && <><div className="eyebrow" style={{marginTop:18,marginBottom:8}}>Tracking</div>{rest.map(it=>renderItemCard(it,true))}</>}
+      </>
+    );
+  }
+  function renderWins(){
+    const wins = items.filter(it=>it.status==="won").sort(byUpdated);
+    return wins.length===0
+      ? <p className="hint" style={{marginTop:16,opacity:.7}}>No wins logged yet. Set an item's status to Won and it lands here as a deal won.</p>
+      : <div style={{marginTop:16}}>{wins.map(it=>renderItemCard(it,true))}</div>;
+  }
+  function renderOverview(){
+    const heroes = items.filter(it=>it.initiative && it.pinned).sort(byUpdated);
+    const recentWins = items.filter(it=>it.status==="won").sort(byUpdated).slice(0,5);
+    const needs = items.filter(it=>!it.initiative && it.status!=="dropped" && rundownHasAction(it)).sort(byUpdated);
+    return (
+      <>
+        <div className="eyebrow" style={{marginTop:16,marginBottom:8,display:"flex",alignItems:"center",gap:5}}><span className="rd-star">{Ic.star}</span> North stars</div>
+        {heroes.length ? heroes.map(it=>renderItemCard(it,true)) : <p className="hint" style={{opacity:.7}}>Pin an initiative as a north star to see it here.</p>}
+        <div className="eyebrow" style={{marginTop:22,marginBottom:8}}>Recent wins</div>
+        {recentWins.length ? recentWins.map(it=>renderItemCard(it,true)) : <p className="hint" style={{opacity:.7}}>Deals you win show up here.</p>}
+        <div className="eyebrow" style={{marginTop:22,marginBottom:8}}>Needs you</div>
+        {needs.length ? needs.slice(0,15).map(it=>renderItemCard(it,false)) : <p className="hint" style={{opacity:.7}}>Nothing waiting on you right now.</p>}
+      </>
+    );
+  }
   const totalOpen = items.filter(rundownHasAction).length;
 
   return (
@@ -5268,7 +5349,7 @@ function RundownView({ store, toast, toastUndo }){
         <div className="subtle" style={{marginTop:2}}>{items.length} item{items.length===1?"":"s"} &middot; {totalOpen} need{totalOpen===1?"s":""} a next step or unblock</div>
       </div>
 
-      {ws.length===0 &&
+      {ws.length===0 && items.length===0 &&
         <div className="card" style={{marginTop:16}}>
           <b style={{fontFamily:"Fraunces",fontSize:16}}>Set up your Rundown</b>
           <p className="hint" style={{marginTop:6}}>Your awareness board: everything in flight, grouped into areas, each item showing where it stands. Start with an area (like &ldquo;Opportunities&rdquo; or &ldquo;Deals&rdquo;), then add items to it.</p>
@@ -5276,42 +5357,41 @@ function RundownView({ store, toast, toastUndo }){
           <button className="btn btn-ghost btn-block" style={{marginTop:8}} onClick={()=>setImporting(true)}>Paste from a note</button>
         </div>}
 
-      {ws.length>0 && <>
-        <div className="sortrow" style={{marginTop:12}}>
-          <div className="seg">
-            <button className={"seg-b"+(!needsMe?" on":"")} onClick={()=>setNeedsMe(false)}>Everything</button>
-            <button className={"seg-b"+(needsMe?" on":"")} onClick={()=>setNeedsMe(true)}>Needs me</button>
-          </div>
-          <button className="btn btn-ghost btn-sm" onClick={toggleHide}>{hideDropped?"Show dropped":"Hide dropped"}</button>
+      {(ws.length>0 || items.length>0) && <>
+        <div className="seg rd-modes" style={{marginTop:12}}>
+          <button className={"seg-b"+(mode==="overview"?" on":"")} onClick={()=>goMode("overview")}>Overview</button>
+          <button className={"seg-b"+(mode==="board"?" on":"")} onClick={()=>goMode("board")}>Board</button>
+          <button className={"seg-b"+(mode==="initiatives"?" on":"")} onClick={()=>goMode("initiatives")}>Initiatives</button>
+          <button className={"seg-b"+(mode==="wins"?" on":"")} onClick={()=>goMode("wins")}>Wins</button>
         </div>
-        <button className="btn btn-primary btn-block" style={{marginTop:12}}
-          onClick={()=>setEdit({ workstreamId: ws[0]&&ws[0].id })}>{Ic.plus} Add item</button>
-      </>}
 
-      {ws.map(w=>{
-        const vis = visibleFor(w.id);
-        if(needsMe && vis.length===0) return null;   // in needs-me, hide empty workstreams
-        return (
-          <div key={w.id} style={{marginTop:18}}>
-            <div className="eyebrow" style={{marginBottom:8}}>{w.name}</div>
-            {vis.length===0
-              ? <p className="hint" style={{opacity:.6}}>Nothing here.</p>
-              : vis.map(it=>{
-                  const st = RUNDOWN_STATUS_MAP[it.status];
-                  return (
-                    <div key={it.id} className={"rd-item"+(it.status==="dropped"?" dropped":"")} onClick={()=>setEdit(it)}>
-                      <div className="rd-head">
-                        {st && <span className={"rd-chip "+st.cls}>{st.label}</span>}
-                        <span className="rd-name">{it.name}</span>
-                      </div>
-                      {it.nextStep && it.nextStep.trim() && <div className="rd-line"><b className="rd-next">Next</b> {it.nextStep}</div>}
-                      {it.blocker && it.blocker.trim() && <div className="rd-line"><b className="rd-block">Blocked</b> {it.blocker}</div>}
-                    </div>
-                  );
-                })}
+        {mode==="overview" && renderOverview()}
+        {mode==="initiatives" && renderInitiatives()}
+        {mode==="wins" && renderWins()}
+        {mode==="board" && <>
+          <div className="sortrow" style={{marginTop:12}}>
+            <div className="seg">
+              <button className={"seg-b"+(!needsMe?" on":"")} onClick={()=>setNeedsMe(false)}>Everything</button>
+              <button className={"seg-b"+(needsMe?" on":"")} onClick={()=>setNeedsMe(true)}>Needs me</button>
+            </div>
+            <button className="btn btn-ghost btn-sm" onClick={toggleHide}>{hideDropped?"Show dropped":"Hide dropped"}</button>
           </div>
-        );
-      })}
+          <button className="btn btn-primary btn-block" style={{marginTop:12}}
+            onClick={()=>setEdit({ workstreamId: ws[0]&&ws[0].id })}>{Ic.plus} Add item</button>
+          {ws.map(w=>{
+            const vis = visibleFor(w.id);
+            if(needsMe && vis.length===0) return null;
+            return (
+              <div key={w.id} style={{marginTop:18}}>
+                <div className="eyebrow" style={{marginBottom:8}}>{w.name}</div>
+                {vis.length===0
+                  ? <p className="hint" style={{opacity:.6}}>Nothing here.</p>
+                  : vis.map(it=>renderItemCard(it, false))}
+              </div>
+            );
+          })}
+        </>}
+      </>}
 
       <div style={{height:24}}></div>
 
