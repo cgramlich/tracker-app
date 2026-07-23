@@ -126,6 +126,23 @@ a{color:var(--amber);}
 .rt-chev{flex:0 0 auto;display:flex;color:var(--ink-3);transition:transform .2s;}
 .rt-chev svg{width:18px;height:18px;}
 
+/* ---------- calendar month grid ---------- */
+.cal-monthhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.cal-monthname{font-family:'Fraunces',serif;font-size:19px;font-weight:600;}
+.cal-dow{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:4px;}
+.cal-dow span{text-align:center;font-size:11px;color:var(--ink-3);font-weight:600;}
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;}
+.cal-cell{aspect-ratio:1/1;display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:6px 0 4px;border:1px solid var(--line);border-radius:10px;background:var(--bg-2);
+  color:var(--ink);font-size:13px;cursor:pointer;transition:background .12s,border-color .12s;}
+.cal-cell.out{opacity:.35;}
+.cal-cell.today{border-color:var(--amber);}
+.cal-cell.sel{background:var(--bg-3);border-color:var(--ink-3);}
+.cal-num{font-variant-numeric:tabular-nums;line-height:1;}
+.cal-cell.today .cal-num{color:var(--amber);font-weight:700;}
+.cal-dots{display:flex;gap:2px;min-height:5px;}
+.cal-d{width:5px;height:5px;border-radius:50%;}
+
 /* ---------- sync banner ---------- */
 .sync{display:flex;align-items:center;gap:8px;font-size:12px;padding:7px 12px;border-radius:999px;
   margin-top:10px;border:1px solid var(--line-2);background:var(--bg-2);width:fit-content;transition:.3s;}
@@ -400,11 +417,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.26.0";
+const APP_VERSION = "1.27.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-22.6";
+const BUILD = "2026-07-22.7";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -4190,24 +4207,35 @@ function SearchView({ store, openEditor, back }){
    READ-ONLY by design - no create/edit/delete affordances anywhere.
    ============================================================ */
 function CalendarView({ store }){
-  const [mode,setMode]=useState("week");     // today | week
+  const [mode,setMode]=useState("week");     // today | week | month
   const [data,setData]=useState(null);
   const [err,setErr]=useState("");
   const [busy,setBusy]=useState(false);
   const [detail,setDetail]=useState(null);
+  // Month grid: which month is shown (1st of it, local midnight) and which day is expanded.
+  const [monthAnchor,setMonthAnchor]=useState(()=>{ const d=new Date(); d.setHours(0,0,0,0); d.setDate(1); return d; });
+  const [selDay,setSelDay]=useState(TODAY());
   const active = store.activeSpace || "all";
   const spaceName = active==="all" ? "All spaces" : (((store.spaces||[]).find(s=>s.id===active)||{}).name || "Space");
 
   const load = useCallback(async (refresh)=>{
     setBusy(true); setErr("");
     try{
-      const s = new Date(); s.setHours(0,0,0,0);
-      const e = new Date(s); e.setDate(e.getDate() + (mode==="today" ? 1 : 7));
+      let s, e;
+      if(mode==="month"){
+        // Fetch the whole visible grid: the Sunday on/before the 1st through 6 weeks (42 days).
+        const first = new Date(monthAnchor); first.setHours(0,0,0,0);
+        s = new Date(first); s.setDate(1 - first.getDay());
+        e = new Date(s); e.setDate(e.getDate() + 42);
+      } else {
+        s = new Date(); s.setHours(0,0,0,0);
+        e = new Date(s); e.setDate(e.getDate() + (mode==="today" ? 1 : 7));
+      }
       // Local midnight -> ISO instant, so the server's window matches the user's day.
       setData(await calEventsGet({ start:s.toISOString(), end:e.toISOString(), space:active, refresh }));
     }catch(ex){ setErr(ex.message||"Couldn't load your calendar."); setData(null); }
     finally{ setBusy(false); }
-  },[mode, active]);
+  },[mode, active, monthAnchor]);
   useEffect(()=>{ load(false); },[load]);
 
   const feeds = (data && data.feeds) || [];
@@ -4220,15 +4248,16 @@ function CalendarView({ store }){
 
   // Group into LOCAL days (all-day events are already date-only - slice the string
   // rather than parsing, which would shift them a day behind UTC).
-  const groups = [];
+  // One merged/deduped/conflict-marked list, keyed by local day. The day-list (today/
+  // week) and the month grid both read this, so they can never disagree about a day.
+  const byDay = {};
   if(data && data.events){
-    const map = {};
     markConflicts(mergeCalendarEvents(data.events)).forEach(ev=>{
       const k = ev.all_day ? String(ev.start||"").slice(0,10) : todayKey(new Date(ev.start));
-      (map[k] = map[k] || []).push(ev);
+      (byDay[k] = byDay[k] || []).push(ev);
     });
-    Object.keys(map).sort().forEach(k=>groups.push({ key:k, events:map[k] }));
   }
+  const groups = Object.keys(byDay).sort().map(k=>({ key:k, events:byDay[k] }));
   function dayLabel(k){
     if(k===TODAY()) return "Today";
     const d = new Date(k+"T00:00:00");
@@ -4287,6 +4316,46 @@ function CalendarView({ store }){
     finally{ setQBusy(false); }
   }
 
+  // One event row, shared by the day list (today/week) and the month grid's selected day.
+  function renderEventItem(ev, key){
+    return (
+      <div key={key} className="item" style={{cursor:"pointer"}} onClick={()=>setDetail(ev)}>
+        <div className="item-body">
+          <div className="item-title"><CalDots colors={ev.colors||[ev.color]}/>{ev.title||"(no title)"}</div>
+          <div className="item-meta">
+            <span className="chip">{fmtWhen(ev)}</span>
+            {ev.location && <span className="chip">{ev.location}</span>}
+            {(()=>{ const names=(ev.feedIds||[ev.feed_id]).map(feedName).filter(Boolean);
+              return names.length ? <span className="chip">{names.join(" + ")}</span> : null; })()}
+          </div>
+        </div>
+        {ev.conflict && <span className="chip red" style={{flex:"0 0 auto"}} title="Overlaps another event">Conflict</span>}
+      </div>
+    );
+  }
+  // 42 cells (6 weeks) from the Sunday on/before the 1st of the shown month.
+  function monthCells(){
+    const first = new Date(monthAnchor); first.setHours(0,0,0,0);
+    const start = new Date(first); start.setDate(1 - first.getDay());
+    const cells = [];
+    for(let i=0;i<42;i++){
+      const d = new Date(start); d.setDate(start.getDate()+i);
+      const key = todayKey(d);
+      const evs = byDay[key] || [];
+      const colors = [];
+      evs.forEach(ev => (ev.colors||[ev.color]).forEach(c => { if(c && colors.indexOf(c)<0 && colors.length<3) colors.push(c); }));
+      cells.push({ key, day:d.getDate(), inMonth:d.getMonth()===monthAnchor.getMonth(), isToday:key===TODAY(), count:evs.length, colors });
+    }
+    return cells;
+  }
+  function shiftMonth(n){
+    const d = new Date(monthAnchor); d.setDate(1); d.setMonth(d.getMonth()+n); d.setHours(0,0,0,0);
+    setMonthAnchor(d);
+    const t = new Date();
+    const isCur = d.getFullYear()===t.getFullYear() && d.getMonth()===t.getMonth();
+    setSelDay(isCur ? TODAY() : todayKey(d));   // land on today in the current month, else its 1st
+  }
+
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
@@ -4299,7 +4368,8 @@ function CalendarView({ store }){
       <div className="sortrow" style={{marginTop:12}}>
         <div className="seg">
           <button className={"seg-b"+(mode==="today"?" on":"")} onClick={()=>setMode("today")}>Today</button>
-          <button className={"seg-b"+(mode==="week"?" on":"")} onClick={()=>setMode("week")}>This week</button>
+          <button className={"seg-b"+(mode==="week"?" on":"")} onClick={()=>setMode("week")}>Week</button>
+          <button className={"seg-b"+(mode==="month"?" on":"")} onClick={()=>setMode("month")}>Month</button>
         </div>
         <span className="sortlbl">{feeds.length? (feeds.length+" calendar"+(feeds.length===1?"":"s")) : ""}</span>
       </div>
@@ -4361,30 +4431,39 @@ function CalendarView({ store }){
             onClick={()=>load(true)}>Try again</button>
         </div>}
       {!err && data===null && busy && <p className="hint" style={{marginTop:12}}>Loading your schedule...</p>}
-      {!err && data && groups.length===0 &&
+      {!err && mode!=="month" && data && groups.length===0 &&
         <Empty glyph={"—"} title="Nothing scheduled" sub={feeds.length? "No events in this window." : "Add a calendar in Settings > Calendars."}/>}
 
-      {groups.map(g=>(
+      {mode!=="month" && groups.map(g=>(
         <div key={g.key} style={{marginTop:16}}>
           <div className="eyebrow" style={{marginBottom:8}}>{dayLabel(g.key)}</div>
-          <div className="list">
-            {g.events.map((ev,i)=>(
-              <div key={g.key+"-"+i} className="item" style={{cursor:"pointer"}} onClick={()=>setDetail(ev)}>
-                <div className="item-body">
-                  <div className="item-title">
-                    <CalDots colors={ev.colors||[ev.color]}/>{ev.title||"(no title)"}
-                  </div>
-                  <div className="item-meta">
-                    <span className="chip">{fmtWhen(ev)}</span>
-                    {ev.location && <span className="chip">{ev.location}</span>}
-                    {(()=>{ const names=(ev.feedIds||[ev.feed_id]).map(feedName).filter(Boolean);
-                      return names.length ? <span className="chip">{names.join(" + ")}</span> : null; })()}
-                  </div>
-                </div>
-                {ev.conflict && <span className="chip red" style={{flex:"0 0 auto"}} title="Overlaps another event">Conflict</span>}
-              </div>))}
-          </div>
+          <div className="list">{g.events.map((ev,i)=>renderEventItem(ev, g.key+"-"+i))}</div>
         </div>))}
+
+      {mode==="month" && !err && (
+        <div style={{marginTop:14}}>
+          <div className="cal-monthhead">
+            <button className="icon-btn" aria-label="Previous month" onClick={()=>shiftMonth(-1)}>{Ic.back}</button>
+            <div className="cal-monthname">{monthAnchor.toLocaleDateString(undefined,{month:"long", year:"numeric"})}</div>
+            <button className="icon-btn" aria-label="Next month" onClick={()=>shiftMonth(1)} style={{transform:"scaleX(-1)"}}>{Ic.back}</button>
+          </div>
+          <div className="cal-dow">{["S","M","T","W","T","F","S"].map((d,i)=><span key={i}>{d}</span>)}</div>
+          <div className="cal-grid">
+            {monthCells().map(c=>(
+              <button key={c.key} className={"cal-cell"+(c.inMonth?"":" out")+(c.isToday?" today":"")+(c.key===selDay?" sel":"")}
+                onClick={()=>setSelDay(c.key)}>
+                <span className="cal-num">{c.day}</span>
+                <span className="cal-dots">{c.colors.map((col,i)=><span key={i} className="cal-d" style={{background:col}}></span>)}</span>
+              </button>
+            ))}
+          </div>
+          <div style={{marginTop:16}}>
+            <div className="eyebrow" style={{marginBottom:8}}>{dayLabel(selDay)}</div>
+            {(byDay[selDay]||[]).length===0
+              ? <p className="hint">{busy? "Loading..." : "Nothing scheduled."}</p>
+              : <div className="list">{byDay[selDay].map((ev,i)=>renderEventItem(ev, "sel-"+i))}</div>}
+          </div>
+        </div>)}
 
       {data && data.truncated && <p className="hint" style={{marginTop:12}}>Showing the first {(data.events||[]).length} events for this window.</p>}
 
@@ -4775,7 +4854,12 @@ stay in Work.
 
 ### Reading it
 
-Events show in day order with your tasks alongside. A few things it does quietly:
+Switch between **Today**, **Week**, and **Month** at the top. Month is a full grid:
+each day shows a colored dot per calendar that has something on it, today is
+highlighted, and tapping a day opens its events below. Arrows step through months.
+
+In Today and Week, events show in day order with your tasks alongside. A few things it
+does quietly:
 
 - **The same event on two calendars appears once**, with a dot for each calendar it
   came from. This works even when the two copies came from different systems and
