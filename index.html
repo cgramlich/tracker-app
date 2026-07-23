@@ -434,11 +434,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.28.0";
+const APP_VERSION = "1.29.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-22.8";
+const BUILD = "2026-07-23.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -5058,6 +5058,53 @@ const RUNDOWN_STATUS_MAP = Object.fromEntries(RUNDOWN_STATUSES.map(s=>[s.k,s]));
 function seedRundown(){ return { workstreams: [], items: [] }; }
 function rundownHasAction(it){ return !!((it.nextStep&&it.nextStep.trim()) || (it.blocker&&it.blocker.trim())); }
 
+// Parse a pasted note into { workstreams:[name], items:[{workstreamName,name,status}] }.
+// Format (forgiving): a "# Header" line starts a workstream; every other non-empty line is
+// an item in the current workstream. Status comes from an optional [tag] anywhere in the
+// line ([live] [waiting] [on ice] [won] [dropped]) or from ~strikethrough~ (=> dropped).
+// Leading bullets are stripped. Lines before any header go into "General".
+const _RD_STAT = { live:"live", waiting:"waiting", "on ice":"onice", onice:"onice", won:"won", dropped:"dropped" };
+function parseRundownPaste(text){
+  const lines = String(text||"").split(/\r?\n/);
+  const workstreams = [];   // ordered unique names
+  const items = [];
+  let cur = null;
+  for(const raw of lines){
+    const line = raw.replace(/\s+$/,"");
+    if(!line.trim()) continue;
+    const h = line.match(/^\s*#+\s+(.*)$/);
+    if(h){ const n=h[1].trim(); if(n){ cur=n; if(!workstreams.some(w=>w.toLowerCase()===n.toLowerCase())) workstreams.push(n); } continue; }
+    let name = line.replace(/^\s*[-*•◦·]\s+/, "").trim();
+    if(!name) continue;
+    let status = "";
+    // Extract the [tag] FIRST so a trailing tag can't break the ~strike~ end-anchor.
+    const tag = name.match(/\[([a-z ]+)\]/i);
+    if(tag){ const k=tag[1].trim().toLowerCase(); if(_RD_STAT[k]) status=_RD_STAT[k]; name=name.replace(/\s*\[[a-z ]+\]\s*/i," ").trim(); }
+    if(/^~.+~$/.test(name)){ if(!status) status="dropped"; name=name.replace(/^~+|~+$/g,"").trim(); }
+    if(!cur){ cur="General"; if(!workstreams.some(w=>w.toLowerCase()==="general")) workstreams.push("General"); }
+    if(name) items.push({ workstreamName:cur, name, status });
+  }
+  return { workstreams, items };
+}
+
+function RundownImportSheet({ onImport, onClose }){
+  const [text,setText]=useState("");
+  const parsed = text.trim() ? parseRundownPaste(text) : { workstreams:[], items:[] };
+  return (
+    <Sheet title="Paste a note" onClose={onClose}>
+      <p className="hint" style={{marginBottom:10}}>Paste your rundown. Lines starting with <b>#</b> become
+        workstreams; every other line becomes an item. Add <b>[won]</b>, <b>[waiting]</b>, <b>[on ice]</b>,
+        <b>[live]</b> or <b>[dropped]</b> to set a status.</p>
+      <textarea className="input" rows={10} value={text} onChange={e=>setText(e.target.value)}
+        placeholder={"# Opportunities\nTapp Engine [waiting]\nBureaus [on ice]\n..."} style={{fontFamily:"inherit"}}/>
+      {text.trim() && <p className="hint" style={{marginTop:8}}>Found {parsed.workstreams.length} workstream{parsed.workstreams.length===1?"":"s"} and {parsed.items.length} item{parsed.items.length===1?"":"s"}.</p>}
+      <button className="btn btn-primary btn-block" style={{marginTop:12}} disabled={!parsed.items.length}
+        onClick={()=>onImport(parsed)}>Import {parsed.items.length||""} item{parsed.items.length===1?"":"s"}</button>
+      <p className="hint" style={{marginTop:8,opacity:.7}}>Adds to your board (existing items are kept). Workstreams with a name you already have are reused.</p>
+    </Sheet>
+  );
+}
+
 function RundownItemSheet({ item, workstreams, onSave, onDelete, onClose }){
   const isNew = !item.id;
   const [name,setName]=useState(item.name||"");
@@ -5137,6 +5184,7 @@ function RundownView({ store, toast, toastUndo }){
   const [needsMe,setNeedsMe]=useState(false);
   const [edit,setEdit]=useState(null);      // item object being edited/created; null = closed
   const [manageWs,setManageWs]=useState(false);
+  const [importing,setImporting]=useState(false);
 
   // Seed on first open (once). store.rundown starts null.
   useEffect(()=>{ if(store.rundown===null) store.saveRundown(seedRundown()); }, []);
@@ -5171,6 +5219,29 @@ function RundownView({ store, toast, toastUndo }){
     toastUndo && toastUndo("Item removed", ()=>{ const cur=store.rundown||rundown;
       store.saveRundown({ ...cur, items:[...(cur.items||[]), removed] }); });
   }
+  function doImport(parsed){
+    const cur = store.rundown || { workstreams:[], items:[] };
+    const wsList = (cur.workstreams||[]).slice();
+    const idByName = {};
+    wsList.forEach(w=>{ idByName[w.name.toLowerCase()] = w.id; });
+    let order = wsList.reduce((m,w)=>Math.max(m, w.order||0), -1);
+    parsed.workstreams.forEach(n=>{
+      if(!idByName[n.toLowerCase()]){ const id=uid(); wsList.push({ id, name:n, order:++order }); idByName[n.toLowerCase()]=id; }
+    });
+    const itemList = (cur.items||[]).slice();
+    const orderByWs = {};
+    itemList.forEach(it=>{ orderByWs[it.workstreamId]=Math.max(orderByWs[it.workstreamId]||0, it.order||0); });
+    let added = 0;
+    parsed.items.forEach(p=>{
+      const wsId = idByName[p.workstreamName.toLowerCase()]; if(!wsId) return;
+      const o = (orderByWs[wsId]||0)+10; orderByWs[wsId]=o;
+      itemList.push({ id:uid(), workstreamId:wsId, name:p.name, status:p.status||"", nextStep:"", blocker:"", note:"", order:o, updatedAt:nowISO() });
+      added++;
+    });
+    store.saveRundown({ ...cur, workstreams:wsList, items:itemList });
+    setImporting(false);
+    toast && toast("Imported "+added+" item"+(added===1?"":"s"));
+  }
   const totalOpen = items.filter(rundownHasAction).length;
 
   return (
@@ -5178,7 +5249,10 @@ function RundownView({ store, toast, toastUndo }){
       <div className="topbar" style={{padding:0,position:"static"}}>
         <div className="eyebrow">Awareness</div>
         <div className="topbar-row"><h1 className="title">Rundown</h1>
-          <button className="btn btn-ghost btn-sm" onClick={()=>setManageWs(true)}>Workstreams</button></div>
+          <div style={{display:"flex",gap:6,flex:"0 0 auto"}}>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setImporting(true)}>Import</button>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setManageWs(true)}>Workstreams</button>
+          </div></div>
         <div className="subtle" style={{marginTop:2}}>{items.length} item{items.length===1?"":"s"} &middot; {totalOpen} need{totalOpen===1?"s":""} a next step or unblock</div>
       </div>
 
@@ -5187,6 +5261,7 @@ function RundownView({ store, toast, toastUndo }){
           <b style={{fontFamily:"Fraunces",fontSize:16}}>Set up your Rundown</b>
           <p className="hint" style={{marginTop:6}}>Your awareness board: everything in flight, grouped into workstreams, each item showing where it stands. Start with a workstream (like &ldquo;Opportunities&rdquo; or &ldquo;Deals&rdquo;), then add items to it.</p>
           <button className="btn btn-primary btn-block" style={{marginTop:10}} onClick={()=>setManageWs(true)}>Add your first workstream</button>
+          <button className="btn btn-ghost btn-block" style={{marginTop:8}} onClick={()=>setImporting(true)}>Paste from a note</button>
         </div>}
 
       {ws.length>0 && <>
@@ -5231,6 +5306,7 @@ function RundownView({ store, toast, toastUndo }){
       {edit && <RundownItemSheet item={edit} workstreams={ws} onSave={saveItem} onDelete={deleteItem} onClose={()=>setEdit(null)}/>}
       {manageWs && <RundownWorkstreamsSheet rundown={rundown} onClose={()=>setManageWs(false)}
         onSave={(nextWs)=>store.saveRundown({ ...store.rundown, workstreams: nextWs })}/>}
+      {importing && <RundownImportSheet onImport={doImport} onClose={()=>setImporting(false)}/>}
     </div>
   );
 }
