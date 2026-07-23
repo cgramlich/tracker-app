@@ -17,7 +17,7 @@
      bytes is what makes the browser install the new worker.
 */
 
-const VERSION      = "1.23.1";                  // keep in lockstep with APP_VERSION
+const VERSION      = "1.24.0";                  // keep in lockstep with APP_VERSION
 const SHELL_CACHE  = "pc-shell-" + VERSION;
 const ASSET_CACHE  = "pc-assets-" + VERSION;
 const DATA_CACHE   = "pc-data-v1";              // user collections; UN-versioned so it
@@ -26,9 +26,19 @@ const DATA_CACHE   = "pc-data-v1";              // user collections; UN-versione
 const SHELL_URL    = new URL("./", self.location).pathname;
 
 // Primed on install so even the very first offline open works.
+// Each is a Request with SRI (integrity) + CORS mode, mirroring the <script>
+// tags in index.html - a tampered CDN response fails the hash and is NOT cached
+// (Promise.allSettled below just skips it). Hashes are per-file-version;
+// recompute from the live CDN bytes on any lib upgrade.
 const CRITICAL_ASSETS = [
-  "https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js",
-  "https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js",
+  new Request("https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js", {
+    integrity: "sha384-tMH8h3BGESGckSAVGZ82T9n90ztNXxvdwvdM6UoR56cYcf+0iGXBliJ29D+wZ/x8",
+    mode: "cors",
+  }),
+  new Request("https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js", {
+    integrity: "sha384-bm7MnzvK++ykSwVJ2tynSE5TRdN+xL418osEVF2DE/L/gfWHj91J2Sphe582B1Bh",
+    mode: "cors",
+  }),
 ];
 
 self.addEventListener("install", (event) => {

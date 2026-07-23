@@ -15,9 +15,15 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"
+        integrity="sha384-tMH8h3BGESGckSAVGZ82T9n90ztNXxvdwvdM6UoR56cYcf+0iGXBliJ29D+wZ/x8"
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"
+        integrity="sha384-bm7MnzvK++ykSwVJ2tynSE5TRdN+xL418osEVF2DE/L/gfWHj91J2Sphe582B1Bh"
+        crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"
+        integrity="sha384-1qlE7MZPM2pHD/pBZCU/yB8UCP52RYL8bge/qNdfNBCWToySp8/M+JL2waXU4hjJ"
+        crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 /* ============================================================
@@ -174,6 +180,13 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
 .input,.textarea,.select{width:100%;background:var(--bg-3);border:1px solid var(--line-2);border-radius:var(--radius-sm);
   padding:12px 13px;color:var(--ink);outline:none;transition:.18s;font-size:16px;}
 .input:focus,.textarea:focus,.select:focus{border-color:var(--amber-line);background:var(--bg-4);}
+/* password field with a reveal toggle (PwInput) */
+.pw-wrap{position:relative;}
+.pw-wrap .input{padding-right:46px;}
+.pw-eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:36px;height:36px;
+  display:flex;align-items:center;justify-content:center;border-radius:50%;color:var(--ink-3);}
+.pw-eye:active{color:var(--ink);}
+.pw-eye svg{width:19px;height:19px;stroke-width:1.9;}
 .textarea{resize:vertical;min-height:84px;line-height:1.5;}
 /* drag-to-reorder: a grip column to the left of each list row */
 .drag-row{display:flex;align-items:stretch;}
@@ -387,11 +400,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.23.1";
+const APP_VERSION = "1.24.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-22.3";
+const BUILD = "2026-07-22.4";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1726,6 +1739,8 @@ function useStore(){
    ICONS (inline SVG, stroke = currentColor)
    ============================================================ */
 const Ic = {
+  eye:     <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/></svg>,
+  eyeOff:  <svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>,
   today:   <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>,
   lists:   <svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>,
   matrix:  <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18M3 12h18"/></svg>,
@@ -4830,6 +4845,24 @@ function MoreView({ store, go }){
 /* ============================================================
    FIRST-RUN SETUP
    ============================================================ */
+// Password input with a show/hide eyeball. Used by every password field
+// (sign in, sign up, reset) so the toggle behaves the same everywhere.
+function PwInput({ value, onChange, placeholder, autoComplete, onEnter }){
+  const [show,setShow]=useState(false);
+  return (
+    <div className="pw-wrap">
+      <input className="input" type={show?"text":"password"} value={value}
+        autoCapitalize="off" autoComplete={autoComplete||"current-password"}
+        onChange={e=>onChange(e.target.value)} placeholder={placeholder||""}
+        onKeyDown={e=>{ if(e.key==="Enter" && onEnter) onEnter(); }} />
+      <button type="button" className="pw-eye" onClick={()=>setShow(s=>!s)}
+        aria-label={show?"Hide password":"Show password"}>
+        {show ? Ic.eyeOff : Ic.eye}
+      </button>
+    </div>
+  );
+}
+
 function Login({ store, toast }){
   const [mode,setMode]=useState("signin");   // signin | signup
   const [email,setEmail]=useState("");
@@ -4918,9 +4951,9 @@ function Login({ store, toast }){
             onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"
             onKeyDown={e=>{ if(e.key==="Enter") submit(); }}/></div>
         <div className="field"><span className="label">Password</span>
-          <input className="input" type="password" value={password} autoCapitalize="off"
-            onChange={e=>setPassword(e.target.value)} placeholder={isSignup?"At least 6 characters":"Your password"}
-            onKeyDown={e=>{ if(e.key==="Enter") submit(); }}/></div>
+          <PwInput value={password} onChange={setPassword} onEnter={submit}
+            placeholder={isSignup?"At least 6 characters":"Your password"}
+            autoComplete={isSignup?"new-password":"current-password"}/></div>
         {err && <p className="hint danger-text">{err}</p>}
         <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={busy} onClick={submit}>
           {busy? <span className="spin"></span> : (isSignup?"Create account":"Sign in")}</button>
@@ -4967,12 +5000,11 @@ function SetPassword({ store, toast }){
       </div>
       <div className="card" style={{marginTop:20}}>
         <div className="field"><span className="label">New password</span>
-          <input className="input" type="password" value={password} autoCapitalize="off"
-            onChange={e=>setPassword(e.target.value)} placeholder="At least 6 characters"/></div>
+          <PwInput value={password} onChange={setPassword}
+            placeholder="At least 6 characters" autoComplete="new-password"/></div>
         <div className="field"><span className="label">Confirm new password</span>
-          <input className="input" type="password" value={confirm} autoCapitalize="off"
-            onChange={e=>setConfirm(e.target.value)} placeholder="Re-enter it"
-            onKeyDown={e=>{ if(e.key==="Enter") submit(); }}/></div>
+          <PwInput value={confirm} onChange={setConfirm} onEnter={submit}
+            placeholder="Re-enter it" autoComplete="new-password"/></div>
         {err && <p className="hint danger-text">{err}</p>}
         <button className="btn btn-primary btn-block" style={{marginTop:6}} disabled={busy} onClick={submit}>
           {busy? <span className="spin"></span> : "Update password"}</button>
