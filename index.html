@@ -434,11 +434,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.29.1";
+const APP_VERSION = "1.29.2";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-23.2";
+const BUILD = "2026-07-23.3";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -4931,7 +4931,7 @@ whenever you need it again. Manage them in Settings.
 ## The other tools in More
 
 - **Rundown** is an awareness board for everything in flight on a venture or project.
-  You group items into workstreams; each item shows a status (live, waiting, on ice, won,
+  You group items into areas; each item shows a status (live, waiting, on ice, won,
   dropped) and, if it has one, a next step or a blocker. Flip between the whole board and
   just what needs you, and hide the dropped ones when you want a clean view. Good when the
   point is *seeing all the moving pieces at once*, not working a checklist.
@@ -5102,17 +5102,17 @@ function RundownImportSheet({ onImport, onClose }){
   return (
     <Sheet title="Import a note" onClose={onClose}>
       <p className="hint" style={{marginBottom:10}}>Choose a text file, or paste below. Lines starting with <b>#</b> become
-        workstreams; every other line becomes an item. Add <b>[won]</b>, <b>[waiting]</b>, <b>[on ice]</b>,
+        areas; every other line becomes an item. Add <b>[won]</b>, <b>[waiting]</b>, <b>[on ice]</b>,
         <b>[live]</b> or <b>[dropped]</b> to set a status.</p>
       <input ref={fileRef} type="file" accept=".txt,.md,text/plain,text/markdown" style={{display:"none"}} onChange={onFile}/>
       <button className="btn btn-ghost btn-block" style={{marginBottom:10}} onClick={()=>fileRef.current&&fileRef.current.click()}>
         {Ic.lists} Choose a file</button>
       <textarea className="input" rows={9} value={text} onChange={e=>setText(e.target.value)}
         placeholder={"# Opportunities\nTapp Engine [waiting]\nBureaus [on ice]\n..."} style={{fontFamily:"inherit"}}/>
-      {text.trim() && <p className="hint" style={{marginTop:8}}>Found {parsed.workstreams.length} workstream{parsed.workstreams.length===1?"":"s"} and {parsed.items.length} item{parsed.items.length===1?"":"s"}.</p>}
+      {text.trim() && <p className="hint" style={{marginTop:8}}>Found {parsed.workstreams.length} area{parsed.workstreams.length===1?"":"s"} and {parsed.items.length} item{parsed.items.length===1?"":"s"}.</p>}
       <button className="btn btn-primary btn-block" style={{marginTop:12}} disabled={!parsed.items.length}
         onClick={()=>onImport(parsed)}>Import {parsed.items.length||""} item{parsed.items.length===1?"":"s"}</button>
-      <p className="hint" style={{marginTop:8,opacity:.7}}>Adds to your board (existing items are kept). Workstreams with a name you already have are reused.</p>
+      <p className="hint" style={{marginTop:8,opacity:.7}}>Adds to your board (existing items are kept). Areas with a name you already have are reused.</p>
     </Sheet>
   );
 }
@@ -5134,7 +5134,7 @@ function RundownItemSheet({ item, workstreams, onSave, onDelete, onClose }){
       <div className="field"><span className="label">What is it</span>
         <input className="input" value={name} autoFocus onChange={e=>setName(e.target.value)}
           placeholder="e.g. Tapp Engine" onKeyDown={e=>{ if(e.key==="Enter") save(); }}/></div>
-      <div className="field"><span className="label">Workstream</span>
+      <div className="field"><span className="label">Area</span>
         <select className="select" value={workstreamId} onChange={e=>setWs(e.target.value)}>
           {workstreams.map(w=><option key={w.id} value={w.id}>{w.name}</option>)}
         </select></div>
@@ -5170,7 +5170,7 @@ function RundownWorkstreamsSheet({ rundown, onSave, onClose }){
     commit([...ws, { id:uid(), name:n, order:(ws.reduce((m,w)=>Math.max(m,w.order||0),0))+1 }]); setAdding(""); }
   function del(id){ if(itemCount(id)>0) return; commit(ws.filter(w=>w.id!==id)); }
   return (
-    <Sheet title="Workstreams" onClose={onClose}>
+    <Sheet title="Areas" onClose={onClose}>
       {ws.map(w=>(
         <div key={w.id} className="row" style={{alignItems:"center",gap:8,background:"var(--bg)",marginBottom:6}}>
           <input className="input" defaultValue={w.name} key={w.id+"|"+w.name} style={{flex:1}}
@@ -5181,11 +5181,11 @@ function RundownWorkstreamsSheet({ rundown, onSave, onClose }){
         </div>
       ))}
       <div className="row" style={{marginTop:6}}>
-        <input className="input" value={adding} onChange={e=>setAdding(e.target.value)} placeholder="Add a workstream"
+        <input className="input" value={adding} onChange={e=>setAdding(e.target.value)} placeholder="Add an area"
           onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:3}}/>
         <button className="btn btn-ghost btn-sm" onClick={add} style={{flex:1}}>Add</button>
       </div>
-      <p className="hint" style={{marginTop:6}}>Tap a name to rename. A workstream with items can't be removed until it's empty.</p>
+      <p className="hint" style={{marginTop:6}}>Tap a name to rename. An area with items can't be removed until it's empty.</p>
     </Sheet>
   );
 }
@@ -5263,7 +5263,7 @@ function RundownView({ store, toast, toastUndo }){
         <div className="topbar-row"><h1 className="title">Rundown</h1>
           <div style={{display:"flex",gap:6,flex:"0 0 auto"}}>
             <button className="btn btn-ghost btn-sm" onClick={()=>setImporting(true)}>Import</button>
-            <button className="btn btn-ghost btn-sm" onClick={()=>setManageWs(true)}>Workstreams</button>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setManageWs(true)}>Areas</button>
           </div></div>
         <div className="subtle" style={{marginTop:2}}>{items.length} item{items.length===1?"":"s"} &middot; {totalOpen} need{totalOpen===1?"s":""} a next step or unblock</div>
       </div>
@@ -5271,8 +5271,8 @@ function RundownView({ store, toast, toastUndo }){
       {ws.length===0 &&
         <div className="card" style={{marginTop:16}}>
           <b style={{fontFamily:"Fraunces",fontSize:16}}>Set up your Rundown</b>
-          <p className="hint" style={{marginTop:6}}>Your awareness board: everything in flight, grouped into workstreams, each item showing where it stands. Start with a workstream (like &ldquo;Opportunities&rdquo; or &ldquo;Deals&rdquo;), then add items to it.</p>
-          <button className="btn btn-primary btn-block" style={{marginTop:10}} onClick={()=>setManageWs(true)}>Add your first workstream</button>
+          <p className="hint" style={{marginTop:6}}>Your awareness board: everything in flight, grouped into areas, each item showing where it stands. Start with an area (like &ldquo;Opportunities&rdquo; or &ldquo;Deals&rdquo;), then add items to it.</p>
+          <button className="btn btn-primary btn-block" style={{marginTop:10}} onClick={()=>setManageWs(true)}>Add your first area</button>
           <button className="btn btn-ghost btn-block" style={{marginTop:8}} onClick={()=>setImporting(true)}>Paste from a note</button>
         </div>}
 
