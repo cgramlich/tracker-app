@@ -387,11 +387,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.22.0";
+const APP_VERSION = "1.23.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-22.1";
+const BUILD = "2026-07-22.2";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1431,6 +1431,29 @@ function useStore(){
     log("AUTH","signed out (local cache + config + spaces + templates cleared)");
   }, []);
 
+  // Permanently delete this account and everything in it. Backend removes every
+  // row the user owns then the login itself; here we wipe the device + SW cache
+  // and sign out so nothing of the account lingers locally.
+  const deleteAccount = useCallback(async () => {
+    const token = await authToken();
+    if(!token) throw new Error("Please sign in again.");
+    const r = await fetch(API_BASE + "/api/account/delete", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json", "Authorization":"Bearer "+token },
+      body: JSON.stringify({ confirm:"DELETE" }),
+    });
+    if(!r.ok){
+      const t = await r.text().catch(()=>"");
+      log("ERROR","deleteAccount "+r.status+" "+t.slice(0,200));
+      throw new Error(r.status===502
+        ? "Your data was removed but the login couldn't be deleted. Contact support."
+        : "Could not delete the account. Please try again.");
+    }
+    try{ if(navigator.serviceWorker && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage("clearCache"); }catch(_){}
+    await signOut();
+    log("AUTH","account deleted");
+  }, [signOut]);
+
   // Self-serve signup. With email confirmation ON (Supabase setting), there is no
   // session until the user clicks the emailed link, so data.session is null and we
   // tell the UI to show a "check your email" state. emailRedirectTo brings the
@@ -1696,7 +1719,7 @@ function useStore(){
     return out;
   }, [data, activeSpace, spaces]);
 
-  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
+  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, deleteAccount, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
 }
 
 /* ============================================================
@@ -3105,10 +3128,25 @@ const MODELS = [
 
 function AccountPanel({ store, toast }){
   const [busy,setBusy]=useState(false);
+  const [del,setDel]=useState(false);         // delete-confirm sheet open
+  const [typed,setTyped]=useState("");        // typed email confirmation
+  const [delBusy,setDelBusy]=useState(false);
+  const [delErr,setDelErr]=useState("");
+  const email = (store.authEmail||"").trim();
+  const matches = !!email && typed.trim().toLowerCase() === email.toLowerCase();
   async function out(){
     setBusy(true);
     try{ await store.signOut(); toast("Signed out"); }
     finally{ setBusy(false); }
+  }
+  function openDelete(){ setTyped(""); setDelErr(""); setDel(true); }
+  async function doDelete(){
+    if(!matches || delBusy) return;
+    setDelBusy(true); setDelErr("");
+    try{
+      await store.deleteAccount();   // wipes server + local, then signs out -> app drops to login
+      // no toast: the component unmounts as the app returns to the sign-in screen
+    }catch(e){ setDelErr(e.message||"Could not delete the account."); setDelBusy(false); }
   }
   return (
     <div>
@@ -3117,6 +3155,30 @@ function AccountPanel({ store, toast }){
         <p className="hint">Your data syncs to your account. Sign in on another device to see the same items.</p></div>
       <button className="btn btn-ghost btn-block" style={{marginTop:6}} disabled={busy} onClick={out}>
         {busy? <span className="spin"></span> : "Sign out"}</button>
+      <button onClick={openDelete}
+        style={{display:"block",margin:"16px auto 0",background:"none",border:"none",color:"var(--red)",
+          fontSize:13,textDecoration:"underline",cursor:"pointer"}}>
+        Delete account</button>
+
+      {del && <Sheet title="Delete your account?" onClose={()=> delBusy ? null : setDel(false)}>
+        <p className="hint" style={{fontSize:14,marginBottom:6}}>
+          This permanently deletes <b>everything</b> in your account: all to-dos, projects, goals,
+          ideas, connected calendars, and settings. It cannot be undone, and your data is not
+          recoverable afterward.
+        </p>
+        <p className="hint" style={{fontSize:14,marginBottom:14}}>
+          Type your email <b style={{wordBreak:"break-all"}}>{email||"(unknown)"}</b> to confirm.
+        </p>
+        <input className="input" value={typed} onChange={e=>setTyped(e.target.value)}
+          autoCapitalize="off" autoCorrect="off" placeholder="your email"
+          onKeyDown={e=>{ if(e.key==="Enter" && matches) doDelete(); }} disabled={delBusy}/>
+        {delErr && <p className="hint danger-text" style={{marginTop:8}}>{delErr}</p>}
+        <button className="btn btn-danger btn-block" style={{marginTop:14,opacity:matches?1:.5}}
+          disabled={!matches||delBusy} onClick={doDelete}>
+          {delBusy? <span className="spin"></span> : "Delete my account forever"}</button>
+        <button className="btn btn-ghost btn-block" style={{marginTop:10}} disabled={delBusy}
+          onClick={()=>setDel(false)}>Cancel</button>
+      </Sheet>}
     </div>
   );
 }
