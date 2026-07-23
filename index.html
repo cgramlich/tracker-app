@@ -400,11 +400,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.24.0";
+const APP_VERSION = "1.25.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-22.4";
+const BUILD = "2026-07-22.5";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -489,6 +489,90 @@ function nextDue(due, recur){
   return n;
 }
 const RECUR_LABEL = { daily:"Repeats daily", weekly:"Repeats weekly", monthly:"Repeats monthly" };
+
+/* ---------- NATURAL-LANGUAGE DUE DATES (local, no AI) ----------
+   Parse a due date out of quick-add text like "call dentist thursday" or
+   "pay rent jul 5". Returns { due: "YYYY-MM-DD"|"", title: text with the date
+   phrase removed }. Deliberately LOCAL: instant, offline, and zero AI cost - a
+   quick-add should never wait on a network round-trip. Only EXPLICIT date signals
+   match (weekday names, "tomorrow", "in 3 days", "jul 5", "7/5", "the 15th"); a
+   bare number is never treated as a date, so "section 5" or "call 5 people" is
+   left alone. Time-of-day ("3pm") is intentionally left IN the title, since a
+   to-do's due is a date only - we don't silently drop information we can't store. */
+const _NL_WEEKDAYS = { sun:0,sunday:0, mon:1,monday:1, tue:2,tues:2,tuesday:2,
+  wed:3,weds:3,wednesday:3, thu:4,thur:4,thurs:4,thursday:4, fri:5,friday:5, sat:6,saturday:6 };
+const _NL_MONTHS = { jan:0,january:0, feb:1,february:1, mar:2,march:2, apr:3,april:3,
+  may:4, jun:5,june:5, jul:6,july:6, aug:7,august:7, sep:8,sept:8,september:8,
+  oct:9,october:9, nov:10,november:10, dec:11,december:11 };
+function _nlToday(){ const d = new Date(); d.setHours(0,0,0,0); return d; }
+function _nlAddDays(base, n){ const d = new Date(base); d.setDate(d.getDate()+n); return d; }
+function _nlWeekday(target, nextWeek){
+  const d = _nlToday();
+  let diff = (target - d.getDay() + 7) % 7;   // 0 = today, else days ahead
+  if(nextWeek) diff += 7;                      // "next monday" = the following week's
+  return _nlAddDays(d, diff);
+}
+// Month/day with the year rolled forward if the date has already passed this year.
+function _nlMonthDay(month, day){
+  const t = _nlToday();
+  let d = new Date(t.getFullYear(), month, day); d.setHours(0,0,0,0);
+  if(d < t) d = new Date(t.getFullYear()+1, month, day);
+  // Guard against overflow (e.g. Feb 30 -> Mar 2): reject if the month rolled.
+  if(d.getDate() !== day) return null;
+  return d;
+}
+function _nlDayOfMonth(day){
+  const t = _nlToday();
+  let d = new Date(t.getFullYear(), t.getMonth(), day); d.setHours(0,0,0,0);
+  if(d < t){ d = new Date(t.getFullYear(), t.getMonth()+1, day); }
+  if(d.getDate() !== day) return null;
+  return d;
+}
+function parseDueFromText(input){
+  const text = String(input || "");
+  const wd = "sun|sunday|mon|monday|tue|tues|tuesday|wed|weds|wednesday|thu|thur|thurs|thursday|fri|friday|sat|saturday";
+  const mo = "jan|january|feb|february|mar|march|apr|april|may|jun|june|jul|july|aug|august|sep|sept|september|oct|october|nov|november|dec|december";
+  // Optional leading preposition that should be swallowed with the phrase.
+  const P = "(?:\\bon |\\bby |\\bdue |\\bfor |@)?";
+  // Ordered: most specific first. Each resolve() returns a Date or null.
+  const pats = [
+    [ new RegExp(P+"\\bday after tomorrow\\b","i"), () => _nlAddDays(_nlToday(), 2) ],
+    [ /\b(today|tonight)\b/i,                        () => _nlToday() ],
+    [ /\b(tomorrow|tmrw|tmr)\b/i,                    () => _nlAddDays(_nlToday(), 1) ],
+    [ new RegExp(P+"\\bin (\\d{1,3}) days?\\b","i"), (m) => _nlAddDays(_nlToday(), parseInt(m[1],10)) ],
+    [ new RegExp(P+"\\bin (a|\\d{1,2}) weeks?\\b","i"), (m) => _nlAddDays(_nlToday(), 7*(m[1]==="a"?1:parseInt(m[1],10))) ],
+    [ /\bnext week\b/i,                              () => _nlAddDays(_nlToday(), 7) ],
+    [ /\b(this )?weekend\b/i,                        () => _nlWeekday(6, false) ],
+    [ new RegExp(P+"\\bnext ("+wd+")\\b","i"),       (m) => _nlWeekday(_NL_WEEKDAYS[m[1].toLowerCase()], true) ],
+    [ new RegExp(P+"\\b(this )?("+wd+")\\b","i"),    (m) => _nlWeekday(_NL_WEEKDAYS[m[2].toLowerCase()], false) ],
+    [ new RegExp(P+"\\b("+mo+")\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b","i"), (m) => _nlMonthDay(_NL_MONTHS[m[1].toLowerCase()], parseInt(m[2],10)) ],
+    [ new RegExp(P+"\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+("+mo+")\\b","i"),     (m) => _nlMonthDay(_NL_MONTHS[m[2].toLowerCase()], parseInt(m[1],10)) ],
+    [ new RegExp(P+"\\b(\\d{1,2})\\/(\\d{1,2})(?:\\/(\\d{2,4}))?\\b"), (m) => {
+        const mm = parseInt(m[1],10)-1, dd = parseInt(m[2],10);
+        if(mm<0||mm>11||dd<1||dd>31) return null;
+        if(m[3]){ let y = parseInt(m[3],10); if(y<100) y += 2000; const d=new Date(y,mm,dd); d.setHours(0,0,0,0); return d.getDate()===dd?d:null; }
+        return _nlMonthDay(mm, dd);
+      } ],
+    [ new RegExp(P+"\\bthe (\\d{1,2})(?:st|nd|rd|th)\\b","i"), (m) => _nlDayOfMonth(parseInt(m[1],10)) ],
+  ];
+  for(const [re, resolve] of pats){
+    const m = text.match(re);
+    if(!m) continue;
+    const d = resolve(m);
+    if(!d) continue;
+    const title = (text.slice(0, m.index) + " " + text.slice(m.index + m[0].length))
+      .replace(/\s{2,}/g, " ").replace(/\s+([,.;:])/g, "$1").trim()
+      .replace(/^[\s,;:-]+|[\s,;:-]+$/g, "");   // tidy dangling punctuation the removal left
+    return { due: todayKey(d), title };
+  }
+  return { due: "", title: text.trim() };
+}
+// Short, friendly due label for the quick-add confirmation ("Mon Jul 28").
+function fmtDueShort(ymd){
+  if(!ymd) return "";
+  const d = new Date(ymd + "T00:00:00");
+  return d.toLocaleDateString(undefined, { weekday:"short", month:"short", day:"numeric" });
+}
 
 /* ---------- ROUTINES ----------
    A routine is a habit (exercise, meds), NOT a task with a deadline. The difference
@@ -2427,10 +2511,14 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
   }, [results]);
 
   function quickAdd(){
-    if(!quick.trim())return;
-    store.upsert("todos",{ title:quick.trim(), status:"inbox", type:"", tags:[], subtasks:[] });
-    toast("Added to Inbox"); setQuick("");
-    log("NAV","quick-add to inbox");
+    const raw = quick.trim(); if(!raw) return;
+    // Pull a plain-language due date out of the text ("call dentist thursday"),
+    // locally - no AI, no wait. If nothing parses, `due` is "" and the title is raw.
+    const { due, title } = parseDueFromText(raw);
+    store.upsert("todos",{ title: title || raw, status:"inbox", type:"", tags:[], subtasks:[], due: due || "" });
+    toast(due ? ("Added to Inbox · due " + fmtDueShort(due)) : "Added to Inbox");
+    setQuick("");
+    log("NAV", "quick-add to inbox" + (due ? " (due parsed)" : ""));
   }
   async function runBrain(){
     if(!brain.trim())return;
@@ -2494,7 +2582,7 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
             onKeyDown={e=>e.key==="Enter"&&quickAdd()} style={{flex:3}}/>
           <button className="btn btn-primary btn-sm" onClick={quickAdd} style={{flex:1}}>Add</button>
         </div>
-        <p className="hint">Type or dictate a single item. Triage from the Inbox later.</p>
+        <p className="hint">Type or dictate a single item. Add a due date in plain words and it's picked up automatically, like "pay rent friday" or "call dentist jul 5".</p>
       </div>
       <div className="divider"></div>
       <button className="act-row" onClick={()=>{ onClose(); openEditor("todo"); }}>
@@ -4558,7 +4646,11 @@ default first.
 
 Three ways in, depending on how formed the thought is:
 
-- **The + button** for one thing you already know how to say.
+- **The + button** for one thing you already know how to say. Its quick-add box
+  reads a due date written in plain words, so "pay rent friday" or "call dentist
+  jul 5" lands in your Inbox already dated. Say it however feels natural: today,
+  tomorrow, a weekday, "next week", "in 3 days", a date. If there's no date, it
+  just files the text as-is.
 - **Organize with AI** in More, when it is a jumble. Dump everything on your mind
   in one box and it comes back sorted into to-dos, projects and ideas. Nothing is
   saved until you look it over and approve it.
