@@ -446,11 +446,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.32.0";
+const APP_VERSION = "1.32.1";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-24.1";
+const BUILD = "2026-07-24.2";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -2350,15 +2350,23 @@ function GoalEditor({ store, goal, onClose, toast }){
    TODO ROW (shared display)
    ============================================================ */
 /* Swipe a row left to reveal a Delete action. Horizontal-only, so vertical scroll and
-   the reorder handle are unaffected; a swipe suppresses the row's open-on-tap. */
+   the reorder handle are unaffected; a swipe suppresses the row's open-on-tap.
+   Pointer capture is DEFERRED until horizontal intent is established: capturing on
+   pointerdown retargets the follow-up click to .swipe-body, so on desktop a mouse
+   click never reached the row's own onClick (rows wouldn't open). Deferring keeps
+   both clean mouse clicks AND mouse-drag swipe - the latter matters because some
+   rows (locations/categories editor) have swipe as their ONLY delete affordance. */
 function SwipeRow({ onDelete, children }){
   const [dx,setDx] = useState(0);
   const st = useRef(null); const moved = useRef(false);
-  function down(e){ st.current = { x:e.clientX, y:e.clientY, base:dx }; moved.current = false; try{ e.currentTarget.setPointerCapture(e.pointerId); }catch(_){} }
+  function down(e){ st.current = { x:e.clientX, y:e.clientY, base:dx }; moved.current = false; }
   function move(e){
     if(!st.current) return;
     const ddx = e.clientX - st.current.x, ddy = e.clientY - st.current.y;
-    if(Math.abs(ddx) > 8 && Math.abs(ddx) > Math.abs(ddy)) moved.current = true;
+    if(!moved.current && Math.abs(ddx) > 8 && Math.abs(ddx) > Math.abs(ddy)){
+      moved.current = true;                                        // horizontal intent: now it's a swipe...
+      try{ e.currentTarget.setPointerCapture(e.pointerId); }catch(_){}  // ...so capture to track beyond the row
+    }
     if(moved.current){ setDx(Math.max(-96, Math.min(0, st.current.base + ddx))); }
   }
   function end(){ if(!st.current) return; st.current = null; setDx(d => { const nd = d <= -48 ? -84 : 0; if(nd===0) moved.current = false; return nd; }); }
