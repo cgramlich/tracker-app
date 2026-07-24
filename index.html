@@ -154,7 +154,13 @@ a{color:var(--amber);}
 .rd-chip.rs-waiting{color:var(--amber);border-color:var(--amber);}
 .rd-chip.rs-onice{color:var(--blue);border-color:var(--blue);}
 .rd-chip.rs-won{background:#e0a33e;color:#241a0c;border-color:#e0a33e;}
+.rd-chip.rs-done{background:var(--green);color:#12210b;border-color:var(--green);}
 .rd-chip.rs-dropped{color:var(--ink-3);border-color:var(--line-2);}
+/* status filter chips */
+.rd-filters{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.rd-fchip{font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid var(--line-2);background:transparent;color:var(--ink-2);cursor:pointer;line-height:1.2;}
+.rd-fchip.on{background:var(--amber);color:#241a0c;border-color:var(--amber);}
+.rd-fchip.rd-fall.on{background:var(--ink);color:var(--bg);border-color:var(--ink);}
 .rd-line{font-size:13px;color:var(--ink-2);margin-top:5px;line-height:1.4;}
 .rd-line b{font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.04em;margin-right:6px;}
 .rd-next{color:var(--green);}
@@ -440,11 +446,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.31.0";
+const APP_VERSION = "1.32.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-23.5";
+const BUILD = "2026-07-24.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -4938,11 +4944,15 @@ whenever you need it again. Manage them in Settings.
 
 - **Rundown** is an awareness board for everything in flight on a venture or project.
   You group items into areas; each item shows a status (live, waiting, on ice, won,
-  dropped) and, if it has one, a next step or a blocker. It has four views along the top:
-  **Overview** is the glance - your pinned north-star initiatives, recent wins, and what
+  done, dropped) and, if it has one, a next step or a blocker. It has four views along the
+  top: **Overview** is the glance - your pinned north-star initiatives, recent wins, and what
   needs you; **Board** is the full picture by area (flip between everything and just what
-  needs you, hide dropped when you want it clean); **Initiatives** tracks your big bets, with
-  the top ones pinned as north stars; **Wins** is a running log of deals won. Mark an item a
+  needs you, and tap the status chips to show only the ones you want - e.g. On ice + Done, or
+  All for everything); **Initiatives** tracks your big bets, with
+  the top ones pinned as north stars; **Wins** is a running log of deals won. The three
+  end states differ: **Won** is a deal you landed (it shows in Wins), **Done** is something
+  finished or handled (closed, no fanfare), and **Dropped** is something you walked away from
+  (kept struck-through for the record). Mark an item a
   strategic initiative (and optionally pin it) in the item editor. Good when the point is
   *seeing all the moving pieces at once*, not working a checklist. You can seed the whole
   thing by pasting a note (Import).
@@ -5060,9 +5070,14 @@ const RUNDOWN_STATUSES = [
   { k:"waiting", label:"Waiting", cls:"rs-waiting" },
   { k:"onice",   label:"On ice",  cls:"rs-onice" },
   { k:"won",     label:"Won",     cls:"rs-won" },
+  { k:"done",    label:"Done",    cls:"rs-done" },
   { k:"dropped", label:"Dropped", cls:"rs-dropped" },
 ];
 const RUNDOWN_STATUS_MAP = Object.fromEntries(RUNDOWN_STATUSES.map(s=>[s.k,s]));
+// Board status filter: every status key plus "" (= items with no status / pure awareness).
+const RD_FILTER_KEYS = RUNDOWN_STATUSES.map(s=>s.k).concat([""]);
+// Default board view = active work: hide the two archive states (done + dropped).
+const RD_DEFAULT_SHOWN = ["live","waiting","onice","won",""];
 // Start EMPTY - neutral for every user (do not seed one person's workstreams onto
 // another's board, same rule as the Spaces/category seeds). The user adds their own,
 // or the paste importer (Stage 2) creates them from a pasted note.
@@ -5077,7 +5092,7 @@ function rundownHasAction(it){ return !!((it.nextStep&&it.nextStep.trim()) || (i
 // [initiative] lifts it to the Initiatives tier and [pin] pins it as a north star.
 // An indented "next:", "blocked:" or "note:" line attaches that field to the item above it.
 // Leading bullets are stripped. Lines before any header go into "General".
-const _RD_STAT = { live:"live", waiting:"waiting", "on ice":"onice", onice:"onice", won:"won", dropped:"dropped" };
+const _RD_STAT = { live:"live", waiting:"waiting", "on ice":"onice", onice:"onice", won:"won", done:"done", dropped:"dropped" };
 function parseRundownPaste(text){
   const lines = String(text||"").split(/\r?\n/);
   const workstreams = [];   // ordered unique names
@@ -5239,7 +5254,7 @@ function RundownWorkstreamsSheet({ rundown, onSave, onClose }){
 
 function RundownView({ store, toast, toastUndo }){
   const rundown = store.rundown;
-  const [hideDropped,setHideDropped]=useState(()=>lsGet("rdHideDropped", false));
+  const [shown,setShown]=useState(()=>{ const s=lsGet("rdShown",null); return new Set(Array.isArray(s)?s.filter(k=>RD_FILTER_KEYS.includes(k)):RD_DEFAULT_SHOWN); });
   const [needsMe,setNeedsMe]=useState(false);
   const [mode,setMode]=useState(()=>lsGet("rdMode","overview"));   // overview | board | initiatives | wins
   const [edit,setEdit]=useState(null);      // item object being edited/created; null = closed
@@ -5258,12 +5273,17 @@ function RundownView({ store, toast, toastUndo }){
 
   const ws = (rundown.workstreams||[]).slice().sort((a,b)=>(a.order||0)-(b.order||0));
   const items = rundown.items||[];
-  const toggleHide=()=>{ const v=!hideDropped; setHideDropped(v); lsSet("rdHideDropped", v); };
+  const isAllShown = RD_FILTER_KEYS.every(k=>shown.has(k));
+  const persistShown=(next)=>{ setShown(next); lsSet("rdShown",[...next]); };
+  const toggleStatus=(k)=>{ const next=new Set(shown); if(next.has(k)) next.delete(k); else next.add(k);
+    if(next.size===0) RD_FILTER_KEYS.forEach(x=>next.add(x));   // never empty -> falls back to All
+    persistShown(next); };
+  const showAll=()=>persistShown(new Set(RD_FILTER_KEYS));
 
   // Tactical board = items that are NOT strategic initiatives (those get their own tier).
   function visibleFor(wsId){
     return items.filter(it=>it.workstreamId===wsId && !it.initiative)
-      .filter(it=> hideDropped ? it.status!=="dropped" : true)
+      .filter(it=> shown.has(it.status||""))
       .filter(it=> needsMe ? rundownHasAction(it) : true)
       .sort((a,b)=>(a.order||0)-(b.order||0));
   }
@@ -5396,7 +5416,13 @@ function RundownView({ store, toast, toastUndo }){
               <button className={"seg-b"+(!needsMe?" on":"")} onClick={()=>setNeedsMe(false)}>Everything</button>
               <button className={"seg-b"+(needsMe?" on":"")} onClick={()=>setNeedsMe(true)}>Needs me</button>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={toggleHide}>{hideDropped?"Show dropped":"Hide dropped"}</button>
+          </div>
+          <div className="rd-filters" style={{marginTop:10}}>
+            <button className={"rd-fchip rd-fall"+(isAllShown?" on":"")} onClick={showAll}>All</button>
+            {RUNDOWN_STATUSES.map(s=>(
+              <button key={s.k} className={"rd-fchip"+(!isAllShown&&shown.has(s.k)?" on":"")} onClick={()=>toggleStatus(s.k)}>{s.label}</button>
+            ))}
+            <button className={"rd-fchip"+(!isAllShown&&shown.has("")?" on":"")} onClick={()=>toggleStatus("")}>No status</button>
           </div>
           <button className="btn btn-primary btn-block" style={{marginTop:12}}
             onClick={()=>setEdit({ workstreamId: ws[0]&&ws[0].id })}>{Ic.plus} Add item</button>
