@@ -169,8 +169,9 @@ a{color:var(--amber);}
 .rd-star{flex:0 0 auto;display:inline-flex;align-items:center;}
 .rd-star svg{width:14px;height:14px;fill:var(--amber);stroke:var(--amber);}
 .rd-note{color:var(--ink-3);font-size:12.5px;}
-.rd-modes{margin-bottom:2px;}
-.rd-modes .seg-b{font-size:12.5px;padding:7px 4px;}
+.rd-modes{margin-bottom:2px;display:flex;max-width:100%;overflow-x:auto;scrollbar-width:none;}
+.rd-modes::-webkit-scrollbar{display:none;}
+.rd-modes .seg-b{flex:0 0 auto;white-space:nowrap;font-size:12.5px;padding:7px 11px;}
 
 /* ---------- sync banner ---------- */
 .sync{display:flex;align-items:center;gap:8px;font-size:12px;padding:7px 12px;border-radius:999px;
@@ -446,11 +447,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.32.1";
+const APP_VERSION = "1.33.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-24.2";
+const BUILD = "2026-07-24.3";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -4956,11 +4957,12 @@ whenever you need it again. Manage them in Settings.
   top: **Overview** is the glance - your pinned north-star initiatives, recent wins, and what
   needs you; **Board** is the full picture by area (flip between everything and just what
   needs you, and tap the status chips to show only the ones you want - e.g. On ice + Done, or
-  All for everything); **Initiatives** tracks your big bets, with
+  All for everything); **Pursuits** is your deal pipeline - every known deal you're trying to
+  win, grouped by where it stands; **Initiatives** tracks your big bets, with
   the top ones pinned as north stars; **Wins** is a running log of deals won. The three
   end states differ: **Won** is a deal you landed (it shows in Wins), **Done** is something
   finished or handled (closed, no fanfare), and **Dropped** is something you walked away from
-  (kept struck-through for the record). Mark an item a
+  (kept struck-through for the record). Mark an item a **pursuit** (a deal you're chasing) or a
   strategic initiative (and optionally pin it) in the item editor. Good when the point is
   *seeing all the moving pieces at once*, not working a checklist. You can seed the whole
   thing by pasting a note (Import).
@@ -5123,19 +5125,20 @@ function parseRundownPaste(text){
     }
     let name = line.replace(/^\s*[-*•◦·]\s+/, "").trim();
     if(!name) continue;
-    let status="", initiative=false, pinned=false;
+    let status="", initiative=false, pinned=false, pursuit=false;
     // Pull every [tag] out FIRST so a trailing tag can't break the ~strike~ end-anchor.
-    // Recognized: status tags, plus [initiative]/[init] and [pin]/[pinned]/[north star].
+    // Recognized: status tags, plus [initiative]/[init], [pin]/[pinned]/[north star], [pursuit].
     name = name.replace(/\[([a-z ]+)\]/ig, (m,g)=>{
       const k=g.trim().toLowerCase();
       if(_RD_STAT[k]){ status=_RD_STAT[k]; return " "; }
       if(k==="initiative"||k==="init"){ initiative=true; return " "; }
       if(k==="pin"||k==="pinned"||k==="north star"){ initiative=true; pinned=true; return " "; }
+      if(k==="pursuit"){ pursuit=true; return " "; }
       return m;   // unknown tag: leave it in the name
     }).replace(/\s{2,}/g," ").trim();
     if(/^~.+~$/.test(name)){ if(!status) status="dropped"; name=name.replace(/^~+|~+$/g,"").trim(); }
     if(!cur){ cur="General"; if(!workstreams.some(w=>w.toLowerCase()==="general")) workstreams.push("General"); }
-    if(name){ last={ workstreamName:cur, name, status, nextStep:"", blocker:"", note:"", initiative, pinned:initiative&&pinned }; items.push(last); }
+    if(name){ last={ workstreamName:cur, name, status, nextStep:"", blocker:"", note:"", initiative, pinned:initiative&&pinned, pursuit }; items.push(last); }
   }
   return { workstreams, items };
 }
@@ -5181,13 +5184,14 @@ function RundownItemSheet({ item, workstreams, onSave, onDelete, onClose }){
   const [note,setNote]=useState(item.note||"");
   const [initiative,setInitiative]=useState(!!item.initiative);
   const [pinned,setPinned]=useState(!!item.pinned);
+  const [pursuit,setPursuit]=useState(!!item.pursuit);
   function save(){
     const n=name.trim(); if(!n) return;
     onSave({ id:item.id, workstreamId, name:n, status, nextStep:nextStep.trim(), blocker:blocker.trim(),
-      note:note.trim(), initiative, pinned: initiative && pinned });
+      note:note.trim(), initiative, pinned: initiative && pinned, pursuit });
   }
   return (
-    <Sheet title={isNew?(item.initiative?"Add initiative":"Add item"):"Edit item"} onClose={onClose}>
+    <Sheet title={isNew?(item.initiative?"Add initiative":item.pursuit?"Add pursuit":"Add item"):"Edit item"} onClose={onClose}>
       <div className="field"><span className="label">What is it</span>
         <input className="input" value={name} autoFocus onChange={e=>setName(e.target.value)}
           placeholder="e.g. Tapp Engine" onKeyDown={e=>{ if(e.key==="Enter") save(); }}/></div>
@@ -5210,6 +5214,12 @@ function RundownItemSheet({ item, workstreams, onSave, onDelete, onClose }){
         <textarea className="input" rows={2} value={note} onChange={e=>setNote(e.target.value)}
           placeholder="context, numbers, links"/></div>
       <label className="row" style={{alignItems:"center",gap:10,marginTop:4,cursor:"pointer"}}>
+        <input type="checkbox" checked={pursuit} onChange={e=>setPursuit(e.target.checked)}
+          style={{width:18,height:18,flex:"0 0 auto",accentColor:"var(--green)"}}/>
+        <span style={{flex:1}}><b style={{display:"block",fontSize:14}}>Pursuit</b>
+          <span className="hint">A known deal you&rsquo;re trying to win - shows in the Pursuits pipeline</span></span>
+      </label>
+      <label className="row" style={{alignItems:"center",gap:10,marginTop:8,cursor:"pointer"}}>
         <input type="checkbox" checked={initiative} onChange={e=>setInitiative(e.target.checked)}
           style={{width:18,height:18,flex:"0 0 auto",accentColor:"var(--blue)"}}/>
         <span style={{flex:1}}><b style={{display:"block",fontSize:14}}>Strategic initiative</b>
@@ -5343,7 +5353,8 @@ function RundownView({ store, toast, toastUndo }){
       const o = (orderByWs[wsId]||0)+10; orderByWs[wsId]=o;
       itemList.push({ id:uid(), workstreamId:wsId, name:p.name, status:p.status||"",
         nextStep:p.nextStep||"", blocker:p.blocker||"", note:p.note||"",
-        initiative:!!p.initiative, pinned:!!(p.initiative&&p.pinned), order:o, updatedAt:nowISO() });
+        initiative:!!p.initiative, pinned:!!(p.initiative&&p.pinned), pursuit:!!p.pursuit,
+        order:o, updatedAt:nowISO() });
       added++;
     });
     store.saveRundown({ ...cur, workstreams:wsList, items:itemList });
@@ -5364,6 +5375,24 @@ function RundownView({ store, toast, toastUndo }){
       </>
     );
   }
+  function renderPursuits(){
+    const all = items.filter(it=>it.pursuit);
+    const groups = RUNDOWN_STATUSES.map(s=>({ s, list: all.filter(it=>(it.status||"")===s.k).sort(byUpdated) }))
+      .concat([{ s:{k:"",label:"No status"}, list: all.filter(it=>!it.status).sort(byUpdated) }]);
+    return (
+      <>
+        <button className="btn btn-primary btn-block" style={{marginTop:12}}
+          onClick={()=>setEdit({ workstreamId: ws[0]&&ws[0].id, pursuit:true })}>{Ic.plus} Add pursuit</button>
+        {all.length===0 && <p className="hint" style={{marginTop:16,opacity:.7}}>No pursuits yet. A pursuit is a known deal you&rsquo;re trying to win - open any item and check <b>Pursuit</b>, or add one here.</p>}
+        {groups.map(g=> g.list.length>0 && (
+          <div key={g.s.k||"none"}>
+            <div className="eyebrow" style={{marginTop:18,marginBottom:8}}>{g.s.label} &middot; {g.list.length}</div>
+            {g.list.map(it=>renderItemCard(it,true))}
+          </div>
+        ))}
+      </>
+    );
+  }
   function renderWins(){
     const wins = items.filter(it=>it.status==="won").sort(byUpdated);
     return wins.length===0
@@ -5372,12 +5401,15 @@ function RundownView({ store, toast, toastUndo }){
   }
   function renderOverview(){
     const heroes = items.filter(it=>it.initiative && it.pinned).sort(byUpdated);
+    const activePursuits = items.filter(it=>it.pursuit && it.status!=="won" && it.status!=="done" && it.status!=="dropped").sort(byUpdated);
     const recentWins = items.filter(it=>it.status==="won").sort(byUpdated).slice(0,5);
     const needs = items.filter(it=>!it.initiative && it.status!=="dropped" && rundownHasAction(it)).sort(byUpdated);
     return (
       <>
         <div className="eyebrow" style={{marginTop:16,marginBottom:8,display:"flex",alignItems:"center",gap:5}}><span className="rd-star">{Ic.star}</span> North stars</div>
         {heroes.length ? heroes.map(it=>renderItemCard(it,true)) : <p className="hint" style={{opacity:.7}}>Pin an initiative as a north star to see it here.</p>}
+        <div className="eyebrow" style={{marginTop:22,marginBottom:8}}>Active pursuits</div>
+        {activePursuits.length ? activePursuits.slice(0,5).map(it=>renderItemCard(it,false)) : <p className="hint" style={{opacity:.7}}>Deals you&rsquo;re trying to win show up here.</p>}
         <div className="eyebrow" style={{marginTop:22,marginBottom:8}}>Recent wins</div>
         {recentWins.length ? recentWins.map(it=>renderItemCard(it,true)) : <p className="hint" style={{opacity:.7}}>Deals you win show up here.</p>}
         <div className="eyebrow" style={{marginTop:22,marginBottom:8}}>Needs you</div>
@@ -5411,11 +5443,13 @@ function RundownView({ store, toast, toastUndo }){
         <div className="seg rd-modes" style={{marginTop:12}}>
           <button className={"seg-b"+(mode==="overview"?" on":"")} onClick={()=>goMode("overview")}>Overview</button>
           <button className={"seg-b"+(mode==="board"?" on":"")} onClick={()=>goMode("board")}>Board</button>
+          <button className={"seg-b"+(mode==="pursuits"?" on":"")} onClick={()=>goMode("pursuits")}>Pursuits</button>
           <button className={"seg-b"+(mode==="initiatives"?" on":"")} onClick={()=>goMode("initiatives")}>Initiatives</button>
           <button className={"seg-b"+(mode==="wins"?" on":"")} onClick={()=>goMode("wins")}>Wins</button>
         </div>
 
         {mode==="overview" && renderOverview()}
+        {mode==="pursuits" && renderPursuits()}
         {mode==="initiatives" && renderInitiatives()}
         {mode==="wins" && renderWins()}
         {mode==="board" && <>
