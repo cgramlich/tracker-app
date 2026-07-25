@@ -447,11 +447,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.33.0";
+const APP_VERSION = "1.34.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-24.3";
+const BUILD = "2026-07-24.4";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -976,8 +976,15 @@ Operations (use only these; omit any field you don't need):
 - {"op":"create_idea","title":"...","body":"...","type":"<category>","tags":["..."]}
 - {"op":"create_goal","name":"...","why":"...","type":"<category>","target":"YYYY-MM-DD"}
 - {"op":"update_todo","id":"<existing todo id>","status":"...","type":"...","quad":"...","due":"...","defer":"...","location":"...","projectId":"...","tags":["..."],"notes":"..."}
+- {"op":"update_idea","id":"<existing idea id>","title":"...","body":"...","type":"<category>","state":"raw|kept|developing|promoted|discarded","tags":["..."]}
 
 Rules:
+- NOTES: ideas with state "raw" are unprocessed jots the user dumped in to sort out later.
+  When asked to organize notes, read each note's body and either (a) create_todo /
+  create_project from what it contains, then update_idea that note to state "promoted", or
+  (b) if it is reference material with no action in it, update_idea to state "kept" and give
+  it a type + tags so it can be found later. Tidy a messy title with update_idea. Never
+  discard a note unless the user says to.
 - Eisenhower quadrants: q1 Do First (urgent+important), q2 Schedule (important, not urgent),
   q3 Do Quick (urgent, not important), q4 Not Right Now (neither).
 - To organize EXISTING inbox/todos, use update_todo with that item's real id (from CURRENT DATA).
@@ -1127,7 +1134,10 @@ function organizeSnapshot(store){
   const todo = (d.todos||[]).filter(t=>t.status!=="done").map(t=>({ id:t.id, title:t.title, status:t.status, type:t.type||"", quad:t.quad||"", due:t.due||"", projectId:t.projectId||"", location:t.location||"" }));
   const projects = (d.projects||[]).map(p=>({ id:p.id, name:p.name, status:p.status, type:p.type||"" }));
   const goals = (d.goals||[]).map(g=>({ id:g.id, name:g.name }));
-  const ideas = (d.ideas||[]).map(i=>({ id:i.id, title:i.title, state:i.state }));
+  // Notes carry their body (truncated) - without it the organizer can only see a title
+  // and can't actually work the jotted note. Discarded ones are noise; leave them out.
+  const ideas = (d.ideas||[]).filter(i=>i.state!=="discarded").map(i=>({ id:i.id, title:i.title,
+    state:i.state||"raw", body:(i.body||"").slice(0,400) }));
   return JSON.stringify({
     categories: knownCategories(store),
     locations: (store.cfg.locations&&store.cfg.locations.length)?store.cfg.locations:DEFAULT_LOCATIONS,
@@ -1867,6 +1877,15 @@ function useStore(){
       if(o.tags!==undefined) patch.tags = o.tags;
       d.todos[i] = { ...d.todos[i], ...patch, updatedAt:nowISO() }; updated++; touched.add("todos");
     });
+    // Lets the organizer work the raw jot pile: retitle, categorize, and move a note to
+    // "promoted" (turned into work) or "kept" (reference worth keeping).
+    (plan||[]).filter(o=>o.op==="update_idea").forEach(o=>{
+      if(!o.id) return; const i = d.ideas.findIndex(x=>x.id===o.id); if(i<0) return;
+      const patch = {};
+      ["title","body","type","state"].forEach(k=>{ if(o[k]!==undefined) patch[k]=o[k]; });
+      if(o.tags!==undefined) patch.tags = o.tags;
+      d.ideas[i] = { ...d.ideas[i], ...patch, updatedAt:nowISO() }; updated++; touched.add("ideas");
+    });
     dataRef.current = d; setData(d);
     touched.forEach(f => markDirty(f, d[f]));
     log("AI","applied plan: "+created+" created, "+updated+" updated, files="+[...touched].join(","));
@@ -2240,7 +2259,8 @@ function IdeaEditor({ store, idea, onClose, toast }){
             <option value="">Uncategorized</option>{knownCategories(store).map(c=><option key={c} value={c}>{c}</option>)}</select></div>
         <div className="field"><span className="label">State</span>
           <select className="select" value={state} onChange={e=>setState(e.target.value)}>
-            <option value="raw">Raw</option><option value="developing">Developing</option>
+            <option value="raw">Raw</option><option value="kept">Kept (reference)</option>
+            <option value="developing">Developing</option>
             <option value="promoted">Promoted</option><option value="discarded">Discarded</option></select></div>
       </div>
       <SpaceField store={store} value={space} onChange={setSpace}/>
@@ -2577,6 +2597,7 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
   const initialPending = lsGet("pendingReview", []) || [];
   const [mode,setMode]=useState(initialPending.length ? "review" : "menu"); // menu | quick | brain | photo | review | template
   const [quick,setQuick]=useState("");
+  const [jot,setJot]=useState("");           // the freeform note scratchpad
   const [tplName,setTplName]=useState("");   // optional project name when creating from a template
   const [busy,setBusy]=useState(false);
   const [brain,setBrain]=useState("");
@@ -2590,6 +2611,25 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
     if(results.length) lsSet("pendingReview", results); else lsDel("pendingReview");
   }, [results]);
 
+  // Jot: the zero-friction note. No fields, no form, no AI wait - type and it's saved.
+  // Lands in ideas as state "raw" (the unprocessed pile) so it can be organized later,
+  // by hand or by AI. First line becomes the title, the rest is the body.
+  function jotDown(){
+    const raw = jot.trim(); if(!raw) return;
+    const nl = raw.indexOf("\n");
+    let title = (nl===-1 ? raw : raw.slice(0,nl)).trim();
+    const body = nl===-1 ? "" : raw.slice(nl+1).trim();
+    // A long single-line jot still needs a readable title; keep the whole text in the body.
+    if(!body && title.length>80) return saveJot(title.slice(0,80).trim()+"...", title);
+    saveJot(title, body);
+  }
+  function saveJot(title, body){
+    store.upsert("ideas",{ title, body, type:"", state:"raw", space: editorSpace(store, null),
+      tags:[], capturedAt: nowISO(), promotedProjectId: null });
+    toast("Jotted down");
+    setJot("");
+    log("NAV","jot -> ideas (raw)");
+  }
   function quickAdd(){
     const raw = quick.trim(); if(!raw) return;
     // Pull a plain-language due date out of the text ("call dentist thursday"),
@@ -2648,6 +2688,16 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
           <span className="act-txt"><b>Resume your review</b><span>{results.length} item{results.length===1?"":"s"} waiting - nothing saved yet</span></span>
         </button>}
       <div className="field" style={{marginTop:6}}>
+        <span className="label">Jot a note</span>
+        <textarea className="textarea" value={jot} onChange={e=>setJot(e.target.value)} style={{minHeight:72}}
+          placeholder="Anything on your mind - a thought, a number, something from a call. Saved as-is, organize it later."
+          onKeyDown={e=>{ if(e.key==="Enter" && (e.metaKey||e.ctrlKey)) jotDown(); }}/>
+        <button className="btn btn-ghost btn-block" style={{marginTop:8}} disabled={!jot.trim()} onClick={jotDown}>
+          Jot it down</button>
+        <p className="hint">Saved instantly to Notes &amp; ideas - no fields, no waiting. Organize it later, yourself or with AI.</p>
+      </div>
+      <div className="divider"></div>
+      <div className="field">
         <span className="label" style={{color:"var(--amber)"}}>Brain-dump to AI</span>
         <textarea className="textarea" value={brain} onChange={e=>setBrain(e.target.value)} style={{minHeight:92}}
           placeholder="Talk or type everything on your mind - I'll turn it into todos, projects, and ideas, and help file your inbox..."/>
@@ -3187,16 +3237,29 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
    VIEW: IDEAS
    ============================================================ */
 function IdeasView({ store, openEditor, typeFilter, setTypeFilter, del }){
-  const ideas = store.data.ideas.filter(i=>(typeFilter==="all"||i.type===typeFilter)).sort(byOrder);
-  const stateChip = {raw:"",developing:"blue",promoted:"green",discarded:""};
+  // Two axes: the existing category pills, plus a state lens so the raw jot pile
+  // (things still to process) is separable from kept reference notes.
+  const [lens,setLens]=useState(()=>lsGet("ideaLens","all"));
+  const goLens=(k)=>{ setLens(k); lsSet("ideaLens",k); };
+  const all = store.data.ideas.filter(i=>(typeFilter==="all"||i.type===typeFilter)).sort(byOrder);
+  const ideas = all.filter(i=> lens==="all" ? true : (i.state||"raw")===lens);
+  const rawCount = all.filter(i=>(i.state||"raw")==="raw").length;
+  const stateChip = {raw:"",kept:"blue",developing:"blue",promoted:"green",discarded:""};
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
-        <div className="topbar-row"><div><div className="eyebrow">Incubate</div><h1 className="title">Ideas</h1></div>
+        <div className="topbar-row"><div><div className="eyebrow">Capture</div><h1 className="title">Notes &amp; ideas</h1></div>
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("idea")}>{Ic.plus} New</button></div>
+        {rawCount>0 && <div className="subtle" style={{marginTop:2}}>{rawCount} unprocessed</div>}
+      </div>
+      <div className="seg rd-modes" style={{marginTop:12}}>
+        <button className={"seg-b"+(lens==="all"?" on":"")} onClick={()=>goLens("all")}>All</button>
+        <button className={"seg-b"+(lens==="raw"?" on":"")} onClick={()=>goLens("raw")}>Unprocessed</button>
+        <button className={"seg-b"+(lens==="kept"?" on":"")} onClick={()=>goLens("kept")}>Kept</button>
+        <button className={"seg-b"+(lens==="promoted"?" on":"")} onClick={()=>goLens("promoted")}>Promoted</button>
       </div>
       <div className="pills">{["all",...knownCategories(store)].map(f=><button key={f} className={"pill"+(typeFilter===f?" on":"")} onClick={()=>setTypeFilter(f)}>{f[0].toUpperCase()+f.slice(1)}</button>)}</div>
-      {ideas.length===0? <Empty glyph={"\u273C"} title="No ideas yet" sub="Capture a raw thought and let it sit."/> :
+      {ideas.length===0? <Empty glyph={"\u273C"} title={lens==="all"?"Nothing captured yet":"Nothing here"} sub={lens==="all"?"Jot a note from the + button and organize it later.":"Try another lens."}/> :
         <DragList items={ideas} getId={i=>i.id} onReorder={(id,ids)=>reorderItem(store,"ideas",id,ids,ideas)} onDelete={i=>del("ideas",i)}
           render={i=>
           <div className="item" onClick={()=>openEditor("idea",i)} style={i.state==="discarded"?{opacity:.5}:null}>
@@ -3866,6 +3929,14 @@ function AIChat({ store, toast, back }){
       if(o.tags!==undefined) ch.push("tags");
       return ["Update", name + (ch.length?"  ("+ch.join(", ")+")":"")];
     }
+    if(o.op==="update_idea"){
+      const it = store.data.ideas.find(x=>x.id===o.id); const name = o.title || (it?it.title:("#"+o.id));
+      const ch=[]; if(o.state!==undefined) ch.push(o.state==="promoted"?"turned into work":o.state);
+      if(o.type!==undefined) ch.push(o.type);
+      if(o.title!==undefined && it && o.title!==it.title) ch.push("retitled");
+      if(o.tags!==undefined) ch.push("tags");
+      return ["Update note", name + (ch.length?"  ("+ch.join(", ")+")":"")];
+    }
     return [o.op, ""];
   }
 
@@ -4012,7 +4083,7 @@ function ExportView({ store, toast, back }){
         (d.todos||[]).filter(t=>t.projectId===p.id).forEach(t=>L.push("- ["+(t.status==="done"?"x":" ")+"] "+t.title));
       });
     }
-    if((d.ideas||[]).length){ L.push(""); L.push("## Ideas");
+    if((d.ideas||[]).length){ L.push(""); L.push("## Notes & ideas");
       (d.ideas||[]).forEach(i=>L.push("- **"+i.title+"** _("+[i.type,i.state].filter(Boolean).join(", ")+")_"+(i.body?"  \n  "+i.body.replace(/\n/g," "):"")));
     }
     if((d.goals||[]).length){ L.push(""); L.push("## Goals");
@@ -4786,18 +4857,35 @@ default first.
 
 ## Getting things out of your head
 
-Three ways in, depending on how formed the thought is:
+Four ways in, depending on how formed the thought is:
 
-- **The + button** for one thing you already know how to say. Its quick-add box
+- **Jot a note**, at the top of the **+** button, when it is not a task and you do not
+  want to think about it yet. Type anything and it saves instantly, no fields, no
+  waiting. It lands in **Notes & ideas** marked unprocessed, for you to sort out
+  later. This is the scratchpad: a thought, a number, something from a call.
+- **The + button's quick-add** for one thing you already know how to say. It
   reads a due date written in plain words, so "pay rent friday" or "call dentist
   jul 5" lands in your Inbox already dated. Say it however feels natural: today,
   tomorrow, a weekday, "next week", "in 3 days", a date. If there's no date, it
   just files the text as-is.
 - **Organize with AI** in More, when it is a jumble. Dump everything on your mind
-  in one box and it comes back sorted into to-dos, projects and ideas. Nothing is
-  saved until you look it over and approve it.
+  in one box and it comes back sorted into to-dos, projects and ideas. It can also
+  work through notes you already jotted: ask it to organize them and it reads each
+  one, turns the actionable ones into to-dos or projects, and files the rest as
+  reference. Nothing is saved until you look it over and approve it.
 - **A photo**, for a handwritten list or a whiteboard. It reads it and turns it into
   items, same approve step.
+
+### Notes & ideas
+
+Everything you jot lands here, in More. The lens across the top splits it up:
+**Unprocessed** is the raw pile you have not dealt with yet, **Kept** is reference
+you want to keep and re-read, **Promoted** is what already turned into real work.
+
+A note starts as unprocessed. Deal with it however you like: open it and promote it
+to a project, convert it to a to-do, mark it **Kept** if it is reference worth
+holding on to, or ask AI to work through the pile for you. Either way the unprocessed
+count is your to-sort number, and it goes down as you go.
 
 ---
 
@@ -5495,7 +5583,9 @@ function RundownView({ store, toast, toastUndo }){
 
 function MoreView({ store, go }){
   const rows = [
-    { k:"ideas",    ic:Ic.idea,    b:"Ideas", s:store.data.ideas.length+" captured" },
+    { k:"ideas",    ic:Ic.idea,    b:"Notes & ideas", s:(()=>{ const n=store.data.ideas.length,
+        r=store.data.ideas.filter(i=>(i.state||"raw")==="raw").length;
+        return n+" captured"+(r?" · "+r+" unprocessed":""); })() },
     { k:"rundown",  ic:Ic.review,  b:"Rundown", s:"Awareness board for everything in flight" },
     { k:"aichat",   ic:Ic.sparkle, b:"Organize with AI", s:"Brain-dump, then approve a plan" },
     { k:"matrix",   ic:Ic.matrix,  b:"Matrix", s:"Eisenhower priorities" },
