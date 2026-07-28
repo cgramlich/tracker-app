@@ -447,11 +447,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.34.0";
+const APP_VERSION = "1.34.1";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-24.4";
+const BUILD = "2026-07-28.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1387,10 +1387,17 @@ function useStore(){
     pushCfg();
   }, [pushCfg]);
 
-  // mark a file dirty + persist its cache
+  // mark a file dirty + persist its cache. dirtyRef is written SYNCHRONOUSLY,
+  // not left to the re-render: pushDirty() runs in the same tick and reads
+  // dirtyRef to pick what to push, and multi-file mutators (relabel, applyPlan,
+  // restoreLabel, ensureOrders, ensureSpaces) call this back-to-back - with the
+  // ref lagging, each call spread the same stale map and the LAST write dropped
+  // the earlier files' flags, so a file with real local changes could read clean
+  // and be rolled back by the next pull.
   const markDirty = useCallback((file, rows) => {
     lsSet("cache:"+file, rows);
-    const nd = { ...dirtyRef.current, [file]:true }; setDirty(nd); lsSet("dirty", nd);
+    const nd = { ...dirtyRef.current, [file]:true };
+    dirtyRef.current = nd; setDirty(nd); lsSet("dirty", nd);
   }, []);
 
   // push all dirty files to the backend
