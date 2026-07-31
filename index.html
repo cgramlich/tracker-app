@@ -447,11 +447,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.34.1";
+const APP_VERSION = "1.35.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-28.1";
+const BUILD = "2026-07-28.2";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -4248,6 +4248,19 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, upda
         <p className="hint" style={{marginTop:8,marginBottom:0}}>Older "Waiting" items show their age and surface in a Follow up list on Today.</p>
       </div>
 
+      <div className="set-group">Home screen badge</div>
+      <div className="card">
+        <label className="row" style={{alignItems:"center",gap:10,cursor:"pointer"}}>
+          <input type="checkbox" checked={store.cfg.badge!==false}
+            onChange={e=>store.saveCfg({ ...store.cfg, badge: e.target.checked })}
+            style={{width:18,height:18,flex:"0 0 auto",accentColor:"var(--amber)"}}/>
+          <span style={{flex:1}}>Show a count on the app icon</span>
+        </label>
+        <p className="hint" style={{marginTop:8,marginBottom:0}}>The number of items due today or overdue - the same list the Today tab shows.
+          Only appears once the app is added to your Home Screen. It updates while the app is open,
+          so it is right when you leave and can lag until you open it again.</p>
+      </div>
+
       <div className="set-group">Categories</div>
       <div className="card"><CategoriesEditor store={store} toast={toast} toastUndo={toastUndo}/></div>
 
@@ -4815,6 +4828,12 @@ data follows the account, not the device.
 Share, then "Add to Home Screen". After that it opens full screen with its own icon
 and behaves like any other app. This is the step people skip, and it is the one that
 makes the whole thing feel different.
+
+Once it is on your Home Screen the icon carries a **badge**: the count of everything
+due today or overdue, the same list the Today tab shows. Turn it off in Settings. One
+caveat worth knowing - the app can only update that number while it is open, so it is
+accurate when you leave and can lag behind until you open it again. It will not tick
+over on its own at midnight.
 
 ---
 
@@ -5892,6 +5911,32 @@ function App(){
     if(document.readyState==="complete") onLoad(); else window.addEventListener("load", onLoad);
     return ()=>window.removeEventListener("load", onLoad);
   },[]);
+
+  // --- Home screen badge (installed PWA, iOS 16.4+ / desktop Chrome) ---
+  // The count is what the Today tab shows - due today, overdue, starred, deferred-to-today -
+  // so tapping the icon lands on exactly those items and the number always reconciles.
+  // Deliberately uses allData, NOT the space-scoped view: the icon is global, so muting a
+  // Space in the UI must not hide work from the badge.
+  // HONEST LIMIT: iOS gives an installed PWA no background execution, so this can only be
+  // recomputed while the app is running. It is right when you leave and goes stale as the
+  // day turns. The visibilitychange hook below refreshes it the moment you come back.
+  const badgeOn = store.cfg.badge !== false;                     // default ON
+  const badgeCount = useMemo(
+    ()=> store.authed ? todayItems(store.allData.todos||[]).length : 0,
+    [store.allData.todos, store.authed]);
+  useEffect(()=>{
+    if(!("setAppBadge" in navigator)) return;                    // unsupported browser: no-op
+    const paint = ()=>{
+      try{
+        if(badgeOn && badgeCount>0) navigator.setAppBadge(badgeCount);
+        else navigator.clearAppBadge();
+      }catch(e){ /* Safari throws when not installed to the Home Screen - harmless */ }
+    };
+    paint();
+    const onVis = ()=>{ if(document.visibilityState==="visible") paint(); };
+    document.addEventListener("visibilitychange", onVis);
+    return ()=>document.removeEventListener("visibilitychange", onVis);
+  },[badgeCount, badgeOn]);
 
   // Apply by navigating to a build-stamped URL so iOS can't serve the cached HTML.
   // Wipe the SW caches first so the new build can never be masked by a cached shell.
