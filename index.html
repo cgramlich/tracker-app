@@ -447,11 +447,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.36.0";
+const APP_VERSION = "1.37.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-28.3";
+const BUILD = "2026-07-28.4";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -2959,6 +2959,168 @@ function RoutinesCard({ store, rows, onOpen }){
   );
 }
 
+/* ---- RADAR ------------------------------------------------------------------
+   A deliberately CONSTRAINED build. The research (DECISION-radar-visualization.md)
+   found this idea was built and abandoned twice in 2001, and that the usual failure
+   is encoding too much in polar space. So, on purpose:
+     - rings are 3 DISCRETE ordinal bands, never a continuous radius. Nobody can
+       decode "0.6r = nine days"; everyone can read "further out = further off".
+     - overdue is a COUNT in the core, not a ring. Distance from centre is unsigned
+       so the past has nowhere to go, and the centre is too cramped to separate dots
+       anyway (see the measurement note above RADAR_RINGS).
+     - angle = Space (identity, not magnitude) and blips spread evenly inside their
+       sector. Angle within a sector means NOTHING and is free for anti-overlap.
+     - blip SIZE is uniform. Area is a terrible magnitude channel and importance-by-
+       size is exactly the comparison it fails at.
+     - capped, with the remainder shown as a count, because a phone cannot host more
+       than ~20 tappable targets.
+   It is a launcher, not a workspace: every blip opens the real item.               */
+// OVERDUE IS THE CORE, NOT A RING - and this was forced by measurement, not taste.
+// Ring circumference shrinks toward the centre, so the innermost band is the most
+// cramped part of the display while holding the items that matter most. Measured: at
+// r=24 two overdue blips in one Space land 22.3 units apart, already overlapping their
+// own 23-unit tap targets, and three were hopeless. A count cannot overlap. So the
+// centre shows "N late" as one number you read instead of dots you squint at, which is
+// also what the research recommended (a distinct core plus a persistent count).
+// That leaves three real rings with 26 units of spacing - comfortably clear of a tap
+// circle - and every label on the canvas (the outermost must stay <=96 or it renders
+// off the top edge, which it did at 107).
+const RADAR_CORE_R = 27;
+const RADAR_RINGS = [
+  { k:"today", label:"Today", r:44 },
+  { k:"week",  label:"Week",  r:70 },
+  { k:"later", label:"Later", r:96 },
+];
+const RADAR_HIT_R = 11.5;             // invisible tap circle around each blip
+// How many blips a (Space, ring) cell can hold without its tap targets colliding.
+// A fixed number is wrong: a cell is an ARC, so its capacity falls with the ring's
+// radius and with the number of Spaces splitting the circle. Two blips need at least
+// 2*asin(hit/r) between them for their tap circles to clear, so the cell holds
+// usable_arc / that_angle, minus one for the padding at each end. Measured against
+// the render: 4 on the inner ring with two Spaces, 11 on the outer.
+function radarCapacity(r, spanDeg){
+  const thetaMin = 2 * Math.asin(Math.min(1, RADAR_HIT_R / r)) * 180 / Math.PI;
+  return Math.max(1, Math.floor((spanDeg - 14) / thetaMin - 1));
+}
+const RADAR_MAX = 16;                 // individually plotted blips; rest become a count
+// -1 = the overdue core (counted, not plotted); 0..2 = today / week / later.
+function radarRing(t){
+  if(isOverdue(t.due)) return -1;
+  if(isToday(t.due) || t.starredToday || (t.defer && t.defer===TODAY())) return 0;
+  if(t.due && t.due <= todayKey(snzAddDays(HEADS_UP_DAYS))) return 1;
+  return 2;
+}
+function radarBlips(todos, spaces, activeSpace){
+  const open = (todos||[]).filter(t=>t.status!=="done" && t.status!=="someday" && !isDeferredAway(t))
+    .filter(t=> t.due || t.starredToday);
+  const sectors = (activeSpace && activeSpace!=="all")
+    ? [{ id:activeSpace, name:"", color:"var(--amber)" }]
+    : (spaces||[]).filter(s=>!s.archived).slice().sort((a,b)=>(a.order||0)-(b.order||0)).slice(0,6);
+  const secs = sectors.length ? sectors : [{ id:"", name:"", color:"var(--amber)" }];
+  const idx = {}; secs.forEach((s,i)=>{ idx[s.id]=i; });
+
+  const rated = open.map(t=>({ t, ring:radarRing(t) }));
+  const late = rated.filter(b=>b.ring===-1).map(b=>b.t)
+    .sort((a,b)=> String(a.due||"").localeCompare(String(b.due||"")));   // oldest first
+  const plottable = rated.filter(b=>b.ring>=0)
+    .sort((a,b)=> (a.ring-b.ring) || String(a.t.due||"").localeCompare(String(b.t.due||"")));
+
+  // Cap per (Space, ring) cell as well as overall - a cell is a fixed arc, so it holds
+  // a fixed number of separable dots no matter how many items want in.
+  const span = 360 / secs.length;
+  const cap = RADAR_RINGS.map(ring=>radarCapacity(ring.r, span));
+  const per = {}, shown = [];
+  let hidden = 0;
+  plottable.forEach(b=>{
+    const k = (idx[b.t.space]??0)+":"+b.ring;
+    per[k] = (per[k]||0)+1;
+    if(per[k]<=cap[b.ring] && shown.length<RADAR_MAX) shown.push(b); else hidden++;
+  });
+  return { shown, hidden, late, sectors:secs };
+}
+function RadarCard({ store, onOpen, style }){
+  const { shown, hidden, late, sectors } = radarBlips(store.data.todos, store.spaces, store.activeSpace);
+  const CX=120, CY=120, SPAN=360/sectors.length;
+  const idx = {}; sectors.forEach((s,i)=>{ idx[s.id]=i; });
+  // Spread blips inside their own (sector, ring) cell so they never stack. Angle carries
+  // no meaning, so this is free - the same trick the Thoughtworks radar uses.
+  const cells = {};
+  shown.forEach(b=>{ const k=(idx[b.t.space]??0)+":"+b.ring; (cells[k]=cells[k]||[]).push(b); });
+  const placed = [];
+  Object.keys(cells).forEach(k=>{
+    const [si,ri] = k.split(":").map(Number);
+    const grp = cells[k], n = grp.length;
+    grp.forEach((b,i)=>{
+      // 14 deg of padding keeps blips off the sector dividers and the ring labels.
+      const a = (-90 + si*SPAN + 7 + (SPAN-14) * ((i+1)/(n+1))) * Math.PI/180;
+      const r = RADAR_RINGS[ri].r;
+      placed.push({ ...b, x: CX + r*Math.cos(a), y: CY + r*Math.sin(a),
+        color: (sectors[si]&&sectors[si].color) || "var(--amber)" });
+    });
+  });
+  return (
+    <div className="card" style={{marginTop:16, ...(style||{})}}>
+      <div className="topbar-row" style={{alignItems:"center",marginBottom:4}}>
+        <div className="label">Radar</div>
+        {hidden>0 && <span className="hint" style={{marginLeft:"auto"}}>+{hidden} more</span>}
+      </div>
+      {(placed.length===0 && !late.length)
+        ? <p className="hint" style={{margin:"10px 0 2px"}}>Nothing dated on the radar. Give something a due date and it shows up here.</p>
+        : <svg viewBox="0 0 240 240" style={{width:"100%",maxWidth:340,display:"block",margin:"4px auto 0"}} role="img"
+            aria-label={"Radar. "+(late.length?late.length+" overdue at the centre. ":"No overdue items. ")
+              +placed.length+" upcoming items on rings by how soon they are due."}>
+            {RADAR_RINGS.map(ring=>(
+              <circle key={ring.k} cx={CX} cy={CY} r={ring.r+13} fill="none"
+                stroke="var(--line-2)" strokeWidth="0.75" opacity="0.55"/>
+            ))}
+            {sectors.length>1 && sectors.map((s,i)=>{
+              // Start the divider outside the core so it never strikes through the count.
+              const a=(-90+i*SPAN)*Math.PI/180, R0=RADAR_CORE_R+3, R=RADAR_RINGS[2].r+13;
+              return <line key={s.id||i} x1={CX+R0*Math.cos(a)} y1={CY+R0*Math.sin(a)}
+                x2={CX+R*Math.cos(a)} y2={CY+R*Math.sin(a)}
+                stroke="var(--line-2)" strokeWidth="0.75" opacity="0.5"/>;
+            })}
+            {RADAR_RINGS.map(ring=>(
+              <text key={ring.k} x={CX} y={CY-ring.r-16} textAnchor="middle"
+                fontSize="7.5" fill="var(--ink-3)" letterSpacing="0.06em">{ring.label.toUpperCase()}</text>
+            ))}
+            {/* The core: overdue as a number, because dots this close cannot be told
+                apart or reliably tapped. Tapping opens the oldest one. */}
+            <g style={{cursor: late.length?"pointer":"default"}}
+               onClick={()=>{ if(late.length && onOpen) onOpen(late[0]); }}>
+              <circle cx={CX} cy={CY} r={RADAR_CORE_R}
+                fill={late.length?"var(--red)":"var(--bg-2)"}
+                stroke={late.length?"var(--red)":"var(--line-2)"} strokeWidth="1"
+                opacity={late.length?0.9:0.55}/>
+              {late.length>0 && <>
+                <text x={CX} y={CY-1} textAnchor="middle" fontSize="17" fontWeight="700"
+                  fill="#fff">{late.length}</text>
+                <text x={CX} y={CY+11} textAnchor="middle" fontSize="7" letterSpacing="0.08em"
+                  fill="#fff" opacity="0.85">LATE</text>
+                <title>{late.length===1 ? "1 overdue item" : late.length+" overdue items"}</title>
+              </>}
+            </g>
+            {/* A visible dot this small is an unhittable target, so each one carries an
+                invisible circle sized to the tightest gap the layout allows. Even so a
+                blip tops out near 33px, under Apple's 44 - which is the honest ceiling
+                for 16 targets on a phone, and why tapping is a shortcut and the list
+                underneath stays the real way in. */}
+            {placed.map(b=>(
+              <g key={b.t.id} style={{cursor:"pointer"}} onClick={()=>onOpen&&onOpen(b.t)}>
+                <circle cx={b.x} cy={b.y} r="11.5" fill="transparent"/>
+                <circle cx={b.x} cy={b.y} r="6" fill={b.color}
+                  stroke="var(--bg-3)" strokeWidth="1.5" pointerEvents="none"/>
+                <title>{b.t.title}</title>
+              </g>
+            ))}
+          </svg>}
+      <p className="hint" style={{marginTop:8,marginBottom:0}}>
+        Overdue sits in the middle; rings move out by how soon something is due.
+        {sectors.length>1 ? " Each wedge is a Space." : ""} Tap anything to open it.</p>
+    </div>
+  );
+}
+
 // The glance. One sentence, read in two seconds, before you decide to open anything.
 function HeadsUpCard({ store, style }){
   const h = headsUp(store.data.todos, store.spaces, store.activeSpace);
@@ -4795,6 +4957,7 @@ function DashboardView({ store, onOpen, openEditor }){
       </div>
 
       <HeadsUpCard store={store} style={{marginTop:16}}/>
+      <RadarCard store={store} onOpen={onOpen}/>
 
       <div className="card" style={{marginTop:16,borderColor:"var(--amber-line)"}}>
         <div className="topbar-row" style={{alignItems:"center"}}>
@@ -4914,7 +5077,11 @@ There is a bar across the bottom with six spots and a **+** button in the middle
 - **Today** is what you should be looking at right now. Due today, overdue, and
   anything you flagged.
 - **To-Dos** is the full list, grouped by status.
-- **Dashboard** is the roll-up: what needs attention across everything.
+- **Dashboard** is the roll-up: what needs attention across everything. It opens with
+  **Heads up**, one sentence on what is about to hit you, then the **Radar**: overdue
+  as a count in the middle, and everything dated on rings moving out by how soon it is
+  due. Each wedge is a Space, and tapping anything opens it. The radar is a glance, not
+  a list, so it caps how much it draws and shows the remainder as a count.
 - **+** is the quick add, from anywhere.
 - **Calendar** is your real schedule, read only.
 - **Projects** holds the bigger efforts.
