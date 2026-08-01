@@ -25,7 +25,8 @@ PWA's self-update - so "Tracker" in these docs = the codebase/working title.
 - Repo: `cgramlich/tracker-app` (public). GitHub username is `cgramlich`
   (no "j" - easy to mistype as the email handle cjgramlich).
 - Live URL: https://cgramlich.github.io/tracker-app/ (GitHub Pages from `main`).
-  `welcome.html` = public teaser page; `privacy.html` present, terms still missing.
+  `welcome.html` = public teaser page; `privacy.html` + `terms.html` both present and
+  linked from the welcome footer, the sign-up screen, the More hub, and Settings.
 - Deploy: push to `main` -> Pages redeploys.
 - The app is one file: `index.html`. Deliverable file name is exactly `index.html`.
 - Version: source of truth = `APP_VERSION` (friendly label) + `BUILD`

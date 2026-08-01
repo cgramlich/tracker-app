@@ -24,7 +24,17 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"
         integrity="sha384-1qlE7MZPM2pHD/pBZCU/yB8UCP52RYL8bge/qNdfNBCWToySp8/M+JL2waXU4hjJ"
         crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- supabase-js PINNED to 2.111.0 (was the floating "@2" tag, which cannot carry SRI).
+     dist/umd/supabase.js is the STATIC published file - jsdelivr's "@2" alias serves a
+     dynamically generated .min.js whose only difference is a 292-byte jsdelivr comment
+     header, and jsdelivr explicitly warns against putting SRI on those generated files.
+     Executable bytes are identical; this defines the global `supabase`.
+     ON UPGRADE: bump the version in the URL AND recompute the sha384 from the LIVE bytes
+     of the new URL (python: base64(hashlib.sha384(bytes).digest())). A stale hash blocks
+     the auth library outright and nobody can sign in. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.111.0/dist/umd/supabase.js"
+        integrity="sha384-faMlYZUtkJj+Sh6Bmu/L0GzPcraRWN6CW+9RH3GUrK/Z0WS9tgaNNt0tHiLxsbdb"
+        crossorigin="anonymous"></script>
 <style>
 /* ============================================================
    THEME TOKENS - dark espresso editorial, golden amber accent
@@ -488,11 +498,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.39.0";
+const APP_VERSION = "1.40.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-28.6";
+const BUILD = "2026-08-01.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -4592,6 +4602,11 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, upda
         {updMsg && <span className="hint" style={{margin:0}}>{updMsg}</span>}
       </div>
       <p className="hint" style={{textAlign:"center",marginTop:6}}>{(store.cfg.appName||"Priority Captain")} v{APP_VERSION}</p>
+      <p className="hint" style={{textAlign:"center",marginTop:6,fontSize:12.5}}>
+        <a href="privacy.html" target="_blank" rel="noopener" style={{color:"var(--ink-3)",textDecoration:"underline"}}>Privacy</a>
+        {"  ·  "}
+        <a href="terms.html" target="_blank" rel="noopener" style={{color:"var(--ink-3)",textDecoration:"underline"}}>Terms</a>
+      </p>
 
       <button className="btn btn-danger btn-block" style={{marginTop:22}} onClick={()=>setConfirmClear(true)}>Clear this device & sign out</button>
       <p className="hint" style={{textAlign:"center",marginTop:8}}>Clears this device's cache and sign-in. Your data stays safe on the server and re-syncs when you sign back in.</p>
@@ -5928,6 +5943,12 @@ function RundownView({ store, toast, toastUndo }){
 
 function MoreView({ store, go }){
   const rows = [
+    // Calendar + Projects sit at the top: they came out of the bottom nav (2026-08-01)
+    // and are still frequently used, so they stay one tap from here.
+    { k:"calendar", ic:Ic.schedule, b:"Calendar", s:"What's already on your schedule" },
+    { k:"projects", ic:Ic.project,  b:"Projects",
+      s:(()=>{ const a=store.data.projects.filter(p=>p.status==="active").length;
+        return a+" active"; })() },
     { k:"ideas",    ic:Ic.idea,    b:"Notes & ideas", s:(()=>{ const n=store.data.ideas.length,
         r=store.data.ideas.filter(i=>(i.state||"raw")==="raw").length;
         return n+" captured"+(r?" · "+r+" unprocessed":""); })() },
@@ -6330,7 +6351,10 @@ function App(){
   function navTo(t){ setTab(t); setSub(null); }
   // Promote Ideas/Goals/Search to nav items: clear the main tab so only the sub lights up.
   function goNav(s){ setTab(""); setSub(s); }
-  const NAV_SUBS = ["dashboard","calendar","projects","search"]; // not "owned" by the More tab highlight
+  // Subs that are NOT "owned" by the More tab highlight: Dashboard has its own nav
+  // button, and Search is launched from the top bar. Calendar and Projects moved into
+  // the More hub (2026-08-01), so they deliberately light the More tab.
+  const NAV_SUBS = ["dashboard","search"];
   const moreActive = tab==="more" || (sub && !NAV_SUBS.includes(sub));
 
   const syncLabel = store.sync==="idle"?"Synced":store.sync==="busy"?(store.syncMsg||"Working"):store.sync==="pending"?"Queued offline":store.syncMsg||"Sync error";
@@ -6362,14 +6386,13 @@ function App(){
         </div>}
       {main}
 
-      {/* bottom nav - 5 items + center capture FAB */}
+      {/* bottom nav - 4 items + center capture FAB (portfolio nav standard, 2026-07-24).
+          Calendar and Projects live at the top of the More hub, not down here. */}
       <div className="nav">
         <button className={"nav-btn"+(tab==="today"&&!sub?" on":"")} onClick={()=>navTo("today")}><NavIc d={Ic.today}/>Today</button>
         <button className={"nav-btn"+(tab==="lists"&&!sub?" on":"")} onClick={()=>navTo("lists")}><NavIc d={Ic.lists}/>To-Dos</button>
-        <button className={"nav-btn"+(sub==="dashboard"?" on":"")} onClick={()=>goNav("dashboard")}><NavIc d={Ic.dashboard}/>Dashboard</button>
         <button className="nav-btn nav-fab" onClick={()=>setCapture(true)}><span className="fab">{Ic.plus}</span></button>
-        <button className={"nav-btn"+(sub==="calendar"?" on":"")} onClick={()=>goNav("calendar")}><NavIc d={Ic.schedule}/>Calendar</button>
-        <button className={"nav-btn"+(sub==="projects"?" on":"")} onClick={()=>goNav("projects")}><NavIc d={Ic.project}/>Projects</button>
+        <button className={"nav-btn"+(sub==="dashboard"?" on":"")} onClick={()=>goNav("dashboard")}><NavIc d={Ic.dashboard}/>Dashboard</button>
         <button className={"nav-btn"+(moreActive?" on":"")} onClick={()=>navTo("more")}><NavIc d={Ic.more}/>More</button>
       </div>
 
