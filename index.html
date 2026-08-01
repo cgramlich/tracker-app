@@ -498,11 +498,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.40.0";
+const APP_VERSION = "1.40.1";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-08-01.1";
+const BUILD = "2026-08-01.2";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1651,7 +1651,7 @@ function useStore(){
     // CLEAN from the server. Prevents one account's stale/dirty data from being shown
     // to - or pushed under - a different account on the same device (migration footgun).
     FILES.forEach(f => lsDel("cache:"+f));
-    ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty","spaces","defaultSpace","spacesSeeded","templates"].forEach(k => lsDel(k));
+    ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty","spaces","defaultSpace","spacesSeeded","templates","rundown"].forEach(k => lsDel(k));
     const empty = {}; FILES.forEach(f => empty[f] = []);
     dataRef.current = empty; setData(empty);
     dirtyRef.current = {}; setDirty({});
@@ -1663,7 +1663,11 @@ function useStore(){
     defaultSpaceRef.current = DEFAULT_SPACE; setDefaultSpace(DEFAULT_SPACE);
     spacesSeededRef.current = false;
     templatesRef.current = []; setTemplates([]);
-    log("AUTH","signed out (local cache + config + spaces + templates cleared)");
+    // The Rundown lives in meta like templates do, and buildMeta pushes whatever is in
+    // rundownRef. Leaving it behind meant the previous account's board stayed on screen
+    // AND could be written into the next account's meta on the first sync.
+    rundownRef.current = null; setRundown(null);
+    log("AUTH","signed out (local cache + config + spaces + templates + rundown cleared)");
   }, []);
 
   // Permanently delete this account and everything in it. Backend removes every
