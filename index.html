@@ -189,6 +189,20 @@ a{color:var(--amber);}
 .radar .rdr-core-n{fill:#fff;font-size:19px;font-weight:700;letter-spacing:0;}
 .radar .rdr-core-l{fill:#fff;font-size:6.5px;letter-spacing:.12em;opacity:.85;font-weight:600;}
 .radar .rdr-sweep{fill:none;stroke:var(--amber);stroke-width:.75;opacity:.13;}
+.radar .rdr-halo{fill:none;stroke:var(--ink);stroke-width:1.5;opacity:.85;}
+/* Tapping a blip identifies it HERE rather than yanking you off the dashboard. The strip
+   always sits in the same place - a tooltip pinned to the dot would overflow the circle
+   the moment a title ran long - and the strip itself is what opens the item. */
+.rd-sel{display:flex;align-items:center;gap:9px;width:100%;text-align:left;margin-top:10px;
+  padding:9px 11px;border-radius:var(--radius-sm);border:1px solid var(--line-2);
+  background:var(--bg-2);color:var(--ink);}
+.rd-sel:active{transform:scale(.995);}
+.rd-sel-t{flex:1;min-width:0;font-size:13.5px;line-height:1.3;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;}
+.rd-sel-m{flex:0 0 auto;font-size:10.5px;font-weight:700;letter-spacing:.04em;
+  text-transform:uppercase;color:var(--ink-3);}
+.rd-sel-m.late{color:var(--red);}
+.rd-sel-go{flex:0 0 auto;font-size:11px;color:var(--ink-3);opacity:.8;}
 .rd-toggles{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
 .rd-tog{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;
   padding:4px 11px;border-radius:999px;border:1px solid var(--line-2);background:transparent;
@@ -474,11 +488,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.38.0";
+const APP_VERSION = "1.39.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-07-28.5";
+const BUILD = "2026-07-28.6";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -3024,6 +3038,14 @@ function radarCapacity(r){
   const thetaMin = 2 * Math.asin(Math.min(1, RADAR_HIT_R / r)) * 180 / Math.PI;
   return Math.max(1, Math.floor((360 - RADAR_GAP) / thetaMin));
 }
+// The condensed "when" for the selection strip - a word where possible, a date otherwise.
+function radarWhen(t){
+  if(isOverdue(t.due)) return "Overdue";
+  if(isToday(t.due)) return "Today";
+  if(t.due === todayKey(snzAddDays(1))) return "Tomorrow";
+  if(t.due) return fmtDate(t.due);
+  return t.starredToday ? "Starred" : "";
+}
 // -1 = the overdue core (counted, not plotted); 0..2 = today / week / later.
 function radarRing(t){
   if(isOverdue(t.due)) return -1;
@@ -3070,6 +3092,15 @@ function RadarCard({ store, onOpen, style }){
   const { shown, hidden, late } = radarBlips(store.data.todos, off);
   const CX=120, CY=120;
 
+  // Tapping a dot IDENTIFIES it; the strip underneath is what opens it. A dot carries no
+  // text, so jumping straight into the editor meant leaving the dashboard just to find out
+  // which one you hit. Held by id, so an item that gets completed or filtered away simply
+  // drops the selection instead of stranding a stale label.
+  const [selId,setSelId] = useState(null);
+  const sel = selId ? (shown.find(b=>b.t.id===selId) || late.find(t=>t.id===selId)) : null;
+  const selTodo = sel ? (sel.t || sel) : null;
+  const pick = (t)=> setSelId(cur => cur===t.id ? null : t.id);
+
   // Spread each ring's blips evenly around the WHOLE circle - Spaces intermingle, they
   // are not penned into wedges. RADAR_GAP of arc is left clear at 12 o'clock so the ring
   // labels always have air, and each ring carries its own rotation so the rings never
@@ -3091,7 +3122,6 @@ function RadarCard({ store, onOpen, style }){
         color: colorOf[b.t.space] || "var(--amber)" });
     });
   });
-  const nOn = spaceList.length - off.size;
   return (
     <div className="card" style={{marginTop:16, ...(style||{})}}>
       <div className="topbar-row" style={{alignItems:"center",marginBottom:2}}>
@@ -3114,9 +3144,12 @@ function RadarCard({ store, onOpen, style }){
                 x={CX} y={CY+ring.r+15} textAnchor="middle">{ring.label.toUpperCase()}</text>
             ))}
             {/* The core: overdue as a number. Dots that close cannot be told apart or
-                reliably tapped, and a count can never overlap itself. Opens the oldest. */}
+                reliably tapped, and a count can never overlap itself. Tapping steps
+                through the late items one at a time in the strip below. */}
             <g style={{cursor: late.length?"pointer":"default"}}
-               onClick={()=>{ if(late.length && onOpen) onOpen(late[0]); }}>
+               onClick={()=>{ if(!late.length) return;
+                 const i = late.findIndex(t=>t.id===selId);
+                 setSelId(late[(i+1) % late.length].id); }}>
               <circle cx={CX} cy={CY} r={RADAR_CORE_R}
                 fill={late.length?"var(--red)":"transparent"}
                 stroke={late.length?"var(--red)":"var(--line-2)"} strokeWidth="1"
@@ -3130,14 +3163,22 @@ function RadarCard({ store, onOpen, style }){
             {/* Each dot carries an invisible tap circle far larger than the dot itself -
                 a 12-unit dot is not a hittable target on a phone. */}
             {placed.map(b=>(
-              <g key={b.t.id} style={{cursor:"pointer"}} onClick={()=>onOpen&&onOpen(b.t)}>
+              <g key={b.t.id} style={{cursor:"pointer"}} onClick={()=>pick(b.t)}>
                 <circle className="rdr-hit" cx={b.x} cy={b.y} r={RADAR_HIT_R}/>
+                {selId===b.t.id && <circle className="rdr-halo" cx={b.x} cy={b.y} r="10"/>}
                 <circle className="rdr-blip" cx={b.x} cy={b.y} r="6" fill={b.color}
                   pointerEvents="none"/>
                 <title>{b.t.title}</title>
               </g>
             ))}
           </svg>}
+      {selTodo &&
+        <button className="rd-sel" onClick={()=>onOpen&&onOpen(selTodo)}>
+          <span className="rd-dot" style={{background: colorOf[selTodo.space] || "var(--amber)"}}/>
+          <span className="rd-sel-t">{selTodo.title}</span>
+          <span className={"rd-sel-m"+(isOverdue(selTodo.due)?" late":"")}>{radarWhen(selTodo)}</span>
+          <span className="rd-sel-go">Open</span>
+        </button>}
       {spaceList.length>1 &&
         <div className="rd-toggles">
           {spaceList.map(s=>{
@@ -3150,9 +3191,11 @@ function RadarCard({ store, onOpen, style }){
             );
           })}
         </div>}
+      {/* Four lines of instructions on a glance tile defeats the point - the chips and the
+          colours explain themselves after one tap. */}
       <p className="hint" style={{marginTop:8,marginBottom:0}}>
-        Overdue sits in the middle; rings move out by how soon something is due.
-        {spaceList.length>1 ? " Colour is the Space"+(nOn<spaceList.length?" - tap to show or hide":"")+"." : ""} Tap a dot to open it.</p>
+        Overdue in the middle, then out by how soon. Tap a dot to see what it is
+        {late.length>1?", or the centre to step through what's late":""}.</p>
     </div>
   );
 }
@@ -5116,8 +5159,11 @@ There is a bar across the bottom with six spots and a **+** button in the middle
 - **Dashboard** is the roll-up: what needs attention across everything. It opens with
   **Heads up**, one sentence on what is about to hit you, then the **Radar**: overdue
   as a count in the middle, and everything dated on rings moving out by how soon it is
-  due. Each wedge is a Space, and tapping anything opens it. The radar is a glance, not
-  a list, so it caps how much it draws and shows the remainder as a count.
+  due. Colour is the Space, and the chips underneath show or hide one without changing
+  the Space you are in. Tapping a dot names it just below the circle rather than taking
+  you away; tap that strip to actually open the item. Tapping the middle steps through
+  what is overdue. The radar is a glance, not a list, so it caps how much it draws and
+  shows the remainder as a count.
 - **+** is the quick add, from anywhere.
 - **Calendar** is your real schedule, read only.
 - **Projects** holds the bigger efforts.
