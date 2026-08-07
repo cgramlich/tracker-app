@@ -6,7 +6,7 @@ Auto-read by Claude Code at session start. Keep it current.
 with the code in the SAME session you change code. Don't hardcode the version here
 (point to `APP_VERSION`/`BUILD` + the backend `/health`); update the doc body when the
 architecture changes; write a DATED entry in the app's Log folder for EVERY work session:
-`C:\Users\cjgra\Dropbox\My AI\CG Apps\ToDos Tasks Projects Ideas\ToDos Tasks App Log\`.
+`C:\Users\cjgra\Dropbox\My AI\CG Apps\PriorityCaptain\ToDos Tasks App Log\`.
 Rule: `CG Apps\Forever Apps\forever-apps-starter-spec.md` section 5.
 
 ## What this is
@@ -55,7 +55,9 @@ PWA's self-update - so "Tracker" in these docs = the codebase/working title.
 - Environment: Windows 11. Keep console/log output ASCII-safe (no emoji).
 
 ## Reference docs (read for full context; keep in sync)
-- Architecture: `CG Apps\ToDos Tasks Projects Ideas\tracker-architecture.md`
-- Scope docs (Spaces, calendar view, notes): `CG Apps\ToDos Tasks Projects Ideas\`
+- Architecture: `CG Apps\PriorityCaptain\tracker-architecture.md`
+- Scope docs (Spaces, calendar view, notes) + the cold-start HANDOFF and
+  `DECISION-radar-visualization.md`: `CG Apps\PriorityCaptain\`
+  (folder was `ToDos Tasks Projects Ideas\` until mid-2026; older docs cite the old name)
 - Forever Apps starter spec: `CG Apps\Forever Apps\forever-apps-starter-spec.md`
 - Backend CLAUDE.md: `C:\Users\cjgra\tracker-backend\CLAUDE.md`
