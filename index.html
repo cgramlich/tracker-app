@@ -497,6 +497,39 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
    value box ignores its 84px basis, renders ~212px, and crushes the label. */
 .option .opt-value{flex:0 0 84px;min-width:0;border:0;background:transparent;font-weight:700;color:var(--ink-2);text-align:right;padding:2px 0;}
 .option .opt-x{flex:0 0 auto;color:var(--ink-3);font-size:18px;line-height:1;}
+/* Event link: the chosen calendar event, and the picker list. */
+.evlink{display:flex;gap:8px;align-items:center;padding:9px 10px;border:1px solid var(--line-2);border-radius:10px;background:var(--bg-2);}
+.evlink.stale{opacity:.7;border-style:dashed;}
+.evlink-body{flex:1;min-width:0;}
+.evlink-title{font-size:14px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.evlink-when{font-size:12px;color:var(--ink-3);margin-top:2px;}
+.evpick{margin-top:8px;max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;
+  border:1px solid var(--line-2);border-radius:10px;padding:8px;}
+/* display:block on the two inner spans is load-bearing. They are NOT flex items
+   (their parent is), so left inline they render side by side and text-overflow
+   is ignored entirely - a long event title then wraps and the row grows.
+   min-height keeps every row a consistent tap target near Apple's 44pt. */
+.evrow{display:flex;gap:8px;align-items:center;text-align:left;width:100%;min-height:44px;padding:6px 8px;border-radius:8px;background:transparent;}
+.evrow:active{background:var(--bg-4);}
+.evrow-dot{width:9px;height:9px;border-radius:999px;flex:0 0 auto;}
+.evrow-body{flex:1;min-width:0;display:block;}
+.evrow-title{display:block;font-size:13.5px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.evrow-when{display:block;font-size:11.5px;color:var(--ink-3);}
+/* Dashboard "Coming up" */
+.cu-row{display:flex;gap:10px;align-items:baseline;padding:7px 0;border-top:1px solid var(--line);}
+.cu-row:first-of-type{border-top:0;}
+.cu-name{flex:1;min-width:0;font-size:14px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cu-when{flex:0 0 auto;font-size:12px;color:var(--ink-3);}
+.cu-open{flex:0 0 auto;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;
+  background:var(--amber-dim);color:var(--amber-2);border:1px solid var(--amber-line);}
+/* Habits */
+.hb-streak{flex:0 0 auto;font-size:11px;font-weight:700;color:var(--green);}
+.hb-big{font-family:Fraunces;font-size:26px;line-height:1.1;color:var(--ink);}
+.hb-of{font-size:15px;color:var(--ink-3);}
+.hb-strip{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;}
+.hb-dot{width:14px;height:14px;border-radius:4px;background:var(--bg-4);border:1px solid var(--line-2);}
+.hb-dot.on{background:var(--green);border-color:var(--green);}
+.hb-dot.off{opacity:.3;}
 .rd-decide{color:var(--amber);}
 </style>
 </head>
@@ -514,11 +547,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.41.0";
+const APP_VERSION = "1.44.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-08-07.1";
+const BUILD = "2026-08-09.3";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -609,6 +642,116 @@ function nextDue(due, recur){
 }
 const RECUR_LABEL = { daily:"Repeats daily", weekdays:"Repeats every weekday", weekends:"Repeats every weekend", weekly:"Repeats weekly", monthly:"Repeats monthly" };
 
+/* ── HABITS ──────────────────────────────────────────────────────────────────
+   A task is done once and gone. A habit is never done - it recurs forever, and
+   the only interesting question about it is whether you are actually doing it.
+
+   Habits used to be todos carrying `routine:true` + `recur`. That forced three
+   separate special-cases (TodayView pulled them into their own card, headsUp had
+   to stop counting them as tasks, the badge counted them so it never reached
+   zero) and it quietly grew the todos collection by ~365 done rows per habit per
+   year, because completeTodo marks the occurrence done and clones a fresh one.
+
+   So a habit is now a definition plus a log of the dates you did it. Ticking one
+   appends a date. Nothing spawns, nothing accumulates. A year of a daily habit is
+   365 short strings, which is cheap enough to ride the meta object alongside
+   spaces / templates / rundown - no backend change. */
+const HABIT_CADENCES = { daily:"Every day", weekdays:"Weekdays", weekends:"Weekends" };
+
+function habitExpectedOn(cadence, d){
+  const dow = d.getDay();
+  if(cadence==="weekdays") return dow>=1 && dow<=5;
+  if(cadence==="weekends") return dow===0 || dow===6;
+  return true;                                        // daily
+}
+function habitDoneSet(h){ return new Set((h && h.done) || []); }
+function habitDoneToday(h){ return habitDoneSet(h).has(TODAY()); }
+// On the hook today = the cadence expects it AND you have not ticked it yet.
+function habitDueToday(h){ return habitExpectedOn(h.cadence, new Date()) && !habitDoneToday(h); }
+
+// Consecutive expected days, walking back. Days the cadence does NOT expect are
+// skipped without breaking anything - not doing a weekday habit on Sunday is not
+// a miss. Today being untick'd never breaks a streak: the day is not over yet.
+function habitStreak(h){
+  const done = habitDoneSet(h);
+  const d = new Date(); d.setHours(0,0,0,0);
+  if(habitExpectedOn(h.cadence,d) && !done.has(todayKey(d))) d.setDate(d.getDate()-1);
+  let n = 0, guard = 0;
+  while(guard++ < 800){
+    if(!habitExpectedOn(h.cadence,d)){ d.setDate(d.getDate()-1); continue; }
+    if(!done.has(todayKey(d))) break;
+    n++; d.setDate(d.getDate()-1);
+  }
+  return n;
+}
+// "22 of the last 30" - counts only days the cadence expected, and only days on
+// or after you started. Today is counted ONLY if already done, so an unfinished
+// day never reads as a miss.
+function habitRecent(h, days){
+  const done = habitDoneSet(h);
+  const started = h.startedAt || "";
+  const d = new Date(); d.setHours(0,0,0,0);
+  let hit = 0, expected = 0;
+  for(let i=0;i<days;i++){
+    const key = todayKey(d);
+    const isDone = done.has(key);
+    const counts = habitExpectedOn(h.cadence,d) && (!started || key>=started) && !(i===0 && !isDone);
+    if(counts){ expected++; if(isDone) hit++; }
+    d.setDate(d.getDate()-1);
+  }
+  return { hit, expected };
+}
+// Trailing strip for the consistency view, oldest first.
+function habitStrip(h, days){
+  const done = habitDoneSet(h);
+  const out = [];
+  const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-(days-1));
+  for(let i=0;i<days;i++){
+    const key = todayKey(d);
+    out.push({ date:key, expected:habitExpectedOn(h.cadence,d), done:done.has(key) });
+    d.setDate(d.getDate()+1);
+  }
+  return out;
+}
+function habitToggle(h, iso){
+  const day = iso || TODAY();
+  const set = habitDoneSet(h);
+  if(set.has(day)) set.delete(day); else set.add(day);
+  return { ...h, done: Array.from(set).sort() };
+}
+
+/* One-time conversion of routine todos into habits. Grouped by TITLE, because
+   nothing else links occurrences: completeTodo clones the next one with a fresh
+   id and no series id. A routine that was renamed mid-life therefore splits into
+   two habits - the honest limitation of migrating data that was never designed
+   to be a series. Weekly/monthly recurring todos are NOT habits and are left
+   alone. Returns the new habits plus the ids to delete; the caller stashes those
+   rows before removing them. */
+function migrateRoutines(todos, existing){
+  const norm = s => String(s||"").trim().toLowerCase().replace(/\s+/g," ");
+  const groups = new Map();
+  (todos||[]).forEach(t=>{
+    if(!t || !t.routine || !t.recur || !HABIT_CADENCES[t.recur]) return;
+    const k = norm(t.title); if(!k) return;
+    const g = groups.get(k) || { name:t.title, cadence:t.recur, space:t.space, type:t.type, ids:[], done:new Set() };
+    g.ids.push(t.id);
+    if(t.status==="done" && t.completedAt) g.done.add(String(t.completedAt).slice(0,10));
+    // The live occurrence is the authority on name/space/cadence; done copies can be stale.
+    if(t.status!=="done"){ g.name=t.title; g.space=t.space; g.type=t.type; g.cadence=t.recur; }
+    groups.set(k,g);
+  });
+  const have = new Set((existing||[]).map(h=>norm(h.name)));
+  const habits = [], removeIds = [];
+  groups.forEach((g,k)=>{
+    removeIds.push(...g.ids);
+    if(have.has(k)) return;                     // already converted under this name
+    const done = Array.from(g.done).sort();
+    habits.push({ id:uid(), name:g.name, cadence:g.cadence, space:g.space||DEFAULT_SPACE,
+                  type:g.type||"", startedAt: done[0] || TODAY(), done });
+  });
+  return { habits, removeIds };
+}
+
 /* ---------- NATURAL-LANGUAGE DUE DATES (local, no AI) ----------
    Parse a due date out of quick-add text like "call dentist thursday" or
    "pay rent jul 5". Returns { due: "YYYY-MM-DD"|"", title: text with the date
@@ -693,18 +836,20 @@ function fmtDueShort(ymd){
   return d.toLocaleDateString(undefined, { weekday:"short", month:"short", day:"numeric" });
 }
 
-/* ---------- ROUTINES ----------
-   A routine is a habit (exercise, meds), NOT a task with a deadline. The difference
-   that matters: missing one does NOT leave a debt. Recurrence only advanced on
-   COMPLETION, so a skipped daily item froze at its old due date and read
-   "Overdue Jun 29" for weeks - which is what trains you to stop seeing it.
+/* ---------- ROUTINES (superseded by HABITS, 2026-08-09) ----------
+   This flag USED to mean "this is a habit": such todos were pulled into their own
+   Today card and rolled forward instead of going overdue. Habits are now a real
+   thing of their own (see HABITS above) and are no longer todos at all, so the
+   grouping half of this is gone and `migrateRoutines` converted the existing ones.
 
-   So a routine's due date rolls forward on its own to the next occurrence that is not
-   in the past. Miss a day and it simply reads "Today" again.
+   What survives, and is still worth having: a `routine` todo's due date rolls
+   forward on its own rather than accumulating a debt. Missing one does NOT leave
+   you owing 22 exercises. Daily/weekday/weekend recurrences still default the flag
+   on for that reason; weekly/monthly default off, because a missed "pay rent" IS a
+   real debt that should stay overdue.
 
-   `routine` is an explicit per-item flag, not inferred at read time: daily items
-   default to routine (nobody means "you owe me 22 exercises"), weekly/monthly default
-   to off, because a missed "pay rent" IS a real debt that should stay overdue. */
+   So `isRoutine` now means only "never let this go overdue". It is read by
+   ensureRoutines (the roll-forward) and by the one-time habit migration. */
 function isRoutine(t){ return !!(t && t.routine && t.recur && t.recur!=="none"); }
 // Sensible default when recurrence is first switched on.
 // Habit cadences (daily / weekdays / weekends) default to routine=true - they're
@@ -886,6 +1031,66 @@ const calEventsGet = (p) => {
   return calFetch("/api/calendar/events?"+q.toString());
 };
 const calFeedDelete = (id) => calFetch("/api/calendar/feeds/"+encodeURIComponent(id), { method:"DELETE" });
+
+/* ── Event links: attaching owned work to a read-only calendar event ─────────
+   A todo or project may point at ONE calendar event. The feed stays strictly
+   read-only - nothing is ever written back to Google. The link lives on the
+   item and points outward.
+
+   The stored link carries a SNAPSHOT (title/end/allDay) as well as identity
+   (uid/start), and that is the load-bearing part. Events are server-fetched, in
+   a 90-day window, online; todos are local and offline-first. Without the
+   snapshot a linked todo would render "attached to nothing" whenever you are
+   offline or the trip is outside the window. */
+function eventLinkFrom(ev){
+  if(!ev) return null;
+  return { uid:String(ev.uid||""), start:String(ev.start||""), title:String(ev.title||""),
+           end:String(ev.end||""), allDay: !!(ev.all_day || ev.allDay) };
+}
+function cleanEventLink(l){
+  if(!l) return null;
+  const start = String(l.start||"").trim(), title = String(l.title||"").trim();
+  if(!start && !title) return null;            // nothing to identify OR display
+  return { uid:String(l.uid||"").trim(), start, title,
+           end:String(l.end||"").trim(), allDay:!!l.allDay };
+}
+/* Resolve a stored link against the live (merged) event list. Matching mirrors
+   mergeCalendarEvents: uid|start, then title|start, then uid alone.
+   The third pass is what lets a RESCHEDULED trip carry its todos with it.
+   Returns null when the event is not in the list we happen to be holding, which
+   means offline or out-of-window far more often than deleted - so callers must
+   fall back to the snapshot and MUST NOT drop the link. */
+function resolveEventLink(link, events){
+  if(!link) return null;
+  const list = events || [];
+  const norm = s => String(s||"").trim().toLowerCase().replace(/\s+/g," ");
+  let hit = link.uid && list.find(e => e.uid===link.uid && e.start===link.start);
+  if(hit) return { event:hit, moved:false };
+  hit = list.find(e => norm(e.title)===norm(link.title) && e.start===link.start);
+  if(hit) return { event:hit, moved:false };
+  if(link.uid){
+    const same = list.filter(e => e.uid===link.uid);
+    if(same.length){
+      const at = Date.parse(link.start) || 0;
+      same.sort((a,b)=> Math.abs((Date.parse(a.start)||0)-at) - Math.abs((Date.parse(b.start)||0)-at));
+      return { event:same[0], moved: same[0].start!==link.start };
+    }
+  }
+  return null;
+}
+// One key per event, used to group items that point at the same thing.
+function eventLinkKey(l){ return l ? (String(l.uid||"")+"|"+String(l.start||"")+"|"+String(l.title||"").toLowerCase()) : ""; }
+// "today" / "tomorrow" / "in 9 days" / "9 days ago". Ordinal, not a timestamp.
+function eventUntilLabel(startISO){
+  const ms = Date.parse(startISO); if(!ms) return "";
+  const d0 = new Date(); d0.setHours(0,0,0,0);
+  const d1 = new Date(ms); d1.setHours(0,0,0,0);
+  const n = Math.round((d1-d0)/86400000);
+  if(n===0) return "today";
+  if(n===1) return "tomorrow";
+  if(n===-1) return "yesterday";
+  return n>0 ? "in "+n+" days" : Math.abs(n)+" days ago";
+}
 
 /* Shared by the Calendar view AND the Dashboard card, so both dedupe and format
    identically - one implementation, no drift. */
@@ -1370,6 +1575,13 @@ function useStore(){
   // Reusable checklist templates, also in the meta blob: [{ id, name, items:[titles] }].
   const [templates, setTemplates] = useState(() => lsGet("templates", []));
   const templatesRef = useRef(templates); templatesRef.current = templates;
+  // Habits: [{id,name,cadence,space,type,startedAt,done:[iso]}]. Another meta slice.
+  // `habitsMigrated` marks the one-time routine-todo conversion as already run;
+  // `habitsBackup` holds the routine rows it deleted, so a bad migration is undoable.
+  const [habits, setHabits] = useState(() => lsGet("habits", null));
+  const habitsRef = useRef(habits); habitsRef.current = habits;
+  const habitsMigratedRef = useRef(lsGet("habitsMigrated", false));
+  const habitsBackupRef = useRef(lsGet("habitsBackup", null));
   // RTR Rundown: an awareness board that rides on meta (like templates/spaces). null until
   // first use. Shape: { workstreams:[{id,name,order}], items:[{id,workstreamId,name,status,
   // nextStep,blocker,note,order,updatedAt}] }. See SCOPE-rtr-rundown.md.
@@ -1406,6 +1618,11 @@ function useStore(){
     }
     if(templatesRef.current && templatesRef.current.length){ m.templates = templatesRef.current; }
     if(rundownRef.current){ m.rundown = rundownRef.current; }
+    if(habitsRef.current){
+      m.habits = habitsRef.current;
+      m.habitsMigrated = !!habitsMigratedRef.current;
+      if(habitsBackupRef.current) m.habitsBackup = habitsBackupRef.current;
+    }
     return m;
   };
   // Push the meta blob (cfg + spaces) to the per-user `meta` singleton. Same offline-defer
@@ -1439,6 +1656,13 @@ function useStore(){
   }, [pushCfg]);
   const setDefaultSpaceId = useCallback((id) => {
     defaultSpaceRef.current = id; setDefaultSpace(id); lsSet("defaultSpace", id);
+    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    pushCfg();
+  }, [pushCfg]);
+  // Save the habit list (add / rename / tick / delete) - persists to meta.
+  // Ref written SYNCHRONOUSLY before the push, same contract as every other slice.
+  const saveHabits = useCallback((next) => {
+    habitsRef.current = next; setHabits(next); lsSet("habits", next);
     cfgDirtyRef.current = true; lsSet("cfgDirty", true);
     pushCfg();
   }, [pushCfg]);
@@ -1560,6 +1784,41 @@ function useStore(){
   //      that is not past, so a skipped day reads "Today" instead of piling up red.
   // Mutating (rather than computing at render) keeps every downstream consumer -
   // todayItems, overdue chips, Dashboard, Now - correct with no changes.
+  /* One-time: convert routine todos into habits, then delete those rows.
+     Runs from pull() on authoritative data, like ensureSpaces/ensureOrders.
+
+     DELETION SAFETY, in order:
+      1. Guarded by habitsMigrated so it can never run twice.
+      2. The deleted rows are stashed verbatim in habitsBackup FIRST, so the
+         "delete" is undoable even though Chris asked for a delete.
+      3. Habits are written before the todos are removed, never after.
+     Grouping is by title (see migrateRoutines) - a renamed routine splits. */
+  const ensureHabits = useCallback(() => {
+    if(habitsMigratedRef.current) return;
+    const list = dataRef.current.todos || [];
+    const { habits: made, removeIds } = migrateRoutines(list, habitsRef.current || []);
+    if(!made.length && !removeIds.length){
+      habitsMigratedRef.current = true; lsSet("habitsMigrated", true);
+      if(!habitsRef.current){ habitsRef.current = []; setHabits([]); lsSet("habits", []); }
+      return;
+    }
+    const kill = new Set(removeIds);
+    const backup = list.filter(t => kill.has(t.id));          // stash BEFORE removing
+    habitsBackupRef.current = backup; lsSet("habitsBackup", backup);
+
+    const nextHabits = (habitsRef.current || []).concat(made);
+    habitsRef.current = nextHabits; setHabits(nextHabits); lsSet("habits", nextHabits);
+
+    const nextTodos = list.filter(t => !kill.has(t.id));
+    const nd = { ...dataRef.current, todos: nextTodos };
+    dataRef.current = nd; setData(nd); markDirty("todos", nextTodos);
+
+    habitsMigratedRef.current = true; lsSet("habitsMigrated", true);
+    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    log("HABIT","converted "+made.length+" habit(s), removed "+removeIds.length+" routine todo(s), "+
+                backup.length+" row(s) backed up");
+  }, [markDirty]);
+
   const ensureRoutines = useCallback(() => {
     const list = dataRef.current.todos || [];
     let migrated = 0, rolled = 0;
@@ -1630,17 +1889,24 @@ function useStore(){
             rundownRef.current = m.rundown; setRundown(m.rundown); lsSet("rundown", m.rundown);
             log("RUNDOWN","rundown <- meta ("+((m.rundown.items||[]).length)+" items)");
           }
+          if(Array.isArray(m && m.habits)){
+            habitsRef.current = m.habits; setHabits(m.habits); lsSet("habits", m.habits);
+            habitsMigratedRef.current = !!m.habitsMigrated; lsSet("habitsMigrated", !!m.habitsMigrated);
+            if(m.habitsBackup){ habitsBackupRef.current = m.habitsBackup; lsSet("habitsBackup", m.habitsBackup); }
+            log("HABIT","habits <- meta ("+m.habits.length+")");
+          }
         }catch(e){ log("ERROR","pull meta: "+e.message); }
       }
       setSync(FILES.some(f=>dirtyRef.current[f])?"pending":"idle"); setSyncMsg("");
       log("SYNC","pull complete");
       ensureOrders();
       ensureSpaces();
-      ensureRoutines();
+      ensureRoutines();      // must run BEFORE ensureHabits: it backfills the
+      ensureHabits();        // routine flag on older recurring todos.
       await pushDirty();
       await pushCfg();
     }catch(e){ setSync("error"); setSyncMsg(syncErrText(e)); log("ERROR","pull: "+e.message); }
-  }, [pushDirty, pushCfg, ensureOrders, ensureSpaces, ensureRoutines]);
+  }, [pushDirty, pushCfg, ensureOrders, ensureSpaces, ensureRoutines, ensureHabits]);
 
   // ----- Auth: track the Supabase session and pull on sign-in -----
   // applySession runs on the initial check AND on every auth change. It pulls only
@@ -1667,7 +1933,8 @@ function useStore(){
     // CLEAN from the server. Prevents one account's stale/dirty data from being shown
     // to - or pushed under - a different account on the same device (migration footgun).
     FILES.forEach(f => lsDel("cache:"+f));
-    ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty","spaces","defaultSpace","spacesSeeded","templates","rundown"].forEach(k => lsDel(k));
+    ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty","spaces","defaultSpace","spacesSeeded","templates","rundown",
+     "habits","habitsMigrated","habitsBackup"].forEach(k => lsDel(k));
     const empty = {}; FILES.forEach(f => empty[f] = []);
     dataRef.current = empty; setData(empty);
     dirtyRef.current = {}; setDirty({});
@@ -1679,6 +1946,12 @@ function useStore(){
     defaultSpaceRef.current = DEFAULT_SPACE; setDefaultSpace(DEFAULT_SPACE);
     spacesSeededRef.current = false;
     templatesRef.current = []; setTemplates([]);
+    // Habits are a meta slice too, so the SAME rule applies: ref + state + localStorage,
+    // all three. habitsMigrated especially - left set, the next account would skip its own
+    // routine conversion entirely and silently keep routine todos that never became habits.
+    habitsRef.current = null; setHabits(null);
+    habitsMigratedRef.current = false;
+    habitsBackupRef.current = null;
     // The Rundown lives in meta like templates do, and buildMeta pushes whatever is in
     // rundownRef. Leaving it behind meant the previous account's board stayed on screen
     // AND could be written into the next account's meta on the first sync.
@@ -1983,7 +2256,7 @@ function useStore(){
     return out;
   }, [data, activeSpace, spaces]);
 
-  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, rundown, saveRundown, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, deleteAccount, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
+  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, habits, saveHabits, rundown, saveRundown, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, deleteAccount, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
 }
 
 /* ============================================================
@@ -2219,6 +2492,77 @@ function DecisionField({ value, onChange }){
   );
 }
 
+/* Attach this item to one calendar event. Deliberately manual: no AI guessing
+   that "book the Nashville flight" belongs to the Nashville trip.
+   The picker fetches ACROSS ALL SPACES, not the active one - a Personal todo
+   ("pack a suit") legitimately belongs to a Work trip, and space-filtering the
+   list would silently hide the event you were looking for. */
+function EventLinkField({ store, value, onChange, label }){
+  const [picking,setPicking]=useState(false);
+  const [events,setEvents]=useState(null);      // null = not fetched yet
+  const [err,setErr]=useState("");
+  const link = value || null;
+
+  useEffect(()=>{
+    if(!picking || events || err) return;
+    let alive = true;
+    (async()=>{
+      try{
+        const now = new Date();
+        const end = new Date(now.getTime() + 89*86400000);   // backend caps the window at 90 days
+        const res = await calEventsGet({ start:now.toISOString(), end:end.toISOString(), space:"all" });
+        if(!alive) return;
+        const list = mergeCalendarEvents((res && res.events) || []);
+        setEvents(list);
+        // If the trip moved while we were not looking, quietly refresh the snapshot.
+        const r = resolveEventLink(link, list);
+        if(r && r.moved) onChange(eventLinkFrom(r.event));
+      }catch(ex){ if(alive) setErr(ex.message || "Couldn't load your calendar."); }
+    })();
+    return ()=>{ alive=false; };
+  },[picking, events, err]);   // eslint-disable-line
+
+  const when = (l)=>{
+    const u = eventUntilLabel(l.start);
+    const d = l.start ? new Date(l.start).toLocaleDateString(undefined,{month:"short",day:"numeric"}) : "";
+    return [d, u].filter(Boolean).join(" · ");
+  };
+  return (
+    <div className="field">
+      <span className="label">{label || "On the calendar (optional)"}</span>
+      {link &&
+        <div className="evlink">
+          <div className="evlink-body">
+            <div className="evlink-title">{link.title || "Calendar event"}</div>
+            <div className="evlink-when">{when(link)}</div>
+          </div>
+          <button className="opt-x" aria-label="Detach from this event"
+            onClick={()=>{ onChange(null); setPicking(false); }}>&times;</button>
+        </div>}
+      {!picking &&
+        <button className="btn btn-ghost btn-block" style={{marginTop:link?8:0}}
+          onClick={()=>setPicking(true)}>{link ? "Attach to something else" : "Attach to a calendar event"}</button>}
+      {picking && (
+        err ? <p className="hint" style={{color:"var(--red)"}}>{err} Your existing link is unchanged.</p> :
+        events===null ? <p className="hint">Loading your calendar...</p> :
+        events.length===0 ? <p className="hint">Nothing on your calendar in the next 90 days.</p> :
+        <div className="evpick">
+          {events.map((e,i)=>
+            <button key={(e.uid||"")+"|"+e.start+"|"+i} className="evrow"
+              onClick={()=>{ onChange(eventLinkFrom(e)); setPicking(false); }}>
+              <span className="evrow-dot" style={{background:(e.colors&&e.colors[0])||e.color||"#6f9bc4"}}></span>
+              <span className="evrow-body">
+                <span className="evrow-title">{e.title}</span>
+                <span className="evrow-when">{when(e)}</span>
+              </span>
+            </button>)}
+        </div>)}
+      {picking && <button className="btn btn-ghost btn-block" style={{marginTop:8}}
+        onClick={()=>setPicking(false)}>Cancel</button>}
+    </div>
+  );
+}
+
 // Reusable Space picker for the item editors (the "easy override control").
 function SpaceField({ store, value, onChange }){
   const list = (store.spaces||[]).filter(s=>!s.archived).slice().sort((a,b)=>(a.order||0)-(b.order||0));
@@ -2252,6 +2596,7 @@ function TodoEditor({ store, todo, onClose, toast }){
   const [url,setUrl]=useState(t.url||"");
   const [notes,setNotes]=useState(t.notes||"");
   const [waitingOn,setWaitingOn]=useState(t.waitingOn||"");
+  const [event,setEvent]=useState(t.event||null);
   const [subtasks,setSubtasks]=useState(t.subtasks||[]);
   const [newSub,setNewSub]=useState("");
   const locs = knownLocations(store);
@@ -2282,7 +2627,7 @@ function TodoEditor({ store, todo, onClose, toast }){
     if(isRt && dueAnchored && dueAnchored < TODAY()) dueAnchored = rollToToday(dueAnchored, recur);
     store.upsert("todos",{ id:t.id, title:title.trim(), status, type, quad, due:dueAnchored, defer, recur, routine:isRt, space,
       tags: tags.split(",").map(s=>s.trim()).filter(Boolean), projectId:finalProjectId, url:url.trim(), notes, location,
-      waitingOn: status==="waiting"?waitingOn:"", subtasks,
+      waitingOn: status==="waiting"?waitingOn:"", subtasks, event: cleanEventLink(event),
       starredToday: t.starredToday||false, completedAt: t.completedAt||null });
     toast(t.id?"Saved":"Added"); onClose();
   }
@@ -2327,14 +2672,15 @@ function TodoEditor({ store, todo, onClose, toast }){
         </select>
         {recur!=="none" && <>
           <p className="hint" style={{marginTop:6}}>Starts on the due date{!due?" (today, since none set)":""}. Completing it creates the next one automatically.</p>
-          <label className="row" style={{alignItems:"center",gap:10,marginTop:10,cursor:"pointer"}}>
-            <input type="checkbox" checked={routine} onChange={e=>setRoutine(e.target.checked)}
-              style={{width:18,height:18,flex:"0 0 auto",accentColor:"var(--blue)"}}/>
-            <span style={{flex:1}}>
-              <b style={{display:"block",fontSize:14}}>It's a routine</b>
-              <span className="hint">Never goes overdue - a missed day just rolls to today. Groups together on Today instead of taking a card each.</span>
-            </span>
-          </label>
+          {/* The old "it's a routine" checkbox is gone. Something you do every day is a
+              HABIT now, which lives in Settings > Habits and keeps a record of whether you
+              actually did it. Leaving the checkbox here would let you create a routine todo
+              that the one-time migration has already run past, so it would never become a
+              habit and would sit in this list forever. */}
+          {defaultRoutineFor(recur) &&
+            <p className="hint" style={{marginTop:8}}>Doing this <b>every</b> {recur==="daily"?"day":recur==="weekdays"?"weekday":"weekend"}?
+              Make it a <b>habit</b> instead (Settings &rsaquo; Habits) - it tracks whether you actually did it,
+              and it stays out of your to-do list.</p>}
         </>}</div>
       <div className="field"><span className="label">Project (optional)</span>
         <select className="select" value={projectId} onChange={e=>setProjectId(e.target.value)}>
@@ -2361,6 +2707,7 @@ function TodoEditor({ store, todo, onClose, toast }){
         <input className="input" value={tags} onChange={e=>setTags(e.target.value)} placeholder="errand, finance"/></div>
       <div className="field"><span className="label">Link (optional)</span>
         <input className="input" value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://"/></div>
+      <EventLinkField store={store} value={event} onChange={setEvent}/>
       <div className="field"><span className="label">Subtasks</span>
         <div className="subtasks">
           {subtasks.map(s=>
@@ -2457,10 +2804,12 @@ function ProjectEditor({ store, project, onClose, toast }){
   const [deadline,setDeadline]=useState(t.deadline||"");
   const [description,setDescription]=useState(t.description||"");
   const [goalId,setGoalId]=useState(t.goalId||"");
+  const [event,setEvent]=useState(t.event||null);
   const goals = store.data.goals.filter(g=>g.status==="active");
   function save(){
     if(!name.trim()){ toast("Name it first"); return; }
-    store.upsert("projects",{ id:t.id, name:name.trim(), type, status, outcome, deadline, description, goalId:goalId||null, space });
+    store.upsert("projects",{ id:t.id, name:name.trim(), type, status, outcome, deadline, description,
+      goalId:goalId||null, space, event: cleanEventLink(event) });
     toast(t.id?"Saved":"Created"); onClose();
   }
   return (
@@ -2469,6 +2818,7 @@ function ProjectEditor({ store, project, onClose, toast }){
         <input className="title-input" value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Submit final tech pack" autoFocus/></div>
       <div className="field"><span className="label">Outcome - what does done look like?</span>
         <textarea className="textarea" value={outcome} onChange={e=>setOutcome(e.target.value)} placeholder="The project is done when..."/></div>
+      <EventLinkField store={store} value={event} onChange={setEvent}/>
       <div className="row">
         <div className="field"><span className="label">Category</span>
           <select className="select" value={type} onChange={e=>setType(e.target.value)}>
@@ -2742,6 +3092,7 @@ function TodoRow({ store, todo, onOpen }){
           {todo.due && <span className={"chip "+(isOverdue(todo.due)?"red":isToday(todo.due)?"amber":"")}>{isOverdue(todo.due)?"Overdue ":""}{fmtDate(todo.due)}</span>}
           {isDeferredAway(todo) && <span className="chip blue">{Ic.clock} {fmtDefer(todo.defer)}</span>}
           {todo.waitingOn && <span className="chip blue">waiting: {todo.waitingOn}</span>}
+          {todo.event && todo.event.title && <span className="chip blue">{Ic.schedule} {todo.event.title}</span>}
           {todo.location && <span className="chip green">{todo.location}</span>}
           {project && <span className="chip">{project.name}</span>}
           {todo.recur && todo.recur!=="none" && <span className="chip violet">{Ic.review} {todo.recur}</span>}
@@ -2990,7 +3341,12 @@ function todayItems(todos){
 // One plain sentence answering the two-second glance question, computed LOCALLY so
 // it is instant and works offline - this is the thing you read before deciding
 // whether to open anything at all.
-// Counts reconcile with the Today tab and the icon badge: all three use todayItems().
+// Counts reconcile with WHAT THE TODAY TAB ACTUALLY LISTS. That is not the same as
+// todayItems(): TodayView pulls routines out into their own card, so a sentence built
+// straight off todayItems() reports a number the list below it does not show. Chris hit
+// exactly that on 2026-08-09 ("2 overdue and 2 on you today" over a list of 2, the other
+// two being routines) and reasonably asked where the missing items were. Routines now get
+// their own clause instead of being folded into the task counts.
 // The horizon look-ahead is the genuinely new part - nothing else in the app answers
 // "what lands in the next few days", which is the actual meaning of "incoming".
 const HEADS_UP_DAYS = 7;
@@ -3000,9 +3356,13 @@ function headsUpWhen(due){
   const d = new Date(due+"T00:00:00");
   return isNaN(d) ? "soon" : d.toLocaleDateString(undefined,{weekday:"long"});
 }
-function headsUp(todos, spaces, activeSpace){
+function headsUp(todos, spaces, activeSpace, habits){
   const open = (todos||[]).filter(t=>t.status!=="done" && t.status!=="someday" && !isDeferredAway(t));
+  // Habits are their own thing now, not todos, so nothing here has to filter them
+  // out - they simply are not in `todos`. `habits` is passed in so the sentence can
+  // still name them, since they are real work even though they live elsewhere.
   const onNow = todayItems(todos||[]);
+  const routinesLeft = (habits||[]).filter(habitDueToday).length;
   const overdue = onNow.filter(t=>isOverdue(t.due)).length;
   const rest = onNow.length - overdue;              // due today, starred, or deferred to today
   const horizon = todayKey(snzAddDays(HEADS_UP_DAYS));
@@ -3010,9 +3370,15 @@ function headsUp(todos, spaces, activeSpace){
                        .sort((a,b)=> a.due<b.due ? -1 : 1);
 
   const parts = [];
-  if(overdue && rest)      parts.push(overdue+" overdue and "+rest+" on you today.");
+  // "for today", not "due today": `rest` counts starred and deferred-to-today items
+  // that carry no due date at all, so "due" would be a lie. Settled 2026-08-09.
+  if(overdue && rest)      parts.push(overdue+" overdue and "+rest+" for today.");
   else if(overdue)         parts.push(overdue+" overdue.");
-  else if(rest)            parts.push(rest+" on you today.");
+  else if(rest)            parts.push(rest+" for today.");
+
+  // Routines are named separately rather than folded in: they are real work, they just
+  // live in their own card. Reads "2 overdue. 2 routines left." not "4 on you today".
+  if(routinesLeft) parts.push(routinesLeft+" habit"+(routinesLeft===1?"":"s")+" left.");
 
   if(!parts.length){                                 // nothing on you right now
     if(incoming.length){
@@ -3079,17 +3445,29 @@ function reorderItem(store, file, movedId, idsInOrder, items){
    the win is weight, not hiding. Today's COMPLETED routines stay listed so you can see
    what you have done - completing one drops it from todayItems and spawns tomorrow's
    copy, so without this the card would just shrink and you would lose the payoff. */
-function RoutinesCard({ store, rows, onOpen }){
+/* Habits expected today, in the active Space. Habits ride the meta object, NOT
+   the space-scoped `data`, so the Space lens has to be applied by hand here. */
+function habitsForToday(store){
+  const sp = store.activeSpace;
+  const inSpace = (h)=> !sp || sp==="all" || (h.space||DEFAULT_SPACE)===sp;
+  return (store.habits||[]).filter(h => inSpace(h) && habitExpectedOn(h.cadence, new Date()));
+}
+function RoutinesCard({ store, onOpen }){
   const [open,setOpen] = useState(() => lsGet("routinesOpen", true));
   const toggle = () => { const v=!open; setOpen(v); lsSet("routinesOpen", v); };
-  const done = rows.filter(t=>t.status==="done").length;
+  const rows = habitsForToday(store);
+  const done = rows.filter(habitDoneToday).length;
   const pct  = rows.length ? Math.round((done/rows.length)*100) : 0;
-  const all  = done === rows.length;
+  const all  = rows.length>0 && done === rows.length;
+  // Ticking is REVERSIBLE now. A tick is just a date in a list, so un-ticking
+  // removes it - there is no spawned copy to hunt down like the old routine todos.
+  const tick = (h)=> store.saveHabits((store.habits||[]).map(x => x.id===h.id ? habitToggle(x) : x));
+  if(!rows.length) return null;
   return (
     <div className="card" style={{marginTop:14,padding:"12px 14px"}}>
       <button onClick={toggle} style={{display:"flex",alignItems:"center",gap:10,width:"100%",padding:0}}>
         <span style={{flex:1,textAlign:"left"}}>
-          <b style={{fontFamily:"Fraunces",fontSize:15,display:"block"}}>Routines</b>
+          <b style={{fontFamily:"Fraunces",fontSize:15,display:"block"}}>Habits</b>
           <span className="hint">{all ? "All done today" : done+" of "+rows.length+" done"}</span>
         </span>
         <span className="chip" style={{flex:"0 0 auto",borderColor:all?"var(--green)":"var(--line-2)",color:all?"var(--green)":"var(--ink-2)"}}>
@@ -3101,22 +3479,67 @@ function RoutinesCard({ store, rows, onOpen }){
         <div style={{height:"100%",width:pct+"%",background:all?"var(--green)":"var(--blue)",transition:"width .3s"}}></div>
       </div>
       {open && <div style={{marginTop:8}}>
-        {rows.map(t=>{
-          const isDone = t.status==="done";
+        {rows.map(h=>{
+          const isDone = habitDoneToday(h);
+          const streak = habitStreak(h);
           return (
-            <div key={t.id} className="rt-row">
-              {/* A done routine is display-only: completing it already spawned tomorrow's
-                  copy, so un-ticking would have to hunt that down and delete it. Matches
-                  TodoRow, which also only acts on the un-done -> done direction. */}
-              <button className={"rt-box"+(isDone?" on":"")} aria-label={isDone?"Done":"Mark done"}
-                disabled={isDone} onClick={()=>store.completeTodo(t)}>{isDone?Ic.check:null}</button>
-              <button className="rt-title" onClick={()=>onOpen(t)}
-                style={{opacity:isDone?.55:1,textDecoration:isDone?"line-through":"none"}}>{t.title}</button>
+            <div key={h.id} className="rt-row">
+              <button className={"rt-box"+(isDone?" on":"")} aria-label={isDone?"Done today - tap to undo":"Mark done"}
+                onClick={()=>tick(h)}>{isDone?Ic.check:null}</button>
+              <button className="rt-title" onClick={()=>onOpen(h)}
+                style={{opacity:isDone?.6:1,textDecoration:isDone?"line-through":"none"}}>{h.name}</button>
+              {streak>1 && <span className="hb-streak">{streak}d</span>}
             </div>
           );
         })}
       </div>}
     </div>
+  );
+}
+
+/* Consistency for one habit. Leads with "N of the last 30", not the streak: a
+   visible broken streak makes people abandon a habit, whereas a hit rate keeps
+   a bad week in proportion. */
+function HabitSheet({ store, habit, onClose, toast }){
+  const h = (store.habits||[]).find(x=>x.id===habit.id) || habit;
+  const r30 = habitRecent(h, 30);
+  const streak = habitStreak(h);
+  const strip = habitStrip(h, 30);
+  const save = (next)=> store.saveHabits((store.habits||[]).map(x=>x.id===h.id?next:x));
+  return (
+    <Sheet title={h.name} onClose={onClose}>
+      <div className="row" style={{gap:10}}>
+        <div className="card" style={{flex:1,padding:"10px 12px",marginTop:0}}>
+          <div className="hb-big">{r30.hit}<span className="hb-of">/{r30.expected}</span></div>
+          <div className="hint">of the last 30 days</div>
+        </div>
+        <div className="card" style={{flex:1,padding:"10px 12px",marginTop:0}}>
+          <div className="hb-big">{streak}</div>
+          <div className="hint">day streak</div>
+        </div>
+      </div>
+      <div className="field" style={{marginTop:14}}>
+        <span className="label">Last 30 days</span>
+        <div className="hb-strip">
+          {strip.map(d=>
+            <span key={d.date} title={d.date}
+              className={"hb-dot"+(d.done?" on":"")+(d.expected?"":" off")}></span>)}
+        </div>
+        <p className="hint">Faded squares are days this habit does not run.</p>
+      </div>
+      <div className="field"><span className="label">Repeats</span>
+        <select className="select" value={h.cadence}
+          onChange={e=>save({ ...h, cadence:e.target.value })}>
+          {Object.keys(HABIT_CADENCES).map(k=><option key={k} value={k}>{HABIT_CADENCES[k]}</option>)}
+        </select></div>
+      <SpaceField store={store} value={h.space||DEFAULT_SPACE} onChange={(v)=>save({ ...h, space:v })}/>
+      <button className="btn btn-ghost btn-block" style={{marginTop:6}}
+        onClick={()=>{ save(habitToggle(h)); }}>
+        {habitDoneToday(h) ? "Undo today" : "Mark done today"}</button>
+      <button className="btn btn-ghost btn-block" style={{marginTop:10,color:"var(--red)"}}
+        onClick={()=>{ store.saveHabits((store.habits||[]).filter(x=>x.id!==h.id));
+                       toast && toast("Habit deleted"); onClose(); }}>Delete habit</button>
+    </Sheet>
   );
 }
 
@@ -3321,8 +3744,58 @@ function RadarCard({ store, onOpen, style }){
 }
 
 // The glance. One sentence, read in two seconds, before you decide to open anything.
+/* "Coming up": upcoming calendar events that have open work attached to them.
+   Built ENTIRELY from the snapshots stored on the items, so it needs no network
+   call, works offline, and cannot be blanked by a calendar outage. The cost is
+   that a trip rescheduled since you last opened its picker shows its old date
+   until you open the picker again.
+
+   It self-selects what counts as a "trip": an event appears only once you have
+   attached something to it, so the 10am call you never touched never shows up
+   and nothing has to classify events by type. */
+function comingUp(data){
+  const todos = (data.todos||[]).filter(t=>t.status!=="done");
+  const projects = (data.projects||[]).filter(p=>p.status!=="done" && p.status!=="archived");
+  // A todo carrying its OWN link is counted directly, so exclude it from its
+  // project's tally or the same work lands on the card twice.
+  const openInProject = {};
+  todos.forEach(t=>{ if(t.projectId && !t.event) openInProject[t.projectId]=(openInProject[t.projectId]||0)+1; });
+
+  const groups = new Map();
+  const add = (link, n)=>{
+    const k = eventLinkKey(link); if(!k || !n) return;
+    const g = groups.get(k) || { link, open:0 };
+    g.open += n; groups.set(k, g);
+  };
+  todos.forEach(t=>{ if(t.event) add(t.event, 1); });
+  projects.forEach(p=>{ if(p.event) add(p.event, openInProject[p.id]||0); });
+
+  const today = new Date(); today.setHours(0,0,0,0);
+  return Array.from(groups.values())
+    // end||start keeps a multi-day trip on the card WHILE you are on it.
+    .filter(g=>{ const ms = Date.parse(g.link.end || g.link.start); return ms && ms >= today.getTime(); })
+    .sort((a,b)=> String(a.link.start||"").localeCompare(String(b.link.start||"")));
+}
+function ComingUpCard({ store, style }){
+  const rows = comingUp(store.data);
+  if(!rows.length) return null;                       // silent until you attach something
+  const shown = rows.slice(0,5);
+  return (
+    <div className="card" style={{marginTop:14, ...(style||{})}}>
+      <div className="eyebrow" style={{marginBottom:6}}>Coming up</div>
+      {shown.map(g=>
+        <div key={eventLinkKey(g.link)} className="cu-row">
+          <span className="cu-name">{g.link.title || "Calendar event"}</span>
+          <span className="cu-when">{eventUntilLabel(g.link.start)}</span>
+          <span className="cu-open">{g.open} open</span>
+        </div>)}
+      {rows.length>shown.length &&
+        <p className="hint" style={{marginTop:8}}>+{rows.length-shown.length} more with work attached.</p>}
+    </div>
+  );
+}
 function HeadsUpCard({ store, style }){
-  const h = headsUp(store.data.todos, store.spaces, store.activeSpace);
+  const h = headsUp(store.data.todos, store.spaces, store.activeSpace, habitsForToday(store));
   if(!h.line) return null;
   const alert = h.tone==="alert";
   return (
@@ -3333,16 +3806,13 @@ function HeadsUpCard({ store, style }){
     </div>
   );
 }
-function TodayView({ store, onOpen, goNow, typeFilter, del }){
+function TodayView({ store, onOpen, goNow, typeFilter, del, toast }){
+  const [habitOpen,setHabitOpen] = useState(null);
+  const openHabit = (h)=> setHabitOpen(h);
   const inFilter = t => typeFilter==="all" || t.type===typeFilter;
-  // Routines come out of the main list and into their own card.
-  let items = todayItems(store.data.todos).filter(inFilter).filter(t=>!isRoutine(t)).sort(sortTodos);
-  // Gathered from ALL todos, not todayItems, so a routine completed today still shows
-  // (completing sets status=done, which todayItems excludes) and the count stays honest.
-  const routineRows = store.data.todos.filter(t => isRoutine(t) && inFilter(t) && (
-      (t.status!=="done" && !isDeferredAway(t) && (isToday(t.due) || isOverdue(t.due))) ||
-      (t.status==="done" && t.completedAt && todayKey(new Date(t.completedAt))===TODAY())
-    )).sort((a,b)=>(a.title||"").localeCompare(b.title||""));
+  // Habits are no longer todos at all, so the main list needs no routine filter.
+  // isRoutine() is kept only for the one-time migration of pre-habits data.
+  let items = todayItems(store.data.todos).filter(inFilter).sort(sortTodos);
   const thr = waitThreshold(store);
   const followUps = store.data.todos
     .filter(t=>t.status==="waiting" && (typeFilter==="all"||t.type===typeFilter))
@@ -3375,9 +3845,10 @@ function TodayView({ store, onOpen, goNow, typeFilter, del }){
           <b style={{fontFamily:"Fraunces",fontSize:15}}>Revisit your ideas</b>
           <p className="hint" style={{marginTop:4}}>{staleIdeas.length} idea{staleIdeas.length===1?"":"s"} untouched 30+ days. A quick review keeps the system trusted.</p>
         </div>}
-      {routineRows.length>0 && <RoutinesCard store={store} rows={routineRows} onOpen={onOpen}/>}
+      <RoutinesCard store={store} onOpen={openHabit}/>
       {items.length===0 ? <Empty glyph={"\u2600"} title="Nothing scheduled" sub="Star items for today, or set a due date."/> :
         <div className="list">{items.map(t=><SwipeRow key={t.id} onDelete={()=>del("todos",t)}><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/></SwipeRow>)}</div>}
+      {habitOpen && <HabitSheet store={store} habit={habitOpen} toast={toast} onClose={()=>setHabitOpen(null)}/>}
     </div>
   );
 }
@@ -3584,6 +4055,48 @@ function SaveTemplateSheet({ store, defaultName, items, onClose, toast }){
     </Sheet>
   );
 }
+/* Settings > Habits. The only place a habit is CREATED - the Today card is for
+   ticking them, and it hides itself when there are none, so without this a user
+   with zero habits would have no way in. */
+function HabitsEditor({ store, toast }){
+  const list = store.habits || [];
+  const [adding,setAdding] = useState("");
+  const [cadence,setCadence] = useState("daily");
+  function add(){
+    const n = adding.trim(); if(!n) return;
+    store.saveHabits(list.concat([{ id:uid(), name:n, cadence, space:store.activeSpace&&store.activeSpace!=="all"?store.activeSpace:(store.defaultSpace||DEFAULT_SPACE),
+      type:"", startedAt:TODAY(), done:[] }]));
+    setAdding(""); toast && toast("Habit added");
+  }
+  function rename(id, v){ const n=(v||"").trim(); if(n) store.saveHabits(list.map(h=>h.id===id?{...h,name:n}:h)); }
+  function del(id){ store.saveHabits(list.filter(h=>h.id!==id)); toast && toast("Habit deleted"); }
+  return (
+    <div>
+      {list.map(h=>{
+        const r = habitRecent(h,30);
+        return (
+          <div key={h.id} className="row" style={{alignItems:"center",gap:8,background:"var(--bg)",marginBottom:6}}>
+            <input className="input" defaultValue={h.name} onBlur={e=>rename(h.id,e.target.value)}
+              onKeyDown={e=>{ if(e.key==="Enter") e.target.blur(); }} style={{flex:1,minWidth:90}} aria-label="Habit name"/>
+            <span className="chip" style={{flex:"0 0 auto"}}>{r.hit}/{r.expected}</span>
+            <button className="btn btn-ghost btn-sm" style={{flex:"0 0 auto"}} onClick={()=>del(h.id)}>Delete</button>
+          </div>
+        );
+      })}
+      <div className="row" style={{marginTop:8}}>
+        <input className="input" value={adding} onChange={e=>setAdding(e.target.value)} placeholder="New habit"
+          onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:2,minWidth:90}}/>
+        <select className="select" value={cadence} onChange={e=>setCadence(e.target.value)} style={{flex:1,minWidth:90}}>
+          {Object.keys(HABIT_CADENCES).map(k=><option key={k} value={k}>{HABIT_CADENCES[k]}</option>)}
+        </select>
+      </div>
+      <button className="btn btn-ghost btn-block" style={{marginTop:8}} disabled={!adding.trim()} onClick={add}>Add habit</button>
+      <p className="hint" style={{marginTop:8}}>Habits are things you do on a cadence, not tasks with a deadline. They show on
+        Today in their own card and never appear in your to-do list. The number is how many of the last 30 expected days you hit.</p>
+    </div>
+  );
+}
+
 function TemplatesEditor({ store, toast }){
   const list = store.templates||[];
   if(!list.length) return <p className="hint" style={{margin:0}}>No templates yet. Open a project and tap <b>Template</b> to save its checklist (like a packing list you reuse each trip).</p>;
@@ -4660,6 +5173,9 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, upda
       <div className="set-group">Spaces</div>
       <div className="card"><SpacesEditor store={store} toast={toast} toastUndo={toastUndo}/></div>
 
+      <div className="set-group">Habits</div>
+      <div className="card"><HabitsEditor store={store} toast={toast}/></div>
+
       <div className="set-group">Templates</div>
       <div className="card"><TemplatesEditor store={store} toast={toast}/></div>
 
@@ -5162,6 +5678,7 @@ function DashboardView({ store, onOpen, openEditor }){
       </div>
 
       <HeadsUpCard store={store} style={{marginTop:16}}/>
+      <ComingUpCard store={store}/>
       <RadarCard store={store} onOpen={onOpen}/>
 
       <div className="card" style={{marginTop:16,borderColor:"var(--amber-line)"}}>
@@ -5661,9 +6178,34 @@ function rundownHasAction(it){ return !!((it.nextStep&&it.nextStep.trim()) || (i
 // an item in the current workstream. Status comes from an optional [tag] anywhere in the
 // line ([live] [waiting] [on ice] [won] [dropped]) or from ~strikethrough~ (=> dropped);
 // [initiative] lifts it to the Initiatives tier and [pin] pins it as a north star.
-// An indented "next:", "blocked:" or "note:" line attaches that field to the item above it.
-// Leading bullets are stripped. Lines before any header go into "General".
+// An indented "next:", "blocked:", "note:" or "decide:" line attaches that field to the item
+// above it. Leading bullets are stripped. Lines before any header go into "General".
 const _RD_STAT = { live:"live", waiting:"waiting", "on ice":"onice", onice:"onice", won:"won", done:"done", dropped:"dropped" };
+
+/* "decide: question | label = value ; label = value"  ->  a decision object.
+   Separator choices, both deliberate:
+   - ";" between options, NOT "/". Real values contain slashes ("0.50/0.325"),
+     so "/" would split a single option into two nonsense ones.
+   - the LAST "=" in an option splits label from value, so a label may contain
+     one. Everything is optional: a bare question with no "|" is a valid open
+     decision, and options with no "=" simply carry no value.
+   Nothing here can mark an option as chosen. An import is a capture of what is
+   still open; choosing is a deliberate tap in the editor. */
+function parseDecisionLine(v){
+  const s = String(v||"").trim();
+  if(!s) return null;
+  const bar = s.indexOf("|");
+  const question = (bar>=0 ? s.slice(0,bar) : s).trim();
+  const rest = bar>=0 ? s.slice(bar+1) : "";
+  const candidates = rest.split(";").map(p=>p.trim()).filter(Boolean).map(p=>{
+    const eq = p.lastIndexOf("=");
+    const label = (eq>=0 ? p.slice(0,eq) : p).trim();
+    const value = eq>=0 ? p.slice(eq+1).trim() : "";
+    return label ? { id:uid(), label, value } : null;
+  }).filter(Boolean);
+  if(!question && !candidates.length) return null;
+  return { question, candidates, chosenId:"", decidedAt:"", why:"" };
+}
 function parseRundownPaste(text){
   const lines = String(text||"").split(/\r?\n/);
   const workstreams = [];   // ordered unique names
@@ -5676,12 +6218,13 @@ function parseRundownPaste(text){
     const h = line.match(/^\s*#+\s+(.*)$/);
     if(h){ const n=h[1].trim(); if(n){ cur=n; last=null; if(!workstreams.some(w=>w.toLowerCase()===n.toLowerCase())) workstreams.push(n); } continue; }
     // A "next:/blocked:/note:" line attaches to the item above it (kept out of the item list).
-    const cont = line.match(/^\s*(next|blocked|blocker|note)\s*:\s*(.*)$/i);
+    const cont = line.match(/^\s*(next|blocked|blocker|note|decide|decision)\s*:\s*(.*)$/i);
     if(cont && last){
       const k=cont[1].toLowerCase(); const v=cont[2].trim();
       if(k==="next") last.nextStep=v;
       else if(k==="blocked"||k==="blocker") last.blocker=v;
       else if(k==="note") last.note=v;
+      else if(k==="decide"||k==="decision") last.decision=parseDecisionLine(v);
       continue;
     }
     let name = line.replace(/^\s*[-*•◦·]\s+/, "").trim();
@@ -5699,7 +6242,7 @@ function parseRundownPaste(text){
     }).replace(/\s{2,}/g," ").trim();
     if(/^~.+~$/.test(name)){ if(!status) status="dropped"; name=name.replace(/^~+|~+$/g,"").trim(); }
     if(!cur){ cur="General"; if(!workstreams.some(w=>w.toLowerCase()==="general")) workstreams.push("General"); }
-    if(name){ last={ workstreamName:cur, name, status, nextStep:"", blocker:"", note:"", initiative, pinned:initiative&&pinned, pursuit }; items.push(last); }
+    if(name){ last={ workstreamName:cur, name, status, nextStep:"", blocker:"", note:"", decision:null, initiative, pinned:initiative&&pinned, pursuit }; items.push(last); }
   }
   return { workstreams, items };
 }
@@ -5721,13 +6264,21 @@ function RundownImportSheet({ onImport, onClose }){
       <p className="hint" style={{marginBottom:10}}>Choose a text file, or paste below. Lines starting with <b>#</b> become
         areas; every other line becomes an item. Add <b>[won]</b>, <b>[waiting]</b>, <b>[on ice]</b>,
         <b>[live]</b> or <b>[dropped]</b> to set a status, and <b>[initiative]</b> / <b>[pin]</b> for a
-        north star. An indented <b>next:</b>, <b>blocked:</b> or <b>note:</b> line adds that to the item above.</p>
+        north star. An indented <b>next:</b>, <b>blocked:</b> or <b>note:</b> line adds that to the item above.
+        A <b>decide:</b> line adds an open decision: the question, then <b>|</b>, then the options
+        separated by <b>;</b> (an <b>=</b> gives an option a value).</p>
+      <p className="hint" style={{marginBottom:10,opacity:.75}}>
+        decide: how bold is the ask? | pilot on one workflow ; AI-assist with review ; full autonomy</p>
       <input ref={fileRef} type="file" accept=".txt,.md,text/plain,text/markdown" style={{display:"none"}} onChange={onFile}/>
       <button className="btn btn-ghost btn-block" style={{marginBottom:10}} onClick={()=>fileRef.current&&fileRef.current.click()}>
         {Ic.lists} Choose a file</button>
       <textarea className="input" rows={9} value={text} onChange={e=>setText(e.target.value)}
         placeholder={"# Opportunities\nTapp Engine [waiting]\nBureaus [on ice]\n..."} style={{fontFamily:"inherit"}}/>
-      {text.trim() && <p className="hint" style={{marginTop:8}}>Found {parsed.workstreams.length} area{parsed.workstreams.length===1?"":"s"} and {parsed.items.length} item{parsed.items.length===1?"":"s"}.</p>}
+      {text.trim() && (()=>{ const dec = parsed.items.filter(i=>i.decision).length;
+        // Call out decisions explicitly: a mistyped "|" silently yields a question
+        // with no options, and without this you would not find out until later.
+        return <p className="hint" style={{marginTop:8}}>Found {parsed.workstreams.length} area{parsed.workstreams.length===1?"":"s"} and {parsed.items.length} item{parsed.items.length===1?"":"s"}
+          {dec>0 ? ", "+dec+" with a decision" : ""}.</p>; })()}
       <button className="btn btn-primary btn-block" style={{marginTop:12}} disabled={!parsed.items.length}
         onClick={()=>onImport(parsed)}>Import {parsed.items.length||""} item{parsed.items.length===1?"":"s"}</button>
       <p className="hint" style={{marginTop:8,opacity:.7}}>Adds to your board (existing items are kept). Areas with a name you already have are reused.</p>
@@ -5917,6 +6468,7 @@ function RundownView({ store, toast, toastUndo }){
       const o = (orderByWs[wsId]||0)+10; orderByWs[wsId]=o;
       itemList.push({ id:uid(), workstreamId:wsId, name:p.name, status:p.status||"",
         nextStep:p.nextStep||"", blocker:p.blocker||"", note:p.note||"",
+        decision: cleanDecision(p.decision),   // same normalizer the editor uses
         initiative:!!p.initiative, pinned:!!(p.initiative&&p.pinned), pursuit:!!p.pursuit,
         order:o, updatedAt:nowISO() });
       added++;
@@ -6369,8 +6921,12 @@ function App(){
   },[]);
 
   // --- Home screen badge (installed PWA, iOS 16.4+ / desktop Chrome) ---
-  // The count is what the Today tab shows - due today, overdue, starred, deferred-to-today -
-  // so tapping the icon lands on exactly those items and the number always reconciles.
+  // The count is what the Today TAB LISTS - due today, overdue, starred, deferred-to-today -
+  // so tapping the icon lands on exactly those items and the number reconciles.
+  // This claim was FALSE from 2026-07-21 to 2026-08-09: routines were todos, so they were
+  // counted here but shown in their own card, and two daily routines meant the badge could
+  // never reach zero. Habits are no longer todos, so the count is honest again by
+  // construction rather than by filtering.
   // Deliberately uses allData, NOT the space-scoped view: the icon is global, so muting a
   // Space in the UI must not hide work from the badge.
   // HONEST LIMIT: iOS gives an installed PWA no background execution, so this can only be
@@ -6460,7 +7016,7 @@ function App(){
 
   let main;
   if(sub && sub!=="more") main=subView;
-  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter} del={deleteWithUndo}/>;
+  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter} del={deleteWithUndo} toast={toast}/>;
   else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter} del={deleteWithUndo} toast={toast}/>;
   else if(tab==="more") main=<MoreView store={store} go={go}/>;
 
