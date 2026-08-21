@@ -123,10 +123,15 @@ a{color:var(--amber);}
 .subtle{color:var(--ink-3);font-size:13px;}
 
 /* ---------- routines card (compact rows, deliberately lighter than a todo card) ---------- */
-.rt-row{display:flex;align-items:center;gap:11px;padding:7px 0;}
+/* min-height:44 is deliberate. Ticking a habit is a DAILY action but the visual
+   box is only 22px, half Apple's guidance. The ::after expands the hit area to 44
+   without moving the box; the ROW must be 44 too, or adjacent rows' hit areas
+   overlap and a tap near the border ticks the wrong habit. */
+.rt-row{display:flex;align-items:center;gap:11px;padding:7px 0;min-height:44px;}
 .rt-row + .rt-row{border-top:1px solid var(--line);}
-.rt-box{flex:0 0 auto;width:22px;height:22px;border-radius:7px;border:1.5px solid var(--line-2);
+.rt-box{position:relative;flex:0 0 auto;width:22px;height:22px;border-radius:7px;border:1.5px solid var(--line-2);
   display:flex;align-items:center;justify-content:center;background:transparent;transition:.15s;}
+.rt-box::after{content:"";position:absolute;top:50%;left:50%;width:44px;height:44px;transform:translate(-50%,-50%);}
 .rt-box svg{width:14px;height:14px;stroke-width:3;}
 .rt-box.on{background:var(--green);border-color:var(--green);color:#10240f;}
 .rt-box:disabled{cursor:default;}
@@ -530,6 +535,19 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
 .hb-dot{width:14px;height:14px;border-radius:4px;background:var(--bg-4);border:1px solid var(--line-2);}
 .hb-dot.on{background:var(--green);border-color:var(--green);}
 .hb-dot.off{opacity:.3;}
+/* Wins */
+.win-row{display:flex;gap:12px;align-items:center;padding:11px 0;border-top:1px solid var(--line);}
+.win-row:first-of-type{border-top:0;}
+.win-mark{flex:0 0 auto;width:34px;height:34px;border-radius:999px;display:flex;align-items:center;
+  justify-content:center;background:var(--amber-dim);border:1px solid var(--amber-line);color:var(--amber-2);
+  font-weight:800;font-size:13px;}
+.win-body{flex:1;min-width:0;}
+.win-title{font-size:14.5px;font-weight:600;color:var(--ink);}
+.win-detail{font-size:12px;color:var(--ink-3);margin-top:1px;}
+.win-when{flex:0 0 auto;font-size:11.5px;color:var(--ink-3);}
+.rec-grid{display:flex;gap:10px;}
+.rec-cell{flex:1;min-width:0;padding:10px 12px;border:1px solid var(--line-2);border-radius:12px;background:var(--bg-2);}
+.rec-num{font-family:Fraunces;font-size:24px;line-height:1.1;color:var(--ink);}
 .rd-decide{color:var(--amber);}
 </style>
 </head>
@@ -547,11 +565,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.44.0";
+const APP_VERSION = "1.46.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-08-09.3";
+const BUILD = "2026-08-14.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -718,6 +736,180 @@ function habitToggle(h, iso){
   const set = habitDoneSet(h);
   if(set.has(day)) set.delete(day); else set.add(day);
   return { ...h, done: Array.from(set).sort() };
+}
+
+/* ============================================================================
+   WINS  -  recognition, not gamification
+   ============================================================================
+   Chris asked for badges 2026-08-11. This knowingly reverses the "gamification
+   or streaks - out of scope" line in the architecture doc; the streaks half of
+   that line had already been overtaken when habits shipped two days earlier.
+
+   THE RULE THAT SHAPES EVERYTHING HERE: reward what is HARD, not what is
+   FREQUENT. Completing a todo is not an achievement - you did fourteen today -
+   and badging it would quietly reward inventing trivial todos to tick off.
+   Every win below is rare, slow, or both.
+
+   WINS ARE COMPUTED ON EVERY RENDER AND NEVER STORED. No new fields, no
+   migration, no sync surface, nothing that can corrupt. Two consequences worth
+   knowing: the catalogue is fully retroactive (it reads history from June
+   onward the day it ships, so the screen is populated immediately rather than
+   empty), and a rule can be changed later with history simply re-deriving. The
+   ONLY persisted state is which wins have already been SEEN, which is
+   device-local (localStorage) and deliberately never synced - it is a UI
+   nicety, not user data.
+
+   REJECTED, deliberately: points, levels, XP, streak-freezes, and any number
+   that only ever goes up. Also rejected: negative badges. Breaking a streak
+   produces silence, never a penalty - which is exactly why the longest run is
+   kept as a RECORD, so a bad week cannot erase your best. */
+const WIN_STREAK_TIERS   = [7, 30, 100];
+const WIN_OVERDUE_DAYS   = 30;   // "Unstuck": cleared something this far past due
+const WIN_PERFECT_DAYS   = 7;    // a "perfect week" is this many flawless days
+
+function daysBetweenISO(a, b){
+  const ms = Date.parse(b+"T00:00:00") - Date.parse(a+"T00:00:00");
+  return isNaN(ms) ? 0 : Math.round(ms/86400000);
+}
+
+/* Consecutive completed EXPECTED days for one habit, oldest run first, each run
+   carrying its dates so a tier can be dated to the day it was reached.
+   Days the cadence does not expect are skipped WITHOUT breaking a run (a
+   weekday habit is not broken by Sunday), and an unfinished TODAY never ends a
+   run because the day is not over - both rules match habitStreak(). */
+function habitRuns(h){
+  const done = habitDoneSet(h);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const todayK = todayKey(today);
+  const d = h.startedAt ? new Date(h.startedAt+"T00:00:00") : new Date(today);
+  const runs = [];
+  let cur = null;
+  let guard = 0;
+  while(d <= today && guard++ < 4000){
+    if(habitExpectedOn(h.cadence, d)){
+      const key = todayKey(d);
+      if(done.has(key)){
+        if(!cur){ cur = { days: [] }; runs.push(cur); }
+        cur.days.push(key);
+      } else if(key !== todayK){
+        cur = null;
+      }
+    }
+    d.setDate(d.getDate()+1);
+  }
+  return runs;
+}
+
+/* Longest run of consecutive CALENDAR days in which every habit that had
+   started did every day its cadence expected. Reported as one number rather
+   than counting overlapping 7-day windows, which would inflate a good month
+   into two dozen meaningless "perfect weeks". */
+function perfectRun(habits){
+  const hs = (habits||[]).filter(h => (h.done||[]).length);
+  // Requires TWO habits or more. With one, "every habit every day" is literally
+  // the same event as its streak, so awarding both is one achievement wearing
+  // two badges - the inflation this whole file is meant to avoid. Caught by a
+  // test that expected two wins and got three.
+  if(hs.length < 2) return { best:0, endedAt:"" };
+  const today = new Date(); today.setHours(0,0,0,0);
+  const todayK = todayKey(today);
+  let earliest = null;
+  hs.forEach(h=>{ const s = h.startedAt || (h.done||[])[0];
+                  if(s && (!earliest || s < earliest)) earliest = s; });
+  if(!earliest) return { best:0, endedAt:"" };
+
+  const d = new Date(earliest+"T00:00:00");
+  let run = 0, best = 0, endedAt = "", guard = 0;
+  while(d <= today && guard++ < 4000){
+    const key = todayKey(d);
+    let expectedAny = false, allDone = true;
+    hs.forEach(h=>{
+      if(h.startedAt && key < h.startedAt) return;
+      if(!habitExpectedOn(h.cadence, d)) return;
+      expectedAny = true;
+      if(!habitDoneSet(h).has(key)) allDone = false;
+    });
+    // A day nothing was expected on cannot break a run, and cannot extend it.
+    if(expectedAny){
+      if(allDone){ run++; if(run > best){ best = run; endedAt = key; } }
+      else if(key !== todayK){ run = 0; }   // today is not over yet
+    }
+    d.setDate(d.getDate()+1);
+  }
+  return { best, endedAt };
+}
+
+/* The catalogue. Returns [{key,title,detail,count,at}] for EARNED wins only,
+   newest first. `at` is what drives "new since you last looked". */
+function computeWins(allData, habits, rundown){
+  const todos    = (allData && allData.todos) || [];
+  const projects = (allData && allData.projects) || [];
+  const hs       = habits || [];
+  const items    = (rundown && rundown.items) || [];
+  const wins = [];
+
+  const runsByHabit = hs.map(h => ({ h, runs: habitRuns(h) }));
+  WIN_STREAK_TIERS.forEach(n => {
+    const hits = [];
+    runsByHabit.forEach(({h, runs})=>{
+      const r = runs.find(x => x.days.length >= n);
+      if(r) hits.push({ name:h.name, at:r.days[n-1] });   // dated to the day the tier landed
+    });
+    if(!hits.length) return;
+    hits.sort((a,b)=> a.at.localeCompare(b.at));
+    wins.push({ key:"streak"+n, title:n+" days running",
+                detail: hits.length===1 ? hits[0].name : hits.length+" habits",
+                count:hits.length, at:hits[hits.length-1].at });
+  });
+
+  const pr = perfectRun(hs);
+  if(pr.best >= WIN_PERFECT_DAYS){
+    wins.push({ key:"perfect", title:"Perfect week",
+                detail:"best run "+pr.best+" days, every habit", count:1, at:pr.endedAt });
+  }
+
+  // "Unstuck" is the one win that rewards finishing something UNPLEASANT rather
+  // than something impressive. Long-overdue items are the ones that quietly rot.
+  const unstuck = todos.filter(t => t.status==="done" && t.due && t.completedAt &&
+    daysBetweenISO(t.due, String(t.completedAt).slice(0,10)) >= WIN_OVERDUE_DAYS)
+    .map(t => String(t.completedAt).slice(0,10)).sort();
+  if(unstuck.length){
+    wins.push({ key:"unstuck", title:"Unstuck",
+                detail:"cleared "+WIN_OVERDUE_DAYS+"+ days overdue", count:unstuck.length,
+                at:unstuck[unstuck.length-1] });
+  }
+
+  // WARNING: projects carry no completedAt, so `updatedAt` is the closest signal
+  // for "when it was finished" and will read late if a done project is edited.
+  // Accepted rather than adding a field, since wins store nothing by design.
+  const delivered = projects.filter(p => p.status==="done")
+    .map(p => String(p.updatedAt||"").slice(0,10)).filter(Boolean).sort();
+  if(delivered.length){
+    wins.push({ key:"delivered", title:"Delivered", detail:"projects finished",
+                count:delivered.length, at:delivered[delivered.length-1] });
+  }
+
+  const won = items.filter(i => i.status==="won")
+    .map(i => String(i.updatedAt||"").slice(0,10)).filter(Boolean).sort();
+  if(won.length){
+    wins.push({ key:"won", title:"Won", detail:"pursuits landed",
+                count:won.length, at:won[won.length-1] });
+  }
+
+  return wins.sort((a,b)=> String(b.at||"").localeCompare(String(a.at||"")));
+}
+
+/* Records are NUMBERS, not badges, and exist so a broken streak cannot erase
+   your best. They are shown even at zero - a record at zero is honest, whereas
+   an unearned badge is just a locked box telling you to try harder. */
+function computeRecords(habits){
+  const hs = habits || [];
+  let bestStreak = 0, bestHabit = "", totalDays = 0;
+  hs.forEach(h=>{
+    habitRuns(h).forEach(r=>{ if(r.days.length > bestStreak){ bestStreak = r.days.length; bestHabit = h.name; } });
+    totalDays += (h.done||[]).length;
+  });
+  return { bestStreak, bestHabit, totalDays, perfect: perfectRun(hs).best };
 }
 
 /* One-time conversion of routine todos into habits. Grouped by TITLE, because
@@ -3337,6 +3529,32 @@ function todayItems(todos){
   return todos.filter(t => t.status!=="done" && t.status!=="someday" && !isDeferredAway(t) &&
     ( isToday(t.due) || isOverdue(t.due) || t.starredToday || (t.defer && t.defer===TODAY()) ));
 }
+
+/* Tomorrow is deliberately NARROWER than today, not the same filter shifted a day.
+   Three of today's ingredients are today-only concepts and would be nonsense here:
+   OVERDUE (nothing is overdue tomorrow), STARRED-FOR-TODAY (the flag means today),
+   and the follow-up nudges (waiting-N-days is a now question). What is left is the
+   honest answer to "what does tomorrow bring": things dated to it.
+
+   The defer/due disagreement matters: an item DUE tomorrow but DEFERRED past it is
+   not tomorrow's problem, so defer wins. */
+function TOMORROW(){ return todayKey(snzAddDays(1)); }
+function tomorrowDate(){ return snzAddDays(1); }
+function tomorrowItems(todos){
+  const t = TOMORROW();
+  return (todos||[]).filter(x => x.status!=="done" && x.status!=="someday" &&
+    (x.due===t || x.defer===t) && !(x.defer && x.defer > t));
+}
+// Tomorrow's glance line. Separate from headsUp() rather than a mode flag on it,
+// because it shares none of that function's overdue/incoming/quiet-Space logic.
+function headsUpTomorrow(todos, habits){
+  const n = tomorrowItems(todos).length;
+  const h = (habits||[]).filter(x => habitExpectedOn(x.cadence, tomorrowDate())).length;
+  const parts = [];
+  if(n) parts.push(n + " land" + (n===1?"s":"") + " tomorrow.");
+  if(h) parts.push(h + " habit" + (h===1?"":"s") + " due.");
+  return { line: parts.length ? parts.join(" ") : "Tomorrow is clear.", tone:"calm" };
+}
 // ---- "What's about to hit me" -------------------------------------------------
 // One plain sentence answering the two-second glance question, computed LOCALLY so
 // it is instant and works offline - this is the thing you read before deciding
@@ -3447,14 +3665,23 @@ function reorderItem(store, file, movedId, idsInOrder, items){
    copy, so without this the card would just shrink and you would lose the payoff. */
 /* Habits expected today, in the active Space. Habits ride the meta object, NOT
    the space-scoped `data`, so the Space lens has to be applied by hand here. */
-function habitsForToday(store){
+function habitsInSpace(store){
   const sp = store.activeSpace;
-  const inSpace = (h)=> !sp || sp==="all" || (h.space||DEFAULT_SPACE)===sp;
-  return (store.habits||[]).filter(h => inSpace(h) && habitExpectedOn(h.cadence, new Date()));
+  return (store.habits||[]).filter(h => !sp || sp==="all" || (h.space||DEFAULT_SPACE)===sp);
+}
+function habitsForToday(store){
+  return habitsInSpace(store).filter(h => habitExpectedOn(h.cadence, new Date()));
 }
 function RoutinesCard({ store, onOpen }){
-  const [open,setOpen] = useState(() => lsGet("routinesOpen", true));
-  const toggle = () => { const v=!open; setOpen(v); lsSet("routinesOpen", v); };
+  /* COLLAPSED BY DEFAULT (Chris, 2026-08-14: "I don't think I'm liking the habit
+     card front and center"). It stays ABOVE the task list rather than moving below
+     it: at the bottom, a busy day buries it and the daily prompt - the entire point
+     of the card - is lost. Collapsed it is one slim row, which is not "front and
+     centre" but is still seen and still one tap from ticking.
+     The storage key changed from routinesOpen so the new default actually applies
+     to devices that had already stored the old one. */
+  const [open,setOpen] = useState(() => lsGet("habitsOpen", false));
+  const toggle = () => { const v=!open; setOpen(v); lsSet("habitsOpen", v); };
   const rows = habitsForToday(store);
   const done = rows.filter(habitDoneToday).length;
   const pct  = rows.length ? Math.round((done/rows.length)*100) : 0;
@@ -3475,9 +3702,10 @@ function RoutinesCard({ store, onOpen }){
         </span>
         <span className="rt-chev" style={{transform:open?"rotate(180deg)":"none"}}>{Ic.chevron}</span>
       </button>
-      <div style={{height:4,borderRadius:99,background:"var(--bg-3)",marginTop:10,overflow:"hidden"}}>
-        <div style={{height:"100%",width:pct+"%",background:all?"var(--green)":"var(--blue)",transition:"width .3s"}}></div>
-      </div>
+      {open &&
+        <div style={{height:4,borderRadius:99,background:"var(--bg-3)",marginTop:10,overflow:"hidden"}}>
+          <div style={{height:"100%",width:pct+"%",background:all?"var(--green)":"var(--blue)",transition:"width .3s"}}></div>
+        </div>}
       {open && <div style={{marginTop:8}}>
         {rows.map(h=>{
           const isDone = habitDoneToday(h);
@@ -3493,6 +3721,30 @@ function RoutinesCard({ store, onOpen }){
           );
         })}
       </div>}
+    </div>
+  );
+}
+
+/* Tomorrow's habits, DISPLAY ONLY.
+   WARNING - the reason this is a separate component instead of a flag on
+   RoutinesCard: habitToggle() stamps TODAY's date. A tickable checkbox on a
+   tomorrow view would silently mark a habit done for a day that has not
+   happened yet, and the user would have no way to tell. There is no checkbox
+   here at all; that is the point, not an omission. */
+function HabitsTomorrowCard({ store, onOpen }){
+  const rows = habitsInSpace(store).filter(h => habitExpectedOn(h.cadence, tomorrowDate()));
+  if(!rows.length) return null;
+  return (
+    <div className="card" style={{marginTop:14,padding:"12px 14px"}}>
+      <b style={{fontFamily:"Fraunces",fontSize:15,display:"block"}}>Habits tomorrow</b>
+      <span className="hint">{rows.length} due</span>
+      <div style={{marginTop:8}}>
+        {rows.map(h=>
+          <div key={h.id} className="rt-row">
+            <span className="rt-box" aria-hidden="true" style={{opacity:.45}}></span>
+            <button className="rt-title" onClick={()=>onOpen(h)} style={{opacity:.75}}>{h.name}</button>
+          </div>)}
+      </div>
     </div>
   );
 }
@@ -3794,6 +4046,92 @@ function ComingUpCard({ store, style }){
     </div>
   );
 }
+/* Which wins the user has already seen. Device-local on purpose: this is a UI
+   nicety, not user data, and syncing it would mean a new meta slice (and the
+   signOut contract that goes with it) for something that does not matter if a
+   second device shows the line once more. */
+function winsSeen(){ return lsGet("winsSeen", {}) || {}; }
+function unseenWins(wins){
+  const seen = winsSeen();
+  return wins.filter(w => !seen[w.key] || String(seen[w.key]) < String(w.at||""));
+}
+function markWinsSeen(wins){
+  const seen = winsSeen();
+  wins.forEach(w => { seen[w.key] = w.at || TODAY(); });
+  lsSet("winsSeen", seen);
+}
+
+/* Wins are unscoped by Space on purpose - recognition is personal and a
+   Space-filtered trophy case would read as a partial record. Same reasoning as
+   Export and the home-screen badge, both of which also use allData. */
+function storeWins(store){ return computeWins(store.allData, store.habits, store.rundown); }
+
+/* One line on the Dashboard, ONLY while something is unseen. This is the whole
+   compromise on nagging: without it the Wins screen is one nobody remembers
+   exists; as permanent chrome it becomes something you learn to scroll past. */
+function NewWinLine({ store, go }){
+  const fresh = unseenWins(storeWins(store));
+  if(!fresh.length) return null;
+  const w = fresh[0];
+  return (
+    <button className="card" onClick={()=>go("wins")}
+      style={{marginTop:14,display:"flex",gap:10,alignItems:"center",width:"100%",textAlign:"left",
+              borderColor:"var(--amber-line)",background:"var(--amber-dim)"}}>
+      <span className="win-mark">{fresh.length>1?fresh.length:"★"}</span>
+      <span style={{flex:1,minWidth:0}}>
+        <b style={{fontFamily:"Fraunces",fontSize:15,display:"block"}}>{w.title}</b>
+        <span className="hint">{w.detail}{fresh.length>1?" and "+(fresh.length-1)+" more":""}</span>
+      </span>
+    </button>
+  );
+}
+
+function WinsView({ store, back }){
+  const wins = storeWins(store);
+  const rec = computeRecords(store.habits);
+  // Seen-marking happens on open, which is the only moment we know he looked.
+  useEffect(()=>{ markWinsSeen(wins); }, []);   // eslint-disable-line
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <button className="btn btn-ghost btn-sm" onClick={back}>{Ic.back} Back</button>
+        <h1 className="title" style={{marginTop:8}}>Wins</h1>
+        <div className="subtle" style={{marginTop:2}}>What you've actually pulled off</div>
+      </div>
+
+      <div className="rec-grid" style={{marginTop:14}}>
+        <div className="rec-cell">
+          <div className="rec-num">{rec.bestStreak}</div>
+          <div className="hint">longest streak{rec.bestHabit?" - "+rec.bestHabit:""}</div>
+        </div>
+        <div className="rec-cell">
+          <div className="rec-num">{rec.totalDays}</div>
+          <div className="hint">habit days logged</div>
+        </div>
+      </div>
+
+      {wins.length===0
+        ? <Empty glyph={"★"} title="Nothing yet"
+            sub="Wins are earned by things that are hard or slow - a habit held for a week, a project finished, something long overdue finally cleared."/>
+        : <div className="card" style={{marginTop:14}}>
+            {wins.map(w=>
+              <div key={w.key} className="win-row">
+                <span className="win-mark">{w.count>1?w.count:"★"}</span>
+                <span className="win-body">
+                  <span className="win-title">{w.title}</span>
+                  <span className="win-detail">{w.detail}</span>
+                </span>
+                <span className="win-when">{w.at?fmtDate(w.at):""}</span>
+              </div>)}
+          </div>}
+
+      <p className="hint" style={{marginTop:12}}>Wins are worked out from your existing history, so nothing is
+        stored and nothing can be lost. There are no points and no levels - a win means something happened
+        that was hard or that took a long time.</p>
+    </div>
+  );
+}
+
 function HeadsUpCard({ store, style }){
   const h = headsUp(store.data.todos, store.spaces, store.activeSpace, habitsForToday(store));
   if(!h.line) return null;
@@ -3808,33 +4146,51 @@ function HeadsUpCard({ store, style }){
 }
 function TodayView({ store, onOpen, goNow, typeFilter, del, toast }){
   const [habitOpen,setHabitOpen] = useState(null);
+  // Which day the screen is showing. Deliberately NOT persisted: the useful
+  // default is always "today", and a stale "tomorrow" left over from last night
+  // would be a confusing thing to open the app into.
+  const [day,setDay] = useState("today");
+  const tomorrow = day==="tomorrow";
   const openHabit = (h)=> setHabitOpen(h);
   const inFilter = t => typeFilter==="all" || t.type===typeFilter;
   // Habits are no longer todos at all, so the main list needs no routine filter.
   // isRoutine() is kept only for the one-time migration of pre-habits data.
-  let items = todayItems(store.data.todos).filter(inFilter).sort(sortTodos);
+  const items = (tomorrow ? tomorrowItems(store.data.todos) : todayItems(store.data.todos))
+    .filter(inFilter).sort(sortTodos);
   const thr = waitThreshold(store);
-  const followUps = store.data.todos
+  // Follow-ups and stale-idea nudges are TODAY questions ("this has been waiting
+  // 12 days"), so they are suppressed on tomorrow rather than recomputed for it.
+  const followUps = tomorrow ? [] : store.data.todos
     .filter(t=>t.status==="waiting" && (typeFilter==="all"||t.type===typeFilter))
     .map(t=>({ t, d:waitingDays(t) }))
     .filter(x=>x.d!=null && x.d>=thr)
     .sort((a,b)=>b.d-a.d)
     .map(x=>x.t);
-  const staleIdeas = store.data.ideas.filter(i=>{
+  const staleIdeas = tomorrow ? [] : store.data.ideas.filter(i=>{
     if(i.state==="promoted"||i.state==="discarded") return false;
     const age = (Date.now()-new Date(i.capturedAt||i.createdAt||Date.now()))/86400000;
     return age>=30;
   });
-  const d = new Date();
+  const d = tomorrow ? tomorrowDate() : new Date();
+  const th = tomorrow ? headsUpTomorrow(store.data.todos, habitsInSpace(store)) : null;
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
         <div className="eyebrow">{d.toLocaleDateString(undefined,{weekday:"long"})}</div>
-        <div className="topbar-row"><h1 className="title">Today</h1>
-          <button className="btn btn-ghost btn-sm" onClick={goNow}>{Ic.now} Focus</button></div>
+        <div className="topbar-row"><h1 className="title">{tomorrow?"Tomorrow":"Today"}</h1>
+          {!tomorrow && <button className="btn btn-ghost btn-sm" onClick={goNow}>{Ic.now} Focus</button>}</div>
         <div className="subtle" style={{marginTop:2}}>{d.toLocaleDateString(undefined,{month:"long",day:"numeric"})}</div>
       </div>
-      <HeadsUpCard store={store}/>
+      <div className="seg" style={{marginTop:12}}>
+        <button className={"seg-b"+(!tomorrow?" on":"")} onClick={()=>setDay("today")}>Today</button>
+        <button className={"seg-b"+(tomorrow?" on":"")} onClick={()=>setDay("tomorrow")}>Tomorrow</button>
+      </div>
+      {tomorrow
+        ? <div className="card" style={{marginTop:14}}>
+            <div className="eyebrow" style={{marginBottom:6}}>Heads up</div>
+            <p style={{fontFamily:"Fraunces",fontSize:16,lineHeight:1.45,margin:0,color:"var(--ink)"}}>{th.line}</p>
+          </div>
+        : <HeadsUpCard store={store}/>}
       {followUps.length>0 &&
         <div style={{marginTop:14}}>
           <div className="label" style={{display:"flex",alignItems:"center",gap:6}}>{Ic.clock} Follow up - waiting {thr}+ days</div>
@@ -3845,9 +4201,13 @@ function TodayView({ store, onOpen, goNow, typeFilter, del, toast }){
           <b style={{fontFamily:"Fraunces",fontSize:15}}>Revisit your ideas</b>
           <p className="hint" style={{marginTop:4}}>{staleIdeas.length} idea{staleIdeas.length===1?"":"s"} untouched 30+ days. A quick review keeps the system trusted.</p>
         </div>}
-      <RoutinesCard store={store} onOpen={openHabit}/>
-      {items.length===0 ? <Empty glyph={"\u2600"} title="Nothing scheduled" sub="Star items for today, or set a due date."/> :
-        <div className="list">{items.map(t=><SwipeRow key={t.id} onDelete={()=>del("todos",t)}><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/></SwipeRow>)}</div>}
+      {tomorrow ? <HabitsTomorrowCard store={store} onOpen={openHabit}/>
+                : <RoutinesCard store={store} onOpen={openHabit}/>}
+      {items.length===0
+        ? (tomorrow
+            ? <Empty glyph={"☾"} title="Tomorrow is clear" sub="Nothing is due or deferred to tomorrow yet."/>
+            : <Empty glyph={"☀"} title="Nothing scheduled" sub="Star items for today, or set a due date."/>)
+        : <div className="list">{items.map(t=><SwipeRow key={t.id} onDelete={()=>del("todos",t)}><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/></SwipeRow>)}</div>}
       {habitOpen && <HabitSheet store={store} habit={habitOpen} toast={toast} onClose={()=>setHabitOpen(null)}/>}
     </div>
   );
@@ -5581,7 +5941,7 @@ function CalendarView({ store }){
   );
 }
 
-function DashboardView({ store, onOpen, openEditor }){
+function DashboardView({ store, onOpen, openEditor, go }){
   const active = store.activeSpace;
   const isAll = !active || active==="all";
   const spaceName = isAll ? "All spaces" : (((store.spaces||[]).find(s=>s.id===active)||{}).name || "Space");
@@ -5678,6 +6038,7 @@ function DashboardView({ store, onOpen, openEditor }){
       </div>
 
       <HeadsUpCard store={store} style={{marginTop:16}}/>
+      <NewWinLine store={store} go={go}/>
       <ComingUpCard store={store}/>
       <RadarCard store={store} onOpen={onOpen}/>
 
@@ -6621,6 +6982,8 @@ function MoreView({ store, go }){
         r=store.data.ideas.filter(i=>(i.state||"raw")==="raw").length;
         return n+" captured"+(r?" · "+r+" unprocessed":""); })() },
     { k:"rundown",  ic:Ic.review,  b:"Rundown", s:"Awareness board for everything in flight" },
+    { k:"wins",     ic:Ic.star,    b:"Wins", s:(()=>{ const n=computeWins(store.allData, store.habits, store.rundown).length;
+        return n ? n+" earned" : "Nothing yet"; })() },
     { k:"aichat",   ic:Ic.sparkle, b:"Organize with AI", s:"Brain-dump, then approve a plan" },
     { k:"matrix",   ic:Ic.matrix,  b:"Matrix", s:"Eisenhower priorities" },
     { k:"goals",    ic:Ic.goal,    b:"Goals", s:store.data.goals.filter(g=>g.status==="active").length+" active" },
@@ -7005,7 +7368,8 @@ function App(){
   else if(sub==="now") subView=<NowView store={store} onOpen={openTodo} back={()=>setSub(null)}/>;
   else if(sub==="search") subView=<SearchView store={store} openEditor={openEditor} back={()=>setSub(null)}/>;
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
-  else if(sub==="dashboard") subView=<DashboardView store={store} onOpen={openTodo} openEditor={openEditor}/>;
+  else if(sub==="dashboard") subView=<DashboardView store={store} onOpen={openTodo} openEditor={openEditor} go={go}/>;
+  else if(sub==="wins") subView=<WinsView store={store} back={()=>setSub(null)}/>;
   else if(sub==="calendar") subView=<CalendarView store={store}/>;
   else if(sub==="export") subView=<ExportView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="aichat") subView=<AIChat store={store} toast={toast} back={()=>setSub(null)}/>;
