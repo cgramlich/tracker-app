@@ -4,7 +4,9 @@
   "version": "1.0.0",
   "description": "Dev-only compile gate for the single-file PWA. Not shipped to users; GitHub Pages serves index.html only.",
   "scripts": {
-    "check": "node check.js"
+    "check": "node check.js",
+    "test": "node tests/run.js",
+    "verify": "node check.js && node tests/run.js"
   },
   "devDependencies": {
     "@babel/standalone": "7.23.5"

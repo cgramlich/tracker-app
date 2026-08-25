@@ -565,11 +565,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.46.0";
+const APP_VERSION = "1.47.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-08-14.1";
+const BUILD = "2026-08-14.2";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -2493,7 +2493,31 @@ function NavIc({d}){ return d; }
    SMALL SHARED COMPONENTS
    ============================================================ */
 function Sheet({ title, onClose, children, action }){
-  useEffect(() => { document.body.style.overflow="hidden"; return () => { document.body.style.overflow=""; }; }, []);
+  const boxRef = useRef(null);
+  /* A sheet must ALWAYS open at its top. Chris, 2026-08-14: opening a new to-do
+     landed him half way down the form and he had to scroll back up to the title,
+     which is the first thing he types.
+
+     Three separate things scroll this container out from under you, which is why
+     the fix is a repeated snap rather than a single scrollTop=0:
+       1. autoFocus on the title fires while the sheet is still mid-slide-up, so
+          the browser's scroll-into-view computes against a moving element;
+       2. on iOS the software keyboard then shrinks the viewport and Safari
+          scrolls again to keep the focused input visible;
+       3. this sheet often replaces another one (the + menu) in the same commit.
+     The last snap is timed just past the .32s slideup. */
+  useEffect(() => {
+    document.body.style.overflow="hidden";
+    const snap = () => { if(boxRef.current) boxRef.current.scrollTop = 0; };
+    snap();
+    const raf = requestAnimationFrame(snap);
+    const t1 = setTimeout(snap, 80);
+    const t2 = setTimeout(snap, 360);
+    return () => {
+      document.body.style.overflow="";
+      cancelAnimationFrame(raf); clearTimeout(t1); clearTimeout(t2);
+    };
+  }, []);
   // Portal to <body>. The scrim + sheet are position:fixed (viewport-anchored), but a
   // Sheet opened from inside a row (e.g. the snooze button) sits under SwipeRow's
   // .swipe-body, which has transform + will-change:transform - that makes it the
@@ -2502,7 +2526,7 @@ function Sheet({ title, onClose, children, action }){
   return ReactDOM.createPortal(
     <div>
       <div className="scrim" onClick={onClose}></div>
-      <div className="sheet" role="dialog">
+      <div className="sheet" role="dialog" ref={boxRef}>
         <div className="sheet-grip"></div>
         <div className="sheet-head">
           {title && <h3 className="sheet-title">{title}</h3>}
@@ -3545,6 +3569,33 @@ function tomorrowItems(todos){
   return (todos||[]).filter(x => x.status!=="done" && x.status!=="someday" &&
     (x.due===t || x.defer===t) && !(x.defer && x.defer > t));
 }
+/* The 7-day horizon, grouped by day. Deliberately INCLUDES today: the point of
+   this view is the SHAPE of the week ("Thursday is empty, Friday is brutal"), and
+   a week with today cut out of it is not the week. The overlap with the Today tab
+   is intentional - Today is for focus, this is for planning.
+
+   Overdue is NOT folded in. It belongs to no day, and dropping it into today's
+   bucket would silently restate work the Today tab already owns. Habits are left
+   out too: seven days of the same daily habit is noise, not information. */
+const WEEK_DAYS = 7;
+function weekBuckets(todos){
+  const out = [];
+  for(let i=0;i<WEEK_DAYS;i++){
+    const d = snzAddDays(i);
+    const key = todayKey(d);
+    const items = (todos||[]).filter(x => x.status!=="done" && x.status!=="someday" &&
+      (x.due===key || x.defer===key) && !(x.defer && x.defer > key));
+    out.push({ key, date:d, items });
+  }
+  return out;
+}
+function weekCount(todos){ return weekBuckets(todos).reduce((n,b)=>n+b.items.length, 0); }
+function headsUpWeek(todos){
+  const n = weekCount(todos);
+  return { line: n ? n + " thing" + (n===1?"":"s") + " across the next 7 days."
+                   : "Nothing scheduled in the next 7 days.", tone:"calm" };
+}
+
 // Tomorrow's glance line. Separate from headsUp() rather than a mode flag on it,
 // because it shares none of that function's overdue/incoming/quiet-Space logic.
 function headsUpTomorrow(todos, habits){
@@ -4151,41 +4202,51 @@ function TodayView({ store, onOpen, goNow, typeFilter, del, toast }){
   // would be a confusing thing to open the app into.
   const [day,setDay] = useState("today");
   const tomorrow = day==="tomorrow";
+  const week = day==="week";
   const openHabit = (h)=> setHabitOpen(h);
   const inFilter = t => typeFilter==="all" || t.type===typeFilter;
   // Habits are no longer todos at all, so the main list needs no routine filter.
   // isRoutine() is kept only for the one-time migration of pre-habits data.
-  const items = (tomorrow ? tomorrowItems(store.data.todos) : todayItems(store.data.todos))
-    .filter(inFilter).sort(sortTodos);
+  const items = week ? []
+    : (tomorrow ? tomorrowItems(store.data.todos) : todayItems(store.data.todos))
+        .filter(inFilter).sort(sortTodos);
+  const buckets = week
+    ? weekBuckets(store.data.todos).map(b => ({ ...b, items:b.items.filter(inFilter).sort(sortTodos) }))
+    : [];
   const thr = waitThreshold(store);
   // Follow-ups and stale-idea nudges are TODAY questions ("this has been waiting
   // 12 days"), so they are suppressed on tomorrow rather than recomputed for it.
-  const followUps = tomorrow ? [] : store.data.todos
+  const followUps = (tomorrow||week) ? [] : store.data.todos
     .filter(t=>t.status==="waiting" && (typeFilter==="all"||t.type===typeFilter))
     .map(t=>({ t, d:waitingDays(t) }))
     .filter(x=>x.d!=null && x.d>=thr)
     .sort((a,b)=>b.d-a.d)
     .map(x=>x.t);
-  const staleIdeas = tomorrow ? [] : store.data.ideas.filter(i=>{
+  const staleIdeas = (tomorrow||week) ? [] : store.data.ideas.filter(i=>{
     if(i.state==="promoted"||i.state==="discarded") return false;
     const age = (Date.now()-new Date(i.capturedAt||i.createdAt||Date.now()))/86400000;
     return age>=30;
   });
   const d = tomorrow ? tomorrowDate() : new Date();
-  const th = tomorrow ? headsUpTomorrow(store.data.todos, habitsInSpace(store)) : null;
+  const th = tomorrow ? headsUpTomorrow(store.data.todos, habitsInSpace(store))
+           : week     ? headsUpWeek(store.data.todos) : null;
   return (
     <div className="screen">
       <div className="topbar" style={{padding:0,position:"static"}}>
-        <div className="eyebrow">{d.toLocaleDateString(undefined,{weekday:"long"})}</div>
-        <div className="topbar-row"><h1 className="title">{tomorrow?"Tomorrow":"Today"}</h1>
-          {!tomorrow && <button className="btn btn-ghost btn-sm" onClick={goNow}>{Ic.now} Focus</button>}</div>
-        <div className="subtle" style={{marginTop:2}}>{d.toLocaleDateString(undefined,{month:"long",day:"numeric"})}</div>
+        <div className="eyebrow">{week?"Ahead":d.toLocaleDateString(undefined,{weekday:"long"})}</div>
+        <div className="topbar-row"><h1 className="title">{week?"Next 7 days":tomorrow?"Tomorrow":"Today"}</h1>
+          {!tomorrow && !week && <button className="btn btn-ghost btn-sm" onClick={goNow}>{Ic.now} Focus</button>}</div>
+        <div className="subtle" style={{marginTop:2}}>{week
+          ? d.toLocaleDateString(undefined,{month:"short",day:"numeric"}) + " - " +
+            snzAddDays(WEEK_DAYS-1).toLocaleDateString(undefined,{month:"short",day:"numeric"})
+          : d.toLocaleDateString(undefined,{month:"long",day:"numeric"})}</div>
       </div>
       <div className="seg" style={{marginTop:12}}>
-        <button className={"seg-b"+(!tomorrow?" on":"")} onClick={()=>setDay("today")}>Today</button>
+        <button className={"seg-b"+(!tomorrow && !week?" on":"")} onClick={()=>setDay("today")}>Today</button>
         <button className={"seg-b"+(tomorrow?" on":"")} onClick={()=>setDay("tomorrow")}>Tomorrow</button>
+        <button className={"seg-b"+(week?" on":"")} onClick={()=>setDay("week")}>7 days</button>
       </div>
-      {tomorrow
+      {(tomorrow||week)
         ? <div className="card" style={{marginTop:14}}>
             <div className="eyebrow" style={{marginBottom:6}}>Heads up</div>
             <p style={{fontFamily:"Fraunces",fontSize:16,lineHeight:1.45,margin:0,color:"var(--ink)"}}>{th.line}</p>
@@ -4201,9 +4262,22 @@ function TodayView({ store, onOpen, goNow, typeFilter, del, toast }){
           <b style={{fontFamily:"Fraunces",fontSize:15}}>Revisit your ideas</b>
           <p className="hint" style={{marginTop:4}}>{staleIdeas.length} idea{staleIdeas.length===1?"":"s"} untouched 30+ days. A quick review keeps the system trusted.</p>
         </div>}
-      {tomorrow ? <HabitsTomorrowCard store={store} onOpen={openHabit}/>
-                : <RoutinesCard store={store} onOpen={openHabit}/>}
-      {items.length===0
+      {week ? null
+            : tomorrow ? <HabitsTomorrowCard store={store} onOpen={openHabit}/>
+                       : <RoutinesCard store={store} onOpen={openHabit}/>}
+      {week
+        ? <div>
+            {buckets.map(b=>
+              <div key={b.key} style={{marginTop:14}}>
+                <div className="label">{b.date.toLocaleDateString(undefined,{weekday:"long", month:"short", day:"numeric"})}</div>
+                {b.items.length===0
+                  ? <p className="hint" style={{marginTop:4}}>Clear.</p>
+                  : <div className="list" style={{marginTop:8}}>{b.items.map(t=>
+                      <SwipeRow key={t.id} onDelete={()=>del("todos",t)}>
+                        <TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/></SwipeRow>)}</div>}
+              </div>)}
+          </div>
+        : items.length===0
         ? (tomorrow
             ? <Empty glyph={"☾"} title="Tomorrow is clear" sub="Nothing is due or deferred to tomorrow yet."/>
             : <Empty glyph={"☀"} title="Nothing scheduled" sub="Star items for today, or set a due date."/>)
