@@ -87,8 +87,17 @@ PWA's self-update - so "Tracker" in these docs = the codebase/working title.
   https://web-production-f0353.up.railway.app (verify via its `/health`).
 
 ## Verify before delivering
-- `npm run check` (check.js, Babel-in-Node compile gate) BEFORE every deploy;
-  then content-grep to confirm each intended change is present.
+- `npm run verify` = the compile gate + the test suite. Run it BEFORE every
+  deploy; then content-grep to confirm each intended change is present.
+  - `npm run check` - check.js, the Babel-in-Node compile gate.
+  - `npm test`      - tests/*.test.js. Suites LIFT their subject out of
+    index.html rather than restating it, so a test cannot drift from shipping
+    code. Add a suite for anything that mutates user data.
+  - Visual work: `node tests/harness/build.js`, serve tests/harness, and MEASURE
+    the DOM at 375px. Screenshots often fail to composite; measuring catches more
+    and has repeatedly found real bugs that reading the code did not.
+- These lived in a temp scratchpad until 2026-08-14, when Windows cleaned it
+  twice and ~175 tests were lost. They are in the repo now. Keep them there.
 - For automated edits, assert each anchor string appears EXACTLY ONCE before
   replacing.
 - One change set per deploy.
