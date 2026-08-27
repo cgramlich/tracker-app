@@ -25,7 +25,7 @@ const out = path.join(__dirname, "index.html");
 
 const css = (src.match(/<style>([\s\S]*?)<\/style>/) || [])[1];
 if (!css) throw new Error("no <style> block found in index.html");
-for (const sel of [".seg", ".seg-b", ".rt-row", ".rt-box", ".sheet"]) {
+for (const sel of [".seg", ".seg-b", ".rt-row", ".rt-box", ".sheet", ".affirm"]) {
   if (!new RegExp("\\" + sel + "[\\s{,.]").test(css)) {
     throw new Error("assert failed: " + sel + " missing from the lifted CSS");
   }
@@ -52,6 +52,7 @@ const parts = [
   "habitsInSpace", "habitsForToday",
   "TOMORROW", "tomorrowDate", "tomorrowItems", "todayItems", "headsUpTomorrow",
   "WEEK_DAYS", "weekBuckets", "weekCount", "headsUpWeek",
+  "cleanAffirmation", "affirmationOfTheDay", "AffirmationLine",
   "RoutinesCard", "HabitsTomorrowCard", "TodayView",
 ].map(lift).join("\n\n");
 
@@ -70,6 +71,8 @@ function waitingDays(t){ return t.waitDays == null ? null : t.waitDays; }
 let _ls = {};
 function lsGet(k,d){ return k in _ls ? _ls[k] : d; }
 function lsSet(k,v){ _ls[k]=v; }
+function nowISO(){ return new Date().toISOString(); }
+let _u=0; function uid(){ return "u"+(++_u); }
 const Ic = { clock:"\\u25F7", now:"\\u25B6", check:"\\u2713", chevron:"\\u25BE" };
 
 // Leaf stubs. None of these are what is under measurement.
@@ -88,6 +91,10 @@ function HabitSheet(){ return null; }
 const D = (n) => todayKey(snzAddDays(n));
 const store = {
   activeSpace:"all", defaultSpace:"personal",
+  affirmations: [
+    { id:"af1", text:"Be bold in what you ask for, as long as it is carefully designed.", addedAt:"2026-01-01T00:00:00Z" },
+    { id:"af2", text:"Slow is smooth and smooth is fast.", addedAt:"2026-01-01T00:00:00Z" },
+  ],
   habits: [
     { id:"h1", name:"Complete daily exercise", cadence:"daily", space:"personal", startedAt:"2026-07-01", done:[] },
     { id:"h2", name:"Make one personal or business connection call daily", cadence:"daily", space:"personal", startedAt:"2026-07-01", done:[TODAY()] },

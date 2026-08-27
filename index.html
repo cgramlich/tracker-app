@@ -535,6 +535,9 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
 .hb-dot{width:14px;height:14px;border-radius:4px;background:var(--bg-4);border:1px solid var(--line-2);}
 .hb-dot.on{background:var(--green);border-color:var(--green);}
 .hb-dot.off{opacity:.3;}
+/* Affirmation: one quiet line, deliberately no card chrome. */
+.affirm{margin-top:14px;padding:2px 2px 0;font-family:Fraunces;font-size:15px;line-height:1.5;
+  color:var(--ink-2);font-style:italic;}
 /* Wins */
 .win-row{display:flex;gap:12px;align-items:center;padding:11px 0;border-top:1px solid var(--line);}
 .win-row:first-of-type{border-top:0;}
@@ -565,11 +568,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.47.0";
+const APP_VERSION = "1.48.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-08-14.2";
+const BUILD = "2026-08-27.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -736,6 +739,41 @@ function habitToggle(h, iso){
   const set = habitDoneSet(h);
   if(set.has(day)) set.delete(day); else set.add(day);
   return { ...h, done: Array.from(set).sort() };
+}
+
+/* ── AFFIRMATIONS ────────────────────────────────────────────────────────────
+   A line you READ, not work you complete. Chris asked for these 2026-08-27 as
+   "its own thing" rather than a field on a habit.
+
+   No checkbox, no streak, no count. If an affirmation could be ticked it would
+   BE a habit, and it would then leak into the places that count outstanding
+   work - Heads up, the icon badge, Wins. It deliberately touches none of them.
+
+   WHICH ONE SHOWS TODAY IS COMPUTED FROM THE DATE, NEVER STORED. A stored
+   "current affirmation" pointer would need a write every day, would drift
+   between devices, and would be one more thing signOut has to clear. Deriving
+   it means the rotation is stable all day, changes at midnight, and costs
+   nothing. Same reasoning as Wins.
+
+   Rotation is by DAYS SINCE EPOCH so it advances one per calendar day and does
+   not jump when the list is reordered mid-day. Adding or removing an entry does
+   change today's pick - accepted, because the alternative is storing state. */
+function cleanAffirmation(a){
+  if(!a) return null;
+  const text = String(a.text||"").trim();
+  if(!text) return null;
+  return { id: a.id || uid(), text, addedAt: a.addedAt || nowISO() };
+}
+function affirmationOfTheDay(list, dateISO){
+  const items = (list||[]).map(cleanAffirmation).filter(Boolean);
+  if(!items.length) return null;
+  const key = dateISO || TODAY();
+  const ms = Date.parse(key + "T00:00:00");
+  if(isNaN(ms)) return items[0];
+  const dayNumber = Math.floor(ms / 86400000);
+  // JS % is signed; dates before 1970 would otherwise index negatively.
+  const i = ((dayNumber % items.length) + items.length) % items.length;
+  return items[i];
 }
 
 /* ============================================================================
@@ -1772,6 +1810,10 @@ function useStore(){
   // `habitsBackup` holds the routine rows it deleted, so a bad migration is undoable.
   const [habits, setHabits] = useState(() => lsGet("habits", null));
   const habitsRef = useRef(habits); habitsRef.current = habits;
+  // Affirmations: [{id,text,addedAt}]. A meta slice like the rest. Which one is
+  // shown today is DERIVED from the date, so there is no pointer to persist.
+  const [affirmations, setAffirmations] = useState(() => lsGet("affirmations", null));
+  const affirmationsRef = useRef(affirmations); affirmationsRef.current = affirmations;
   const habitsMigratedRef = useRef(lsGet("habitsMigrated", false));
   const habitsBackupRef = useRef(lsGet("habitsBackup", null));
   // RTR Rundown: an awareness board that rides on meta (like templates/spaces). null until
@@ -1810,6 +1852,7 @@ function useStore(){
     }
     if(templatesRef.current && templatesRef.current.length){ m.templates = templatesRef.current; }
     if(rundownRef.current){ m.rundown = rundownRef.current; }
+    if(affirmationsRef.current){ m.affirmations = affirmationsRef.current; }
     if(habitsRef.current){
       m.habits = habitsRef.current;
       m.habitsMigrated = !!habitsMigratedRef.current;
@@ -1848,6 +1891,11 @@ function useStore(){
   }, [pushCfg]);
   const setDefaultSpaceId = useCallback((id) => {
     defaultSpaceRef.current = id; setDefaultSpace(id); lsSet("defaultSpace", id);
+    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    pushCfg();
+  }, [pushCfg]);
+  const saveAffirmations = useCallback((next) => {
+    affirmationsRef.current = next; setAffirmations(next); lsSet("affirmations", next);
     cfgDirtyRef.current = true; lsSet("cfgDirty", true);
     pushCfg();
   }, [pushCfg]);
@@ -2081,6 +2129,11 @@ function useStore(){
             rundownRef.current = m.rundown; setRundown(m.rundown); lsSet("rundown", m.rundown);
             log("RUNDOWN","rundown <- meta ("+((m.rundown.items||[]).length)+" items)");
           }
+          if(Array.isArray(m && m.affirmations)){
+            affirmationsRef.current = m.affirmations; setAffirmations(m.affirmations);
+            lsSet("affirmations", m.affirmations);
+            log("AFFIRM","affirmations <- meta ("+m.affirmations.length+")");
+          }
           if(Array.isArray(m && m.habits)){
             habitsRef.current = m.habits; setHabits(m.habits); lsSet("habits", m.habits);
             habitsMigratedRef.current = !!m.habitsMigrated; lsSet("habitsMigrated", !!m.habitsMigrated);
@@ -2126,7 +2179,7 @@ function useStore(){
     // to - or pushed under - a different account on the same device (migration footgun).
     FILES.forEach(f => lsDel("cache:"+f));
     ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty","spaces","defaultSpace","spacesSeeded","templates","rundown",
-     "habits","habitsMigrated","habitsBackup"].forEach(k => lsDel(k));
+     "habits","habitsMigrated","habitsBackup","affirmations"].forEach(k => lsDel(k));
     const empty = {}; FILES.forEach(f => empty[f] = []);
     dataRef.current = empty; setData(empty);
     dirtyRef.current = {}; setDirty({});
@@ -2141,6 +2194,7 @@ function useStore(){
     // Habits are a meta slice too, so the SAME rule applies: ref + state + localStorage,
     // all three. habitsMigrated especially - left set, the next account would skip its own
     // routine conversion entirely and silently keep routine todos that never became habits.
+    affirmationsRef.current = null; setAffirmations(null);
     habitsRef.current = null; setHabits(null);
     habitsMigratedRef.current = false;
     habitsBackupRef.current = null;
@@ -2448,7 +2502,7 @@ function useStore(){
     return out;
   }, [data, activeSpace, spaces]);
 
-  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, habits, saveHabits, rundown, saveRundown, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, deleteAccount, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
+  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, habits, saveHabits, affirmations, saveAffirmations, rundown, saveRundown, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, deleteAccount, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
 }
 
 /* ============================================================
@@ -4183,6 +4237,14 @@ function WinsView({ store, back }){
   );
 }
 
+/* One line at the top of Today. Renders nothing at all until there is something
+   to say - an empty affirmation slot would be worse than no affirmations. */
+function AffirmationLine({ store }){
+  const a = affirmationOfTheDay(store.affirmations, TODAY());
+  if(!a) return null;
+  return <p className="affirm">{a.text}</p>;
+}
+
 function HeadsUpCard({ store, style }){
   const h = headsUp(store.data.todos, store.spaces, store.activeSpace, habitsForToday(store));
   if(!h.line) return null;
@@ -4241,6 +4303,7 @@ function TodayView({ store, onOpen, goNow, typeFilter, del, toast }){
             snzAddDays(WEEK_DAYS-1).toLocaleDateString(undefined,{month:"short",day:"numeric"})
           : d.toLocaleDateString(undefined,{month:"long",day:"numeric"})}</div>
       </div>
+      {!tomorrow && !week && <AffirmationLine store={store}/>}
       <div className="seg" style={{marginTop:12}}>
         <button className={"seg-b"+(!tomorrow && !week?" on":"")} onClick={()=>setDay("today")}>Today</button>
         <button className={"seg-b"+(tomorrow?" on":"")} onClick={()=>setDay("tomorrow")}>Tomorrow</button>
@@ -4527,6 +4590,39 @@ function HabitsEditor({ store, toast }){
       <button className="btn btn-ghost btn-block" style={{marginTop:8}} disabled={!adding.trim()} onClick={add}>Add habit</button>
       <p className="hint" style={{marginTop:8}}>Habits are things you do on a cadence, not tasks with a deadline. They show on
         Today in their own card and never appear in your to-do list. The number is how many of the last 30 expected days you hit.</p>
+    </div>
+  );
+}
+
+/* Settings > Affirmations. The only place they are created - the Today line is
+   read-only by design, so without this there would be no way in. */
+function AffirmationsEditor({ store, toast }){
+  const list = store.affirmations || [];
+  const [draft,setDraft] = useState("");
+  function add(){
+    const t = draft.trim(); if(!t) return;
+    store.saveAffirmations(list.concat([{ id:uid(), text:t, addedAt:nowISO() }]));
+    setDraft(""); toast && toast("Affirmation added");
+  }
+  function edit(id, v){ const t=(v||"").trim(); if(t) store.saveAffirmations(list.map(a=>a.id===id?{...a,text:t}:a)); }
+  function del(id){ store.saveAffirmations(list.filter(a=>a.id!==id)); toast && toast("Removed"); }
+  const today = affirmationOfTheDay(list, TODAY());
+  return (
+    <div>
+      {list.map(a=>
+        <div key={a.id} className="row" style={{alignItems:"center",gap:8,background:"var(--bg)",marginBottom:6}}>
+          <input className="input" defaultValue={a.text} onBlur={e=>edit(a.id,e.target.value)}
+            onKeyDown={e=>{ if(e.key==="Enter") e.target.blur(); }} style={{flex:1,minWidth:90}} aria-label="Affirmation"/>
+          {today && today.id===a.id && <span className="chip amber" style={{flex:"0 0 auto"}}>Today</span>}
+          <button className="btn btn-ghost btn-sm" style={{flex:"0 0 auto"}} onClick={()=>del(a.id)}>Delete</button>
+        </div>)}
+      <div className="row" style={{marginTop:8}}>
+        <input className="input" value={draft} onChange={e=>setDraft(e.target.value)}
+          placeholder="Something worth reading again" onKeyDown={e=>e.key==="Enter"&&add()} style={{flex:1,minWidth:90}}/>
+      </div>
+      <button className="btn btn-ghost btn-block" style={{marginTop:8}} disabled={!draft.trim()} onClick={add}>Add affirmation</button>
+      <p className="hint" style={{marginTop:8}}>One shows at the top of Today, rotating daily. There is nothing to tick -
+        an affirmation is read, not done, so it never counts as outstanding work.</p>
     </div>
   );
 }
@@ -5606,6 +5702,9 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, upda
 
       <div className="set-group">Spaces</div>
       <div className="card"><SpacesEditor store={store} toast={toast} toastUndo={toastUndo}/></div>
+
+      <div className="set-group">Affirmations</div>
+      <div className="card"><AffirmationsEditor store={store} toast={toast}/></div>
 
       <div className="set-group">Habits</div>
       <div className="card"><HabitsEditor store={store} toast={toast}/></div>
