@@ -93,6 +93,10 @@ PWA's self-update - so "Tracker" in these docs = the codebase/working title.
   - `npm test`      - tests/*.test.js. Suites LIFT their subject out of
     index.html rather than restating it, so a test cannot drift from shipping
     code. Add a suite for anything that mutates user data.
+  - `tests/store.test.js` runs the REAL `useStore` against a fake two-account
+    backend (`tests/store-harness.js`). Any change to sync, pull/push, or
+    signOut must keep it green. A test named after a real bug also runs on a
+    copy of the app with that fix stripped out, and asserts the bug returns.
   - Visual work: `node tests/harness/build.js`, serve tests/harness, and MEASURE
     the DOM at 375px. Screenshots often fail to composite; measuring catches more
     and has repeatedly found real bugs that reading the code did not.

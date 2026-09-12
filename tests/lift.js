@@ -21,29 +21,33 @@ const path = require("path");
 
 const SRC = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
 
-function lift(name) {
-  const start = SRC.search(new RegExp("^(?:const |function )" + name + "\\b", "m"));
+// Both lifters take the source text as a parameter so a suite can lift from a
+// deliberately BROKEN copy of the app, which is how a regression test proves it
+// would actually have caught the bug it is named after.
+function liftFrom(src, name) {
+  const start = src.search(new RegExp("^(?:const |function )" + name + "\\b", "m"));
   if (start < 0) throw new Error("lift: could not find " + name + " in index.html");
   // A `const NAME = ...;` one-liner is taken to end of line.
-  if (/^const /.test(SRC.slice(start))) return SRC.slice(start, SRC.indexOf("\n", start));
+  if (/^const /.test(src.slice(start))) return src.slice(start, src.indexOf("\n", start));
 
   // Skip the parameter list before brace-matching the body.
-  let p = SRC.indexOf("(", start), pd = 0;
-  for (; p < SRC.length; p++) {
-    if (SRC[p] === "(") pd++;
-    else if (SRC[p] === ")" && --pd === 0) { p++; break; }
+  let p = src.indexOf("(", start), pd = 0;
+  for (; p < src.length; p++) {
+    if (src[p] === "(") pd++;
+    else if (src[p] === ")" && --pd === 0) { p++; break; }
   }
-  let i = SRC.indexOf("{", p), depth = 0;
+  let i = src.indexOf("{", p), depth = 0;
   if (i < 0) throw new Error("lift: no body for " + name);
-  for (; i < SRC.length; i++) {
-    if (SRC[i] === "{") depth++;
-    else if (SRC[i] === "}" && --depth === 0) { i++; break; }
+  for (; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}" && --depth === 0) { i++; break; }
   }
-  const body = SRC.slice(start, i);
+  const body = src.slice(start, i);
   const decls = (body.match(/^function /gm) || []).length;
   if (decls !== 1) throw new Error("lift(" + name + ") captured " + decls + " declarations");
   return body;
 }
+function lift(name) { return liftFrom(SRC, name); }
 
 /* Evaluate a set of lifted functions in a sandbox.
    `prelude` supplies whatever the app provides globally (date helpers, storage
@@ -67,4 +71,25 @@ function report() {
   process.exit(fail ? 1 : 0);
 }
 
-module.exports = { lift, build, is, section, report };
+/* Lift a top-level `const NAME = ...;` that may span several lines (seed lists,
+   config objects). Scans to the terminating ";" at bracket depth zero, skipping
+   string contents so a bracket inside a quoted colour or label cannot end the
+   scan early. `lift` is left untouched on purpose: every existing suite depends
+   on its one-line behaviour for constants. */
+function liftConstFrom(src, name) {
+  const start = src.search(new RegExp("^const " + name + "\\b", "m"));
+  if (start < 0) throw new Error("liftConst: could not find const " + name);
+  let depth = 0, quote = null;
+  for (let i = src.indexOf("=", start) + 1; i < src.length; i++) {
+    const c = src[i];
+    if (quote) { if (c === "\\") { i++; continue; } if (c === quote) quote = null; continue; }
+    if (c === '"' || c === "'" || c === "`") { quote = c; continue; }
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    else if (c === ";" && depth === 0) return src.slice(start, i + 1);
+  }
+  throw new Error("liftConst: no terminating ; for " + name);
+}
+function liftConst(name) { return liftConstFrom(SRC, name); }
+
+module.exports = { lift, liftConst, liftFrom, liftConstFrom, build, is, section, report, SRC };

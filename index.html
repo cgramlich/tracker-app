@@ -568,11 +568,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.48.0";
+const APP_VERSION = "1.48.1";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-08-27.1";
+const BUILD = "2026-09-12.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1795,6 +1795,22 @@ function useStore(){
   const [authReady, setAuthReady] = useState(false); // first session check finished (avoids a login flash)
   const cfgRef = useRef(cfg); cfgRef.current = cfg;
   const cfgDirtyRef = useRef(lsGet("cfgDirty", false));   // true when local META (cfg + spaces) has unpushed edits
+  /* META CHANGE COUNTER. Every change to the meta blob bumps this, and pushCfg may
+     only mark meta CLEAN if the counter did not move while its push was in flight.
+
+     WARNING - why a single dirty boolean is not enough (found by the store test
+     suite, 2026-09-12): on a first sign-in pull, ensureSpaces fires a meta push in
+     the background. While that push was in flight, ensureHabits converted routine
+     todos into habits and set the flag. The earlier push then finished and cleared
+     the flag, although it had sent meta from BEFORE the migration. The pull's final
+     pushCfg saw a clean flag and did nothing. The server kept the deleted-routine
+     todos' removal but never received the habits, their backup, or habitsMigrated;
+     they existed only on the phone until some later meta save carried them.
+
+     Rejected: awaiting every background push before continuing. Savers are fired
+     from UI handlers that must not block, and it would only move the race. */
+  const metaSeqRef = useRef(0);
+  const markMetaDirty = () => { metaSeqRef.current++; cfgDirtyRef.current = true; lsSet("cfgDirty", true); };
   // Spaces live in the same per-user meta object as cfg. `spaces` is null until seeded
   // (on the first authed pull) or applied from the server.
   const [spaces, setSpaces] = useState(() => lsGet("spaces", null));
@@ -1867,10 +1883,18 @@ function useStore(){
     if(!cfgDirtyRef.current) return;
     if(!authedRef.current) return;
     if(!navigator.onLine){ log("SYNC","offline; deferring meta push"); setSync("pending"); return; }
+    const sentSeq = metaSeqRef.current;
     try{
       await metaPut(buildMeta());
-      cfgDirtyRef.current = false; lsSet("cfgDirty", false);
-      log("SYNC","meta (cfg+spaces) pushed");
+      if(metaSeqRef.current === sentSeq){
+        cfgDirtyRef.current = false; lsSet("cfgDirty", false);
+        log("SYNC","meta (cfg+spaces) pushed");
+      } else {
+        // Meta changed while this push was in flight, so what we sent is already
+        // stale. Leave it dirty and send the current state.
+        log("SYNC","meta changed during push; pushing again");
+        await pushCfg();
+      }
     }catch(e){ setSync("error"); setSyncMsg(syncErrText(e)); log("ERROR","pushCfg: "+e.message); }
   }, []);
 
@@ -1878,7 +1902,7 @@ function useStore(){
   // the new value immediately, before the re-render that would sync the ref.
   const saveCfg = useCallback((next) => {
     setCfg(next); lsSet("cfg", next); cfgRef.current = next;
-    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    markMetaDirty();
     pushCfg();
   }, [pushCfg]);
 
@@ -1886,35 +1910,35 @@ function useStore(){
   const saveSpaces = useCallback((next) => {
     spacesRef.current = next; setSpaces(next); lsSet("spaces", next);
     spacesSeededRef.current = true; lsSet("spacesSeeded", true);
-    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    markMetaDirty();
     pushCfg();
   }, [pushCfg]);
   const setDefaultSpaceId = useCallback((id) => {
     defaultSpaceRef.current = id; setDefaultSpace(id); lsSet("defaultSpace", id);
-    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    markMetaDirty();
     pushCfg();
   }, [pushCfg]);
   const saveAffirmations = useCallback((next) => {
     affirmationsRef.current = next; setAffirmations(next); lsSet("affirmations", next);
-    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    markMetaDirty();
     pushCfg();
   }, [pushCfg]);
   // Save the habit list (add / rename / tick / delete) - persists to meta.
   // Ref written SYNCHRONOUSLY before the push, same contract as every other slice.
   const saveHabits = useCallback((next) => {
     habitsRef.current = next; setHabits(next); lsSet("habits", next);
-    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    markMetaDirty();
     pushCfg();
   }, [pushCfg]);
   // Save the checklist-template list (create / rename / delete) - persists to meta.
   const saveTemplates = useCallback((next) => {
     templatesRef.current = next; setTemplates(next); lsSet("templates", next);
-    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    markMetaDirty();
     pushCfg();
   }, [pushCfg]);
   const saveRundown = useCallback((next) => {
     rundownRef.current = next; setRundown(next); lsSet("rundown", next);
-    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    markMetaDirty();
     pushCfg();
   }, [pushCfg]);
 
@@ -2012,7 +2036,7 @@ function useStore(){
       log("SPACES","migrated items to spaces "+JSON.stringify(tally)+" (count "+before+" -> "+after+")");
     }
     if(!spacesSeededRef.current){ spacesSeededRef.current = true; lsSet("spacesSeeded", true); metaChanged = true; }
-    if(metaChanged){ cfgDirtyRef.current = true; lsSet("cfgDirty", true); }
+    if(metaChanged){ markMetaDirty(); }
     if(wrote || metaChanged){ pushDirty(); pushCfg(); }
   }, [markDirty, pushDirty, pushCfg]);
 
@@ -2054,7 +2078,7 @@ function useStore(){
     dataRef.current = nd; setData(nd); markDirty("todos", nextTodos);
 
     habitsMigratedRef.current = true; lsSet("habitsMigrated", true);
-    cfgDirtyRef.current = true; lsSet("cfgDirty", true);
+    markMetaDirty();
     log("HABIT","converted "+made.length+" habit(s), removed "+removeIds.length+" routine todo(s), "+
                 backup.length+" row(s) backed up");
   }, [markDirty]);
@@ -2110,7 +2134,7 @@ function useStore(){
             cfgRef.current = merged; setCfg(merged); lsSet("cfg", merged);
             log("SYNC","cfg <- meta applied");
           } else {
-            cfgDirtyRef.current = true; lsSet("cfgDirty", true);   // seed server from local on the push below
+            markMetaDirty();   // seed server from local on the push below
             log("SYNC","no server cfg; seeding from local");
           }
           // Spaces live in the same meta object. Apply the server list if present;
