@@ -91,15 +91,17 @@ const mentions = (obj, needle) => JSON.stringify(obj === undefined ? null : obj)
     affirmations: (s) => s.saveAffirmations([{ id: "a1", text: "ALICE-AFFIRMATION" }]),
     spaces:       (s) => s.saveSpaces([{ id: "personal", name: "ALICE-SPACE", color: "#000", order: 0, archived: false }]),
     cfg:          (s) => s.saveCfg({ ...s.cfg, appName: "ALICE-APPNAME" }),
+    // Added 2026-09-13 with the orders feature; the tripwire below refused to pass without it.
+    orders:       (s) => s.saveOrders([{ id: "o1", merchant: "ALICE-STORE", item: "ALICE-ORDER", orderedAt: "2026-09-01", status: "ordered" }]),
   };
   for (const [slice, write] of Object.entries(slices)) {
     const needle = { templates: "ALICE-TEMPLATE", habits: "ALICE-HABIT", affirmations: "ALICE-AFFIRMATION",
-      spaces: "ALICE-SPACE", cfg: "ALICE-APPNAME" }[slice];
+      spaces: "ALICE-SPACE", cfg: "ALICE-APPNAME", orders: "ALICE-ORDER" }[slice];
     const r = await aliceThenBob(SRC, write);
     is(slice + ": reached Alice's own server row first", mentions(r.aliceMeta, needle), true);
     is(slice + ": never reaches Bob's server row", mentions(r.bobMeta, needle), false);
     is(slice + ": not visible in Bob's store", mentions({ c: r.app.store.cfg, s: r.app.store.spaces, t: r.app.store.templates,
-      h: r.app.store.habits, a: r.app.store.affirmations }, needle), false);
+      h: r.app.store.habits, a: r.app.store.affirmations, o: r.app.store.orders }, needle), false);
   }
 
   /* ------------------------------------------------------------------------
@@ -122,7 +124,7 @@ const mentions = (obj, needle) => JSON.stringify(obj === undefined ? null : obj)
     is("'" + k + "' is removed from localStorage in signOut", lsDelList.includes('"' + k + '"'), true);
   }
   const ALLOW = ["cfg", "spaces", "defaultSpace", "spacesSeeded", "templates", "rundown",
-                 "affirmations", "habits", "habitsMigrated", "habitsBackup"];
+                 "affirmations", "habits", "habitsMigrated", "habitsBackup", "orders"];
   const unknown = metaKeys.filter(k => !ALLOW.includes(k));
   is("no NEW meta key has appeared without a sign-out test being added here" +
      (unknown.length ? " (new: " + unknown.join(", ") + ")" : ""), unknown, []);

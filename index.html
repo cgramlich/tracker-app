@@ -538,6 +538,9 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
 /* Affirmation: one quiet line, deliberately no card chrome. */
 .affirm{margin-top:14px;padding:2px 2px 0;font-family:Fraunces;font-size:15px;line-height:1.5;
   color:var(--ink-2);font-style:italic;}
+/* Orders. The Arrived button is a 44px target: it is the most frequent action here. */
+.ord-row{align-items:center;}
+.ord-arrived{flex:0 0 auto;min-height:44px;align-self:center;margin-left:8px;}
 /* Wins */
 .win-row{display:flex;gap:12px;align-items:center;padding:11px 0;border-top:1px solid var(--line);}
 .win-row:first-of-type{border-top:0;}
@@ -568,11 +571,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.48.1";
+const APP_VERSION = "1.49.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-09-12.1";
+const BUILD = "2026-09-13.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -775,6 +778,166 @@ function affirmationOfTheDay(list, dateISO){
   const i = ((dayNumber % items.length) + items.length) % items.length;
   return items[i];
 }
+
+/* ============================================================================
+   ORDERS  -  what is on its way, and what never showed up
+   ============================================================================
+   Chris, 2026-08-14: he loses track of what he has ordered, whether it is
+   coming, when, and whether he actually got it. Go-ahead 2026-09-13, once the
+   sync engine was under test.
+
+   THIS IS RECONCILIATION, NOT PACKAGE TRACKING. Carriers already answer "where
+   is the box right now". Nothing answers "which of the things I ordered this
+   month never arrived", because absence is invisible. So the design centres on
+   surfacing what is LATE or has gone QUIET, not on live delivery status.
+
+   REJECTED: carrier integration and tracking numbers. Each carrier is its own
+   API, most need business accounts, and the question Chris asked needs none of
+   it. Also rejected for now: linking an order to the considered-purchase note it
+   came from. Tidier, but separate is less to get wrong; revisit only if the
+   missing link is actually felt.
+
+   CAPTURE IS A SCREENSHOT. Retyping what a retailer already emailed is the
+   friction that would kill this, so a confirmation screenshot goes through the
+   existing extract relay route with ORDER_EXTRACT_SYSTEM. That costs roughly one
+   cent per read at Sonnet 5 prices (estimate, about 2,000 tokens in and 150
+   out), inside the existing monthly AI cap. The model's reading is ALWAYS shown
+   for review before anything is saved, and normalizeExtractedOrders validates
+   it first: bad input from the model looks exactly like good input.
+
+   STORAGE is a meta slice (meta.orders), like habits, so there is no backend
+   change. Meta is pushed whole on every settings change and orders accumulate.
+   TRIPWIRE: past roughly 500 orders, move them to their own synced collection.
+   Arrived orders are kept and never auto-pruned; "did I get it" is a question
+   about the past. */
+const ORDER_STATUSES = { ordered:"On the way", problem:"Problem", arrived:"Arrived", resolved:"Sorted" };
+// Starting guesses chosen 2026-09-13, not taken from any retailer's policy. Tune from use.
+const ORDER_STALE_DAYS = 21;   // no delivery date and nothing heard for three weeks
+const ORDER_SOON_DAYS  = 3;    // "due soon" window
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Format alone is not enough: "2026-13-45" matches the pattern. Round-trip it.
+function isRealISODate(v){
+  const s = String(v == null ? "" : v).trim();
+  if(!ISO_DATE.test(s)) return false;
+  const d = new Date(s + "T00:00:00");
+  return !isNaN(d) && todayKey(d) === s;
+}
+
+function cleanOrder(o){
+  if(!o) return null;
+  const s = (v) => String(v == null ? "" : v).trim();
+  const merchant = s(o.merchant), item = s(o.item);
+  if(!merchant && !item) return null;             // nothing to recognise it by
+  const date = (v) => (isRealISODate(v) ? s(v) : "");
+  const status = ORDER_STATUSES[o.status] ? o.status : "ordered";
+  return {
+    id: o.id || uid(),
+    merchant, item,
+    orderedAt: date(o.orderedAt) || TODAY(),
+    expectedBy: date(o.expectedBy),
+    cost: s(o.cost),
+    ref: s(o.ref),
+    note: s(o.note),
+    status,
+    arrivedAt: status === "arrived" ? (date(o.arrivedAt) || TODAY()) : "",
+    space: s(o.space) || DEFAULT_SPACE,
+    addedAt: o.addedAt || nowISO(),
+  };
+}
+
+/* Validate what the model read off a screenshot before it is ever shown.
+   Each rule below turns a misread into something harmless rather than letting it
+   raise a false alarm, because a false "late" is exactly the noise that would
+   teach Chris to ignore this screen. */
+function normalizeExtractedOrders(arr, today){
+  if(!Array.isArray(arr)) return [];
+  const t = today || TODAY();
+  return arr.map(x => {
+    if(!x || typeof x !== "object") return null;
+    const o = cleanOrder({ merchant:x.merchant, item:x.item, orderedAt:x.orderedAt,
+      expectedBy:x.expectedBy, cost:x.cost, ref:x.ref, status:"ordered" });
+    if(!o) return null;
+    if(o.orderedAt > t) o.orderedAt = t;                          // an order placed in the future is a misread
+    if(o.expectedBy && o.expectedBy < o.orderedAt) o.expectedBy = ""; // delivered before it was ordered is a misread
+    if(o.item.length > 140) o.item = o.item.slice(0, 137).trim() + "...";
+    return o;
+  }).filter(Boolean);
+}
+
+/* Where an order stands today. Buckets, most urgent first:
+     late     - past its expected date and not marked arrived
+     stale    - NO expected date and nothing for ORDER_STALE_DAYS (the invisible absence)
+     problem  - Chris flagged it: wrong item, damaged, never came
+     soon     - expected within ORDER_SOON_DAYS, including today
+     upcoming - expected later
+     undated  - no date yet, but recent
+     closed   - arrived or sorted
+   An order due TODAY is not late: the day is not over. */
+function orderState(o, today){
+  const t = today || TODAY();
+  if(o.status === "arrived" || o.status === "resolved") return { bucket:"closed", days:0 };
+  if(o.status === "problem") return { bucket:"problem", days:0 };
+  if(o.expectedBy){
+    const past = daysBetweenISO(o.expectedBy, t);
+    if(past > 0) return { bucket:"late", days:past };
+    return { bucket: -past <= ORDER_SOON_DAYS ? "soon" : "upcoming", days:-past };
+  }
+  const age = daysBetweenISO(o.orderedAt, t);
+  return { bucket: age >= ORDER_STALE_DAYS ? "stale" : "undated", days:age };
+}
+
+const ORDER_BUCKET_RANK = { late:0, stale:1, problem:2, soon:3, upcoming:4, undated:5, closed:6 };
+function ordersByUrgency(list, today){
+  return (list || []).map(o => ({ o, st: orderState(o, today) }))
+    .sort((a, b) =>
+      (ORDER_BUCKET_RANK[a.st.bucket] - ORDER_BUCKET_RANK[b.st.bucket]) ||
+      // Within late and stale, the longest-overdue comes first.
+      ((a.st.bucket === "late" || a.st.bucket === "stale") ? b.st.days - a.st.days : 0) ||
+      String(a.o.expectedBy || a.o.orderedAt).localeCompare(String(b.o.expectedBy || b.o.orderedAt)));
+}
+
+function ordersSummary(list, today){
+  const c = { late:0, stale:0, problem:0, soon:0, upcoming:0, undated:0, open:0, needsLook:0 };
+  (list || []).forEach(o => {
+    const b = orderState(o, today).bucket;
+    if(b === "closed") return;
+    c[b]++; c.open++;
+    if(b === "late" || b === "stale" || b === "problem") c.needsLook++;
+  });
+  return c;
+}
+
+function orderWhenLabel(o, st){
+  const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+  switch(st.bucket){
+    case "late":     return "Late " + plural(st.days, "day");
+    case "stale":    return "No date, ordered " + plural(st.days, "day") + " ago";
+    case "problem":  return "Problem";
+    case "soon":     return st.days === 0 ? "Due today" : st.days === 1 ? "Due tomorrow" : "Due in " + st.days + " days";
+    case "upcoming": return "Due " + fmtDate(o.expectedBy);
+    case "undated":  return "No delivery date yet";
+    default:         return o.status === "arrived" ? "Arrived " + fmtDate(o.arrivedAt) : "Sorted";
+  }
+}
+
+function ordersInSpace(store){
+  const sp = store.activeSpace;
+  return (store.orders || []).filter(o => !sp || sp === "all" || (o.space || DEFAULT_SPACE) === sp);
+}
+
+const ORDER_EXTRACT_SYSTEM =
+  "You read online order confirmations and shipping notices, usually from a screenshot. "+
+  "Return ONLY a JSON array, no prose, no markdown fences. One element per item or shipment "+
+  "that has its own delivery date; items arriving together may share one element. Each element: "+
+  '{"merchant": string (the store), "item": string (short, what was bought), '+
+  '"orderedAt": "YYYY-MM-DD" or empty string, "expectedBy": "YYYY-MM-DD" or empty string, '+
+  '"cost": string exactly as shown including the currency symbol, or empty string, '+
+  '"ref": the order number as shown, or empty string}. '+
+  "Resolve relative dates such as 'arriving Thursday' against TODAY, which the user message gives. "+
+  "When delivery is a RANGE, use the LATEST date in it, so an order is never called late while it is "+
+  "still inside its window. Never invent a date, price or order number: if it is not visible, use an "+
+  "empty string. If the image is not an order confirmation or shipping notice, return an empty array.";
 
 /* ============================================================================
    WINS  -  recognition, not gamification
@@ -1415,7 +1578,7 @@ const EXTRACT_SYSTEM =
 
 function stripFences(s){ return String(s).replace(/```json/gi,"").replace(/```/g,"").trim(); }
 
-async function claudeExtract(content){
+async function claudeExtract(content, system){
   // content is the messages[0].content array (text and/or image blocks)
   log("AI","extract request (relay)");
   const token = await authToken();
@@ -1431,7 +1594,7 @@ async function claudeExtract(content){
         task: "extract",                   // server routes the model for this task
         model: "claude-sonnet-4-6",        // advisory; server has the final say
         max_tokens: 16000,                 // generous: OCR output can be large (Dining Log lesson)
-        system: EXTRACT_SYSTEM,
+        system: system || EXTRACT_SYSTEM,  // a caller may supply its own reading instructions (orders)
         messages:[{ role:"user", content }]
       })
     });
@@ -1830,6 +1993,9 @@ function useStore(){
   // shown today is DERIVED from the date, so there is no pointer to persist.
   const [affirmations, setAffirmations] = useState(() => lsGet("affirmations", null));
   const affirmationsRef = useRef(affirmations); affirmationsRef.current = affirmations;
+  // Orders: see ORDERS. A meta slice, so all four parts apply, signOut included.
+  const [orders, setOrders] = useState(() => lsGet("orders", null));
+  const ordersRef = useRef(orders); ordersRef.current = orders;
   const habitsMigratedRef = useRef(lsGet("habitsMigrated", false));
   const habitsBackupRef = useRef(lsGet("habitsBackup", null));
   // RTR Rundown: an awareness board that rides on meta (like templates/spaces). null until
@@ -1869,6 +2035,7 @@ function useStore(){
     if(templatesRef.current && templatesRef.current.length){ m.templates = templatesRef.current; }
     if(rundownRef.current){ m.rundown = rundownRef.current; }
     if(affirmationsRef.current){ m.affirmations = affirmationsRef.current; }
+    if(ordersRef.current){ m.orders = ordersRef.current; }
     if(habitsRef.current){
       m.habits = habitsRef.current;
       m.habitsMigrated = !!habitsMigratedRef.current;
@@ -1915,6 +2082,11 @@ function useStore(){
   }, [pushCfg]);
   const setDefaultSpaceId = useCallback((id) => {
     defaultSpaceRef.current = id; setDefaultSpace(id); lsSet("defaultSpace", id);
+    markMetaDirty();
+    pushCfg();
+  }, [pushCfg]);
+  const saveOrders = useCallback((next) => {
+    ordersRef.current = next; setOrders(next); lsSet("orders", next);
     markMetaDirty();
     pushCfg();
   }, [pushCfg]);
@@ -2158,6 +2330,10 @@ function useStore(){
             lsSet("affirmations", m.affirmations);
             log("AFFIRM","affirmations <- meta ("+m.affirmations.length+")");
           }
+          if(Array.isArray(m && m.orders)){
+            ordersRef.current = m.orders; setOrders(m.orders); lsSet("orders", m.orders);
+            log("ORDERS","orders <- meta ("+m.orders.length+")");
+          }
           if(Array.isArray(m && m.habits)){
             habitsRef.current = m.habits; setHabits(m.habits); lsSet("habits", m.habits);
             habitsMigratedRef.current = !!m.habitsMigrated; lsSet("habitsMigrated", !!m.habitsMigrated);
@@ -2203,7 +2379,7 @@ function useStore(){
     // to - or pushed under - a different account on the same device (migration footgun).
     FILES.forEach(f => lsDel("cache:"+f));
     ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty","spaces","defaultSpace","spacesSeeded","templates","rundown",
-     "habits","habitsMigrated","habitsBackup","affirmations"].forEach(k => lsDel(k));
+     "habits","habitsMigrated","habitsBackup","affirmations","orders"].forEach(k => lsDel(k));
     const empty = {}; FILES.forEach(f => empty[f] = []);
     dataRef.current = empty; setData(empty);
     dirtyRef.current = {}; setDirty({});
@@ -2219,6 +2395,7 @@ function useStore(){
     // all three. habitsMigrated especially - left set, the next account would skip its own
     // routine conversion entirely and silently keep routine todos that never became habits.
     affirmationsRef.current = null; setAffirmations(null);
+    ordersRef.current = null; setOrders(null);
     habitsRef.current = null; setHabits(null);
     habitsMigratedRef.current = false;
     habitsBackupRef.current = null;
@@ -2526,7 +2703,7 @@ function useStore(){
     return out;
   }, [data, activeSpace, spaces]);
 
-  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, habits, saveHabits, affirmations, saveAffirmations, rundown, saveRundown, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, deleteAccount, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
+  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, habits, saveHabits, affirmations, saveAffirmations, orders, saveOrders, rundown, saveRundown, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, deleteAccount, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
 }
 
 /* ============================================================
@@ -3530,6 +3707,8 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
       <div className="divider"></div>
       <button className="act-row" onClick={()=>{ onClose(); openEditor("todo"); }}>
         <span className="act-ic">{Ic.todo}</span><span className="act-txt"><b>New todo</b><span>Full form, all fields</span></span></button>
+      <button className="act-row" onClick={()=>{ onClose(); openEditor("orderCapture"); }}>
+        <span className="act-ic">{Ic.camera}</span><span className="act-txt"><b>Track an order</b><span>Screenshot the confirmation</span></span></button>
       <button className="act-row" onClick={()=>{ onClose(); openEditor("idea"); }}>
         <span className="act-ic">{Ic.idea}</span><span className="act-txt"><b>New idea</b><span>A thought to sit on</span></span></button>
       <button className="act-row" onClick={()=>{ onClose(); openEditor("project"); }}>
@@ -4267,6 +4446,209 @@ function AffirmationLine({ store }){
   const a = affirmationOfTheDay(store.affirmations, TODAY());
   if(!a) return null;
   return <p className="affirm">{a.text}</p>;
+}
+
+/* Dashboard line, shown ONLY when an order needs a look: late, gone quiet, or
+   flagged as a problem. Something simply on its way is not worth interrupting
+   the Dashboard for; that is what the Orders screen is for. */
+function OrdersNeedsLookLine({ store, go }){
+  const sum = ordersSummary(ordersInSpace(store), TODAY());
+  if(!sum.needsLook) return null;
+  const parts = [];
+  if(sum.late) parts.push(sum.late + " late");
+  if(sum.stale) parts.push(sum.stale + " gone quiet");
+  if(sum.problem) parts.push(sum.problem + " with a problem");
+  return (
+    <button className="card" onClick={()=>go("orders")}
+      style={{marginTop:14,display:"flex",gap:10,alignItems:"center",width:"100%",textAlign:"left",borderColor:"var(--red)"}}>
+      <span style={{flex:1,minWidth:0}}>
+        <b style={{fontFamily:"Fraunces",fontSize:15,display:"block"}}>
+          {sum.needsLook === 1 ? "An order needs a look" : sum.needsLook + " orders need a look"}</b>
+        <span className="hint">{parts.join(", ")}</span>
+      </span>
+    </button>
+  );
+}
+
+function OrderRow({ o, st, onOpen, onArrived }){
+  const tone = (st.bucket === "late" || st.bucket === "problem") ? "red"
+             : st.bucket === "stale" ? "amber" : st.bucket === "soon" ? "green" : "";
+  return (
+    <div className="item ord-row">
+      <div className="item-body" onClick={onOpen}>
+        <div className="item-title">{o.item || o.merchant}</div>
+        <div className="item-meta">
+          <span className={"chip " + tone}>{orderWhenLabel(o, st)}</span>
+          {o.item && o.merchant && <span className="chip">{o.merchant}</span>}
+          {o.cost && <span className="chip">{o.cost}</span>}
+        </div>
+      </div>
+      {st.bucket !== "closed" &&
+        <button className="btn btn-ghost btn-sm ord-arrived" onClick={onArrived}
+          aria-label={"Mark " + (o.item || o.merchant) + " arrived"}>Arrived</button>}
+    </div>
+  );
+}
+
+function OrdersView({ store, back, toast }){
+  const [edit,setEdit] = useState(null);          // an order, or {} for a new one
+  const [capture,setCapture] = useState(false);
+  const [showClosed,setShowClosed] = useState(false);
+  const today = TODAY();
+  const ranked = ordersByUrgency(ordersInSpace(store), today);
+  const look = ranked.filter(r => r.st.bucket === "late" || r.st.bucket === "stale" || r.st.bucket === "problem");
+  const coming = ranked.filter(r => r.st.bucket === "soon" || r.st.bucket === "upcoming" || r.st.bucket === "undated");
+  const closed = ranked.filter(r => r.st.bucket === "closed")
+    .sort((a, b) => String(b.o.arrivedAt || b.o.orderedAt).localeCompare(String(a.o.arrivedAt || a.o.orderedAt)));
+  function markArrived(o){
+    store.saveOrders((store.orders || []).map(x => x.id === o.id ? cleanOrder({ ...x, status:"arrived", arrivedAt:today }) : x));
+    toast && toast("Marked arrived");
+  }
+  const rows = (list) => <div className="list" style={{marginTop:8}}>{list.map(r =>
+    <OrderRow key={r.o.id} o={r.o} st={r.st} onOpen={()=>setEdit(r.o)} onArrived={()=>markArrived(r.o)}/>)}</div>;
+  return (
+    <div className="screen">
+      <div className="topbar" style={{padding:0,position:"static"}}>
+        <button className="btn btn-ghost btn-sm" onClick={back}>{Ic.back} Back</button>
+        <h1 className="title" style={{marginTop:8}}>Orders</h1>
+        <div className="subtle" style={{marginTop:2}}>What's on its way, and what never showed up</div>
+      </div>
+      <div className="row" style={{marginTop:14,gap:8}}>
+        <button className="btn btn-primary" style={{flex:1}} onClick={()=>setCapture(true)}>{Ic.camera} Screenshot</button>
+        <button className="btn btn-ghost" style={{flex:1}} onClick={()=>setEdit({})}>{Ic.plus} Add by hand</button>
+      </div>
+      {look.length > 0 && <div style={{marginTop:18}}><div className="label">Needs a look</div>{rows(look)}</div>}
+      {coming.length > 0 && <div style={{marginTop:18}}><div className="label">On the way</div>{rows(coming)}</div>}
+      {look.length === 0 && coming.length === 0 &&
+        <Empty glyph={"✉"} title="Nothing on its way"
+          sub="Screenshot an order confirmation and it lands here, so you can see what is late or never came."/>}
+      {closed.length > 0 &&
+        <div style={{marginTop:18}}>
+          <button className="btn btn-ghost btn-block" onClick={()=>setShowClosed(!showClosed)}>
+            {showClosed ? "Hide arrived" : "Show arrived (" + closed.length + ")"}</button>
+          {showClosed && rows(closed)}
+        </div>}
+      {edit && <OrderSheet store={store} order={edit} toast={toast} onClose={()=>setEdit(null)}/>}
+      {capture && <OrderCaptureSheet store={store} toast={toast} onClose={()=>setCapture(false)}/>}
+    </div>
+  );
+}
+
+function OrderSheet({ store, order, onClose, toast }){
+  const isNew = !order.id;
+  const defaultSpace = store.activeSpace && store.activeSpace !== "all" ? store.activeSpace : (store.defaultSpace || DEFAULT_SPACE);
+  const [f,setF] = useState(() => ({ merchant:"", item:"", orderedAt:TODAY(), expectedBy:"", cost:"", ref:"",
+    note:"", status:"ordered", space:defaultSpace, ...order }));
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function save(){
+    const o = cleanOrder(f);
+    if(!o){ toast && toast("Give it a name or a store first"); return; }
+    const list = store.orders || [];
+    store.saveOrders(isNew ? list.concat([o]) : list.map(x => x.id === o.id ? o : x));
+    toast && toast(isNew ? "Order added" : "Saved");
+    onClose();
+  }
+  function del(){
+    store.saveOrders((store.orders || []).filter(x => x.id !== order.id));
+    toast && toast("Order deleted");
+    onClose();
+  }
+  return (
+    <Sheet title={isNew ? "New order" : "Order"} onClose={onClose}
+      action={<button className="btn btn-primary btn-sm" onClick={save}>{isNew ? "Add" : "Save"}</button>}>
+      <div className="title-field"><span className="label">What</span>
+        <input className="title-input" value={f.item} onChange={set("item")} placeholder="e.g. Standing desk" autoFocus/></div>
+      <div className="field"><span className="label">From</span>
+        <input className="input" value={f.merchant} onChange={set("merchant")} placeholder="Store"/></div>
+      <div className="row">
+        <div className="field" style={{flex:1,minWidth:0}}><span className="label">Ordered</span>
+          <input className="input" type="date" value={f.orderedAt} onChange={set("orderedAt")}/></div>
+        <div className="field" style={{flex:1,minWidth:0}}><span className="label">Expected by</span>
+          <input className="input" type="date" value={f.expectedBy} onChange={set("expectedBy")}/></div>
+      </div>
+      <div className="row">
+        <div className="field" style={{flex:1,minWidth:0}}><span className="label">Cost</span>
+          <input className="input" value={f.cost} onChange={set("cost")} placeholder="$0.00"/></div>
+        <div className="field" style={{flex:1,minWidth:0}}><span className="label">Order number</span>
+          <input className="input" value={f.ref} onChange={set("ref")}/></div>
+      </div>
+      <div className="field"><span className="label">Status</span>
+        <select className="select" value={f.status} onChange={set("status")}>
+          {Object.keys(ORDER_STATUSES).map(k => <option key={k} value={k}>{ORDER_STATUSES[k]}</option>)}
+        </select></div>
+      <div className="field"><span className="label">Note</span>
+        <input className="input" value={f.note} onChange={set("note")} placeholder="Wrong size, refund requested..."/></div>
+      <SpaceField store={store} value={f.space} onChange={(v)=>setF({ ...f, space:v })}/>
+      {!isNew && <button className="btn btn-ghost btn-block" style={{marginTop:10,color:"var(--red)"}} onClick={del}>Delete order</button>}
+    </Sheet>
+  );
+}
+
+/* Screenshot, then the model's reading, then Chris reviews and edits, then save.
+   Review is mandatory: a misread delivery date would create a false "late", the
+   one kind of noise that teaches you to stop looking at this screen. */
+function OrderCaptureSheet({ store, onClose, toast }){
+  const [busy,setBusy] = useState(false);
+  const [err,setErr] = useState("");
+  const [found,setFound] = useState(null);        // null = nothing read yet
+  const fileRef = useRef(null);
+  const today = TODAY();
+  const space = store.activeSpace && store.activeSpace !== "all" ? store.activeSpace : (store.defaultSpace || DEFAULT_SPACE);
+  async function read(file){
+    if(!file) return;
+    setBusy(true); setErr("");
+    try{
+      const b64 = await resizeImage(file);
+      const raw = await claudeExtract([
+        { type:"image", source:{ type:"base64", media_type:"image/jpeg", data:b64 } },
+        { type:"text", text:"TODAY is " + today + ". Read this order confirmation." }
+      ], ORDER_EXTRACT_SYSTEM);
+      const orders = normalizeExtractedOrders(raw, today).map(o => ({ ...o, space }));
+      if(!orders.length) setErr("Couldn't find an order in that image. You can add it by hand on the Orders screen.");
+      setFound(orders);
+    }catch(e){ setErr(e.message || "Couldn't read that image."); }
+    finally{ setBusy(false); }
+  }
+  const upd = (id, k, v) => setFound(found.map(o => o.id === id ? { ...o, [k]: v } : o));
+  function saveAll(){
+    const clean = (found || []).map(cleanOrder).filter(Boolean);
+    if(!clean.length) return;
+    store.saveOrders((store.orders || []).concat(clean));
+    toast && toast(clean.length === 1 ? "Order added" : clean.length + " orders added");
+    onClose();
+  }
+  return (
+    <Sheet title="Read a screenshot" onClose={onClose}>
+      <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}}
+        onChange={(e)=>{ const f = e.target.files && e.target.files[0]; e.target.value = ""; read(f); }}/>
+      {!found && <p className="hint" style={{marginTop:0}}>Pick a screenshot of an order confirmation or shipping email.
+        You'll check what it read before anything is saved.</p>}
+      <button className="btn btn-primary btn-block" disabled={busy} onClick={()=>fileRef.current && fileRef.current.click()}>
+        {busy ? "Reading..." : found ? "Read a different screenshot" : "Choose screenshot"}</button>
+      {err && <p className="hint" style={{color:"var(--red)"}}>{err}</p>}
+      {found && found.length > 0 && <div style={{marginTop:12}}>
+        {found.map(o =>
+          <div key={o.id} className="card ord-review" style={{marginTop:10,padding:"10px 12px"}}>
+            <div className="field"><span className="label">What</span>
+              <input className="input" value={o.item} onChange={(e)=>upd(o.id, "item", e.target.value)}/></div>
+            <div className="row">
+              <div className="field" style={{flex:1,minWidth:0}}><span className="label">From</span>
+                <input className="input" value={o.merchant} onChange={(e)=>upd(o.id, "merchant", e.target.value)}/></div>
+              <div className="field" style={{flex:1,minWidth:0}}><span className="label">Cost</span>
+                <input className="input" value={o.cost} onChange={(e)=>upd(o.id, "cost", e.target.value)}/></div>
+            </div>
+            <div className="field"><span className="label">Expected by</span>
+              <input className="input" type="date" value={o.expectedBy} onChange={(e)=>upd(o.id, "expectedBy", e.target.value)}/></div>
+            {!o.expectedBy && <p className="hint" style={{marginTop:-6}}>No delivery date on the screenshot.
+              It will be flagged if nothing arrives within {ORDER_STALE_DAYS} days.</p>}
+            <button className="btn btn-ghost btn-block" style={{color:"var(--red)"}}
+              onClick={()=>setFound(found.filter(x => x.id !== o.id))}>Don't save this one</button>
+          </div>)}
+        <button className="btn btn-primary btn-block" style={{marginTop:12}} onClick={saveAll}>
+          {found.length === 1 ? "Save order" : "Save " + found.length + " orders"}</button>
+      </div>}
+    </Sheet>
+  );
 }
 
 function HeadsUpCard({ store, style }){
@@ -6235,6 +6617,7 @@ function DashboardView({ store, onOpen, openEditor, go }){
       </div>
 
       <HeadsUpCard store={store} style={{marginTop:16}}/>
+      <OrdersNeedsLookLine store={store} go={go}/>
       <NewWinLine store={store} go={go}/>
       <ComingUpCard store={store}/>
       <RadarCard store={store} onOpen={onOpen}/>
@@ -7181,6 +7564,8 @@ function MoreView({ store, go }){
     { k:"rundown",  ic:Ic.review,  b:"Rundown", s:"Awareness board for everything in flight" },
     { k:"wins",     ic:Ic.star,    b:"Wins", s:(()=>{ const n=computeWins(store.allData, store.habits, store.rundown).length;
         return n ? n+" earned" : "Nothing yet"; })() },
+    { k:"orders",   ic:Ic.lists,   b:"Orders", s:(()=>{ const c=ordersSummary(store.orders,TODAY());
+        return c.needsLook ? c.needsLook+" need a look" : c.open ? c.open+" on the way" : "Nothing on its way"; })() },
     { k:"aichat",   ic:Ic.sparkle, b:"Organize with AI", s:"Brain-dump, then approve a plan" },
     { k:"matrix",   ic:Ic.matrix,  b:"Matrix", s:"Eisenhower priorities" },
     { k:"goals",    ic:Ic.goal,    b:"Goals", s:store.data.goals.filter(g=>g.status==="active").length+" active" },
@@ -7567,6 +7952,7 @@ function App(){
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
   else if(sub==="dashboard") subView=<DashboardView store={store} onOpen={openTodo} openEditor={openEditor} go={go}/>;
   else if(sub==="wins") subView=<WinsView store={store} back={()=>setSub(null)}/>;
+  else if(sub==="orders") subView=<OrdersView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="calendar") subView=<CalendarView store={store}/>;
   else if(sub==="export") subView=<ExportView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="aichat") subView=<AIChat store={store} toast={toast} back={()=>setSub(null)}/>;
@@ -7637,6 +8023,7 @@ function App(){
       {editor && editor.kind==="idea" && <IdeaEditor store={store} idea={editor.entity} toast={toast} onClose={()=>setEditor(null)}/>}
       {editor && editor.kind==="project" && <ProjectEditor store={store} project={editor.entity} toast={toast} onClose={()=>setEditor(null)}/>}
       {editor && editor.kind==="goal" && <GoalEditor store={store} goal={editor.entity} toast={toast} onClose={()=>setEditor(null)}/>}
+      {editor && editor.kind==="orderCapture" && <OrderCaptureSheet store={store} toast={toast} onClose={()=>setEditor(null)}/>}
 
       <Toast obj={toastObj} onClose={()=>setToastObj(null)}/>
     </div>
