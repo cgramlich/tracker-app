@@ -541,6 +541,11 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
 /* Orders. The Arrived button is a 44px target: it is the most frequent action here. */
 .ord-row{align-items:center;}
 .ord-arrived{flex:0 0 auto;min-height:44px;align-self:center;margin-left:8px;}
+/* btn-sm is 35px tall, which is under the 44px minimum for a real finger. The
+   scratch pad's buttons are all btn-sm (they must stay visually quiet - the pad
+   is a capture box, not a toolbar), so they get the height back explicitly.
+   Measured at 375px, not guessed: v1.44.0 shipped a 22px target by eyeballing. */
+.scr-btn{min-height:44px;}
 /* Wins */
 .win-row{display:flex;gap:12px;align-items:center;padding:11px 0;border-top:1px solid var(--line);}
 .win-row:first-of-type{border-top:0;}
@@ -571,11 +576,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.49.0";
+const APP_VERSION = "1.50.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-09-13.1";
+const BUILD = "2026-09-25.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -938,6 +943,71 @@ const ORDER_EXTRACT_SYSTEM =
   "When delivery is a RANGE, use the LATEST date in it, so an order is never called late while it is "+
   "still inside its window. Never invent a date, price or order number: if it is not visible, use an "+
   "empty string. If the image is not an order confirmation or shipping notice, return an empty array.";
+
+/* ============================================================================
+   SCRATCH PAD  -  catch it now, sort it later
+   ============================================================================
+   Chris, 2026-09-25: "a scratch pad that i can enter right on the home screen
+   and i can later use AI to organize it. The idea is to allow quick capture."
+
+   The app already had two capture surfaces and BOTH cost a tap before you can
+   type: "Jot a note" and the brain-dump box live behind the + button. That tap
+   is the whole problem. A thought you have while walking to a meeting survives
+   about as long as it takes to find a button, so the box has to already be on
+   screen with the cursor ready.
+
+   LINES, NOT ONE BLOB. A scratch pad is naturally a single sheet you scribble
+   on, and that is what was asked for, but sync is last-write-wins: a blob
+   edited on the phone and the laptop in the same window loses a whole
+   paragraph, while a list of lines loses at most the one line that raced.
+   Discrete lines also give the AI step clean inputs instead of a wall of text
+   it has to guess the seams in.
+
+   ITS OWN SLICE, NOT THE RAW-IDEAS PILE. These are disposable half-thoughts
+   that you expect to clear out. Filing them in Notes & ideas would pollute a
+   list that is meant to be kept, and would start firing the "untouched 30+
+   days" nudge at scribbles nobody ever intended to keep. Being allowed to be
+   messy is the point, so it gets a container where messy is expected.
+
+   NOTHING HERE IS AI ON ITS OWN. Capture is local, instant and free. Organise
+   is a deliberate button that hands the lines to the EXISTING review flow via
+   the aiSeed hand-off, so the model still proposes and Chris still approves
+   before a single item is saved. The pad is not cleared by that hand-off - the
+   lines stay until he clears them, because a draft that vanishes into a screen
+   you might back out of is a draft you have lost.
+
+   STORAGE is a meta slice (meta.scratch), all four parts including signOut.
+   Unlike orders it is self-limiting: the pad is meant to be emptied, and
+   SCRATCH_MAX caps it so a forgotten pad can never bloat the meta blob. */
+const SCRATCH_MAX = 200;   // a pad this full is a pad that stopped being used
+
+// First line is the line; the rest is kept but shown collapsed. Trim hard - a
+// pad entry is a fragment, not a document.
+function cleanScratchLine(l){
+  if(!l) return null;
+  const text = String(l.text == null ? "" : l.text).trim();
+  if(!text) return null;                       // an empty scribble is not a scribble
+  return { id: l.id || uid(), text, at: l.at || nowISO() };
+}
+
+// Newest first: the pad is read from the top, and what you just typed is what
+// you are most likely to still be thinking about.
+function scratchLines(list){
+  return (list || []).map(cleanScratchLine).filter(Boolean)
+    .sort((a,b) => String(b.at).localeCompare(String(a.at)));
+}
+
+function addScratchLine(list, text){
+  const line = cleanScratchLine({ text });
+  if(!line) return null;                        // caller keeps the pad untouched
+  return [line].concat(scratchLines(list)).slice(0, SCRATCH_MAX);
+}
+
+// What gets handed to the AI. Oldest first, because the order things occurred
+// to you is information, and one per line so the model sees the seams.
+function scratchSeedText(list){
+  return scratchLines(list).slice().reverse().map(l => l.text).join("\n");
+}
 
 /* ============================================================================
    WINS  -  recognition, not gamification
@@ -1996,6 +2066,9 @@ function useStore(){
   // Orders: see ORDERS. A meta slice, so all four parts apply, signOut included.
   const [orders, setOrders] = useState(() => lsGet("orders", null));
   const ordersRef = useRef(orders); ordersRef.current = orders;
+  // Scratch pad: see SCRATCH. A meta slice, so all four parts apply, signOut included.
+  const [scratch, setScratch] = useState(() => lsGet("scratch", null));
+  const scratchRef = useRef(scratch); scratchRef.current = scratch;
   const habitsMigratedRef = useRef(lsGet("habitsMigrated", false));
   const habitsBackupRef = useRef(lsGet("habitsBackup", null));
   // RTR Rundown: an awareness board that rides on meta (like templates/spaces). null until
@@ -2036,6 +2109,7 @@ function useStore(){
     if(rundownRef.current){ m.rundown = rundownRef.current; }
     if(affirmationsRef.current){ m.affirmations = affirmationsRef.current; }
     if(ordersRef.current){ m.orders = ordersRef.current; }
+    if(scratchRef.current){ m.scratch = scratchRef.current; }
     if(habitsRef.current){
       m.habits = habitsRef.current;
       m.habitsMigrated = !!habitsMigratedRef.current;
@@ -2087,6 +2161,11 @@ function useStore(){
   }, [pushCfg]);
   const saveOrders = useCallback((next) => {
     ordersRef.current = next; setOrders(next); lsSet("orders", next);
+    markMetaDirty();
+    pushCfg();
+  }, [pushCfg]);
+  const saveScratch = useCallback((next) => {
+    scratchRef.current = next; setScratch(next); lsSet("scratch", next);
     markMetaDirty();
     pushCfg();
   }, [pushCfg]);
@@ -2334,6 +2413,10 @@ function useStore(){
             ordersRef.current = m.orders; setOrders(m.orders); lsSet("orders", m.orders);
             log("ORDERS","orders <- meta ("+m.orders.length+")");
           }
+          if(Array.isArray(m && m.scratch)){
+            scratchRef.current = m.scratch; setScratch(m.scratch); lsSet("scratch", m.scratch);
+            log("SCRATCH","scratch <- meta ("+m.scratch.length+")");
+          }
           if(Array.isArray(m && m.habits)){
             habitsRef.current = m.habits; setHabits(m.habits); lsSet("habits", m.habits);
             habitsMigratedRef.current = !!m.habitsMigrated; lsSet("habitsMigrated", !!m.habitsMigrated);
@@ -2379,7 +2462,7 @@ function useStore(){
     // to - or pushed under - a different account on the same device (migration footgun).
     FILES.forEach(f => lsDel("cache:"+f));
     ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty","spaces","defaultSpace","spacesSeeded","templates","rundown",
-     "habits","habitsMigrated","habitsBackup","affirmations","orders"].forEach(k => lsDel(k));
+     "habits","habitsMigrated","habitsBackup","affirmations","orders","scratch"].forEach(k => lsDel(k));
     const empty = {}; FILES.forEach(f => empty[f] = []);
     dataRef.current = empty; setData(empty);
     dirtyRef.current = {}; setDirty({});
@@ -2396,6 +2479,7 @@ function useStore(){
     // routine conversion entirely and silently keep routine todos that never became habits.
     affirmationsRef.current = null; setAffirmations(null);
     ordersRef.current = null; setOrders(null);
+    scratchRef.current = null; setScratch(null);
     habitsRef.current = null; setHabits(null);
     habitsMigratedRef.current = false;
     habitsBackupRef.current = null;
@@ -2703,7 +2787,7 @@ function useStore(){
     return out;
   }, [data, activeSpace, spaces]);
 
-  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, habits, saveHabits, affirmations, saveAffirmations, orders, saveOrders, rundown, saveRundown, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, deleteAccount, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
+  return { cfg, saveCfg, spaces, defaultSpace, saveSpaces, setDefaultSpaceId, activeSpace, setActiveSpace, templates, saveTemplates, createFromTemplate, habits, saveHabits, affirmations, saveAffirmations, orders, saveOrders, scratch, saveScratch, rundown, saveRundown, data: scopedData, allData: data, sync, syncMsg, online, dirty, authed, authEmail, authReady, recovery, signIn, signUp, signOut, deleteAccount, requestReset, updatePassword, pull, pushDirty, upsert, remove, restore, restoreLabel, bulkAdd, completeTodo, relabel, applyPlan, setSync };
 }
 
 /* ============================================================
@@ -4663,7 +4747,81 @@ function HeadsUpCard({ store, style }){
     </div>
   );
 }
-function TodayView({ store, onOpen, goNow, typeFilter, del, toast }){
+/* The scratch pad card. Lives at the TOP of Today, above Heads up: the whole
+   point is that capture costs no scrolling and no taps, and a box you have to
+   reach is a box you will not use when it matters.
+   Today only. Tomorrow and 7 days are look-ahead screens you read, not screens
+   you type into, and a pad repeated on all three would just be clutter. */
+function ScratchCard({ store, toast, openAI }){
+  const [draft,setDraft] = useState("");
+  const [expanded,setExpanded] = useState(false);
+  const lines = scratchLines(store.scratch);
+  const SHOWN = 4;
+  const visible = expanded ? lines : lines.slice(0, SHOWN);
+  const hidden = lines.length - visible.length;
+  function add(){
+    const next = addScratchLine(store.scratch, draft);
+    if(!next) return;                      // nothing typed; leave the pad alone
+    store.saveScratch(next);
+    setDraft("");                          // cursor stays put, ready for the next one
+    log("SCRATCH","line added ("+next.length+" on pad)");
+  }
+  function drop(id){
+    store.saveScratch(lines.filter(l => l.id !== id));
+    toast && toast("Removed");
+  }
+  function clearAll(){
+    store.saveScratch([]);
+    setExpanded(false);
+    toast && toast("Pad cleared");
+    log("SCRATCH","pad cleared");
+  }
+  /* Hands the pad to the EXISTING brain-dump review flow rather than calling the
+     model here: that flow already shows every proposed item for approval before
+     anything is saved, and duplicating it would mean a second, less-reviewed
+     path into the same stores. The pad is deliberately NOT cleared - Chris may
+     back out of that screen, and a draft that vanished on the way would be a
+     draft he lost. He clears it when he can see the items landed. */
+  function organize(){
+    const seed = scratchSeedText(store.scratch);
+    if(!seed) return;
+    lsSet("aiSeed", seed);
+    log("SCRATCH","organize -> aichat ("+lines.length+" lines)");
+    openAI();
+  }
+  return (
+    <div className="card" style={{marginTop:14,padding:"12px 14px"}}>
+      <div className="row" style={{gap:8}}>
+        <input className="input" value={draft} onChange={e=>setDraft(e.target.value)}
+          placeholder="Catch a thought..." aria-label="Scratch pad"
+          onKeyDown={e=>{ if(e.key==="Enter") add(); }}
+          style={{flex:1,minWidth:0}}/>
+        <button className="btn btn-ghost btn-sm scr-btn" style={{flex:"0 0 auto"}}
+          disabled={!draft.trim()} onClick={add}>Add</button>
+      </div>
+      {lines.length>0 && <div style={{marginTop:10}}>
+        {visible.map(l=>
+          <div key={l.id} className="row" style={{alignItems:"center",gap:8,background:"var(--bg)",marginBottom:6,padding:"8px 10px"}}>
+            <span style={{flex:1,minWidth:0,fontSize:14,lineHeight:1.35,wordBreak:"break-word"}}>{l.text}</span>
+            <button className="btn btn-ghost btn-sm scr-btn" style={{flex:"0 0 auto"}}
+              aria-label={"Remove "+l.text} onClick={()=>drop(l.id)}>Clear</button>
+          </div>)}
+        {hidden>0 &&
+          <button className="btn btn-ghost btn-sm btn-block scr-btn" onClick={()=>setExpanded(true)}>
+            Show {hidden} more</button>}
+        {expanded && lines.length>SHOWN &&
+          <button className="btn btn-ghost btn-sm btn-block scr-btn" onClick={()=>setExpanded(false)}>Show less</button>}
+        <div className="row" style={{marginTop:8,gap:8}}>
+          <button className="btn btn-ghost btn-sm scr-btn" style={{flex:1,minWidth:0}} onClick={organize}>
+            {Ic.sparkle} Organize with AI</button>
+          <button className="btn btn-ghost btn-sm scr-btn" style={{flex:"0 0 auto"}} onClick={clearAll}>Clear all</button>
+        </div>
+      </div>}
+    </div>
+  );
+}
+
+function TodayView({ store, onOpen, goNow, typeFilter, del, toast, openAI }){
   const [habitOpen,setHabitOpen] = useState(null);
   // Which day the screen is showing. Deliberately NOT persisted: the useful
   // default is always "today", and a stale "tomorrow" left over from last night
@@ -4715,6 +4873,7 @@ function TodayView({ store, onOpen, goNow, typeFilter, del, toast }){
         <button className={"seg-b"+(tomorrow?" on":"")} onClick={()=>setDay("tomorrow")}>Tomorrow</button>
         <button className={"seg-b"+(week?" on":"")} onClick={()=>setDay("week")}>7 days</button>
       </div>
+      {!tomorrow && !week && <ScratchCard store={store} toast={toast} openAI={openAI}/>}
       {(tomorrow||week)
         ? <div className="card" style={{marginTop:14}}>
             <div className="eyebrow" style={{marginBottom:6}}>Heads up</div>
@@ -7963,7 +8122,7 @@ function App(){
 
   let main;
   if(sub && sub!=="more") main=subView;
-  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter} del={deleteWithUndo} toast={toast}/>;
+  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter} del={deleteWithUndo} toast={toast} openAI={()=>setSub("aichat")}/>;
   else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter} del={deleteWithUndo} toast={toast}/>;
   else if(tab==="more") main=<MoreView store={store} go={go}/>;
 

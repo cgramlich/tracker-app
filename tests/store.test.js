@@ -93,15 +93,20 @@ const mentions = (obj, needle) => JSON.stringify(obj === undefined ? null : obj)
     cfg:          (s) => s.saveCfg({ ...s.cfg, appName: "ALICE-APPNAME" }),
     // Added 2026-09-13 with the orders feature; the tripwire below refused to pass without it.
     orders:       (s) => s.saveOrders([{ id: "o1", merchant: "ALICE-STORE", item: "ALICE-ORDER", orderedAt: "2026-09-01", status: "ordered" }]),
+    /* Added 2026-09-25 with the scratch pad; the tripwire refused to pass without it.
+       This is the worst slice to leak: a scratch pad holds unfiltered half-thoughts
+       typed with no thought at all for who might read them later. */
+    scratch:      (s) => s.saveScratch([{ id: "s1", text: "ALICE-SCRATCH", at: "2026-09-25T10:00:00.000Z" }]),
   };
   for (const [slice, write] of Object.entries(slices)) {
     const needle = { templates: "ALICE-TEMPLATE", habits: "ALICE-HABIT", affirmations: "ALICE-AFFIRMATION",
-      spaces: "ALICE-SPACE", cfg: "ALICE-APPNAME", orders: "ALICE-ORDER" }[slice];
+      spaces: "ALICE-SPACE", cfg: "ALICE-APPNAME", orders: "ALICE-ORDER", scratch: "ALICE-SCRATCH" }[slice];
     const r = await aliceThenBob(SRC, write);
     is(slice + ": reached Alice's own server row first", mentions(r.aliceMeta, needle), true);
     is(slice + ": never reaches Bob's server row", mentions(r.bobMeta, needle), false);
     is(slice + ": not visible in Bob's store", mentions({ c: r.app.store.cfg, s: r.app.store.spaces, t: r.app.store.templates,
-      h: r.app.store.habits, a: r.app.store.affirmations, o: r.app.store.orders }, needle), false);
+      h: r.app.store.habits, a: r.app.store.affirmations, o: r.app.store.orders,
+      sc: r.app.store.scratch }, needle), false);
   }
 
   /* ------------------------------------------------------------------------
@@ -124,7 +129,7 @@ const mentions = (obj, needle) => JSON.stringify(obj === undefined ? null : obj)
     is("'" + k + "' is removed from localStorage in signOut", lsDelList.includes('"' + k + '"'), true);
   }
   const ALLOW = ["cfg", "spaces", "defaultSpace", "spacesSeeded", "templates", "rundown",
-                 "affirmations", "habits", "habitsMigrated", "habitsBackup", "orders"];
+                 "affirmations", "habits", "habitsMigrated", "habitsBackup", "orders", "scratch"];
   const unknown = metaKeys.filter(k => !ALLOW.includes(k));
   is("no NEW meta key has appeared without a sign-out test being added here" +
      (unknown.length ? " (new: " + unknown.join(", ") + ")" : ""), unknown, []);
