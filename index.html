@@ -549,6 +549,15 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
 /* The per-line remove. A bare glyph needs its own size and a square footprint,
    or it reads as a typo rather than a control. */
 .scr-x{min-width:44px;font-size:20px;line-height:1;padding:0;}
+/* The editable line. Reads as plain text until you touch it - a pad full of
+   visible form fields would look like data entry, which is the opposite of the
+   point. 16px is NOT a taste choice: iOS zooms the whole page on focus for
+   anything smaller, which would throw the layout every time you fix a typo. */
+.scr-edit{flex:1;min-width:0;width:100%;background:transparent;border:1px solid transparent;
+  border-radius:var(--radius-sm);color:var(--ink);font-family:inherit;font-size:16px;
+  line-height:1.35;padding:11px 8px;margin:0;resize:none;overflow:hidden;
+  overflow-wrap:break-word;min-height:44px;}
+.scr-edit:focus{background:var(--bg-4);border-color:var(--amber-line);outline:none;}
 /* Wins */
 .win-row{display:flex;gap:12px;align-items:center;padding:11px 0;border-top:1px solid var(--line);}
 .win-row:first-of-type{border-top:0;}
@@ -579,11 +588,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.50.1";
+const APP_VERSION = "1.51.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-09-25.2";
+const BUILD = "2026-09-25.3";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1004,6 +1013,18 @@ function addScratchLine(list, text){
   const line = cleanScratchLine({ text });
   if(!line) return null;                        // caller keeps the pad untouched
   return [line].concat(scratchLines(list)).slice(0, SCRATCH_MAX);
+}
+
+/* Edit one line in place. A BLANK edit returns the list unchanged rather than
+   deleting: removal has its own button, and a field emptied by a fat finger then
+   blurred by tapping elsewhere would otherwise destroy the line with no undo and
+   nothing on screen to say what was lost. `at` is left alone so editing a typo
+   does not jump the line to the top of the pad. */
+function editScratchLine(list, id, text){
+  const t = String(text == null ? "" : text).trim();
+  const cur = scratchLines(list);
+  if(!t || !id) return cur;
+  return cur.map(l => l.id === id ? { ...l, text: t } : l);
 }
 
 // What gets handed to the AI. Oldest first, because the order things occurred
@@ -4783,6 +4804,19 @@ function ScratchCard({ store, toast, openAI }){
     store.saveScratch(lines.filter(l => l.id !== id));
     toast && toast("Removed");
   }
+  /* Edit in place, ported from the affirmations editor (same job, same shape) but
+     as a TEXTAREA rather than an input: an <input> silently flattens newlines, so
+     editing a pasted multi-line fragment would save a collapsed version and the
+     lost breaks would never be visible. Saves on blur; no Save button, because a
+     pad that asks you to confirm a typo fix is a pad you stop correcting. */
+  function commitEdit(id, value, el){
+    const next = editScratchLine(store.scratch, id, value);
+    const cur = lines.find(l => l.id === id);
+    if(cur && String(value||"").trim() !== cur.text){
+      if(!String(value||"").trim() && el) el.value = cur.text;   // blank reverts, visibly
+      else { store.saveScratch(next); log("SCRATCH","line edited"); }
+    }
+  }
   function clearAll(){
     store.saveScratch([]);
     setExpanded(false);
@@ -4823,7 +4857,21 @@ function ScratchCard({ store, toast, openAI }){
       {lines.length>0 && <div style={{marginTop:10}}>
         {visible.map(l=>
           <div key={l.id} className="row" style={{alignItems:"center",gap:8,background:"var(--bg)",marginBottom:6,padding:"8px 10px"}}>
-            <span style={{flex:1,minWidth:0,fontSize:14,lineHeight:1.35,wordBreak:"break-word"}}>{l.text}</span>
+            {/* defaultValue, not value: an uncontrolled field lets you type freely
+                and only commits on blur, so a re-render mid-edit cannot yank the
+                cursor. The key is the id, so React keeps the field across reorders. */}
+            <textarea className="scr-edit" defaultValue={l.text} rows={1}
+              aria-label={"Edit "+l.text}
+              /* Size to content on MOUNT as well as while typing: a pasted
+                 multi-line fragment would otherwise sit clipped at one row until
+                 you happened to tap it, hiding text that is really there. */
+              ref={el=>{ if(el){ el.style.height="auto"; el.style.height=el.scrollHeight+"px"; } }}
+              onInput={e=>{ e.target.style.height="auto"; e.target.style.height=e.target.scrollHeight+"px"; }}
+              onBlur={e=>commitEdit(l.id, e.target.value, e.target)}
+              onKeyDown={e=>{
+                if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); e.target.blur(); }
+                if(e.key==="Escape"){ e.target.value = l.text; e.target.blur(); }
+              }}/>
             {/* A symbol, not the word: "Clear" once per line plus "Clear all" put
                 the same word on screen four times. The 44px hit area is unchanged. */}
             <button className="btn btn-ghost btn-sm scr-btn scr-x" style={{flex:"0 0 auto"}}

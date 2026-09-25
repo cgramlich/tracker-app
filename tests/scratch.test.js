@@ -11,7 +11,7 @@
 const { build, is, section, report } = require("./lift");
 
 const S = build(["SCRATCH_MAX", "cleanScratchLine", "scratchLines", "addScratchLine", "scratchSeedText",
-  "scratchAfterApply"], `
+  "scratchAfterApply", "editScratchLine"], `
   let _n = 0; function uid(){ return "s" + (++_n); }
   function nowISO(){ return "2026-09-25T12:00:00.000Z"; }
 `);
@@ -121,6 +121,39 @@ is("an id that is no longer on the pad is harmless",
   const before = JSON.parse(JSON.stringify(pad));
   S.scratchAfterApply(pad, ["l1"]);
   is("scratchAfterApply does not mutate the pad it is given", pad, before);
+}
+
+/* Editing in place (Chris, 2026-09-25: "we need to be able to edit it as well
+   each of those items"). The failure that matters is a BLANK save: the field
+   commits on blur with no Save button, so an emptied field plus a stray tap
+   elsewhere must not silently destroy the line. Removal has its own button. */
+section("editScratchLine - fix a typo without losing the line");
+is("a blank edit leaves the line alone, it does NOT delete it",
+  S.editScratchLine(pad, "l2", "   ").find(l => l.id === "l2").text, "domu schedule?");
+is("and the pad keeps every line", S.editScratchLine(pad, "l2", "").length, 3);
+is("null text is treated as blank", S.editScratchLine(pad, "l2", null).length, 3);
+is("the new text is saved", S.editScratchLine(pad, "l2", "domu schedule - ask Eric")
+  .find(l => l.id === "l2").text, "domu schedule - ask Eric");
+is("it is trimmed", S.editScratchLine(pad, "l2", "  padded  ").find(l => l.id === "l2").text, "padded");
+is("only the named line changes",
+  S.editScratchLine(pad, "l2", "new").find(l => l.id === "l1").text, pad[0].text);
+is("an unknown id changes nothing", S.editScratchLine(pad, "nope", "x").map(l => l.text).join("|"),
+  S.scratchLines(pad).map(l => l.text).join("|"));
+is("a missing id changes nothing", S.editScratchLine(pad, "", "x").length, 3);
+// `at` must survive: re-stamping it would send the edited line to the top of the
+// pad, so fixing a typo would silently reorder everything below it.
+is("editing does NOT re-stamp the timestamp",
+  S.editScratchLine(pad, "l1", "edited").find(l => l.id === "l1").at, pad[0].at);
+is("so the pad order is unchanged after an edit",
+  S.editScratchLine(pad, "l1", "edited").map(l => l.id), ["l3", "l2", "l1"]);
+// A textarea is used precisely so this survives the round trip.
+is("a multi-line edit keeps its newlines",
+  S.editScratchLine(pad, "l3", "book flights\nand the hotel").find(l => l.id === "l3").text,
+  "book flights\nand the hotel");
+{
+  const before = JSON.parse(JSON.stringify(pad));
+  S.editScratchLine(pad, "l1", "mutated?");
+  is("editScratchLine does not mutate the pad it is given", pad, before);
 }
 
 /* Guards against the pad quietly becoming a to-do list. It has no status, no

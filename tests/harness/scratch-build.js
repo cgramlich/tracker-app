@@ -16,12 +16,13 @@ const out = path.join(__dirname, "scratch.html");
 
 const css = (src.match(/<style>([\s\S]*?)<\/style>/) || [])[1];
 if (!css) throw new Error("no <style> block found in index.html");
-for (const sel of [".card", ".input", ".btn", ".row", ".hint"]) {
+for (const sel of [".card", ".input", ".btn", ".row", ".hint", ".scr-btn", ".scr-x", ".scr-edit"]) {
   if (!new RegExp("\\" + sel + "[\\s{,.]").test(css)) throw new Error("assert failed: " + sel + " missing from the lifted CSS");
 }
 
 const consts = ["SCRATCH_MAX"].map(n => liftConstFrom(src, n)).join("\n");
-const fns = ["cleanScratchLine", "scratchLines", "addScratchLine", "scratchSeedText", "ScratchCard"]
+const fns = ["cleanScratchLine", "scratchLines", "addScratchLine", "editScratchLine", "scratchSeedText",
+  "scratchAfterApply", "ScratchCard"]
   .map(n => liftFrom(src, n)).join("\n\n");
 
 const stub = `
