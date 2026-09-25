@@ -546,6 +546,9 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
    is a capture box, not a toolbar), so they get the height back explicitly.
    Measured at 375px, not guessed: v1.44.0 shipped a 22px target by eyeballing. */
 .scr-btn{min-height:44px;}
+/* The per-line remove. A bare glyph needs its own size and a square footprint,
+   or it reads as a typo rather than a control. */
+.scr-x{min-width:44px;font-size:20px;line-height:1;padding:0;}
 /* Wins */
 .win-row{display:flex;gap:12px;align-items:center;padding:11px 0;border-top:1px solid var(--line);}
 .win-row:first-of-type{border-top:0;}
@@ -576,11 +579,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.50.0";
+const APP_VERSION = "1.50.1";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-09-25.1";
+const BUILD = "2026-09-25.2";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1007,6 +1010,16 @@ function addScratchLine(list, text){
 // to you is information, and one per line so the model sees the seams.
 function scratchSeedText(list){
   return scratchLines(list).slice().reverse().map(l => l.text).join("\n");
+}
+
+/* The pad AFTER an AI plan is applied. Removes only the ids that were actually
+   SENT, so a thought captured while the plan sat on screen is never swept up in
+   an apply it had no part in. A missing or empty id list means this plan did not
+   come from the pad, and the pad is then left completely alone. */
+function scratchAfterApply(list, sentIds){
+  const ids = Array.isArray(sentIds) ? sentIds : [];
+  if(!ids.length) return scratchLines(list);
+  return scratchLines(list).filter(l => !ids.includes(l.id));
 }
 
 /* ============================================================================
@@ -2461,7 +2474,7 @@ function useStore(){
     // CLEAN from the server. Prevents one account's stale/dirty data from being shown
     // to - or pushed under - a different account on the same device (migration footgun).
     FILES.forEach(f => lsDel("cache:"+f));
-    ["dirty","pendingReview","aiChat","aiPlan","aiSeed","cfgDirty","spaces","defaultSpace","spacesSeeded","templates","rundown",
+    ["dirty","pendingReview","aiChat","aiPlan","aiSeed","aiSeedScratchIds","cfgDirty","spaces","defaultSpace","spacesSeeded","templates","rundown",
      "habits","habitsMigrated","habitsBackup","affirmations","orders","scratch"].forEach(k => lsDel(k));
     const empty = {}; FILES.forEach(f => empty[f] = []);
     dataRef.current = empty; setData(empty);
@@ -3776,7 +3789,7 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
         <textarea className="textarea" value={brain} onChange={e=>setBrain(e.target.value)} style={{minHeight:92}}
           placeholder="Talk or type everything on your mind - I'll turn it into todos, projects, and ideas, and help file your inbox..."/>
         <button className="btn btn-primary btn-block" style={{marginTop:8,display:"flex",alignItems:"center",justifyContent:"center",gap:8}}
-          onClick={()=>{ const t=brain.trim(); if(t) lsSet("aiSeed", t); openAI(); }}>
+          onClick={()=>{ const t=brain.trim(); if(t) lsSet("aiSeed", t); lsDel("aiSeedScratchIds"); openAI(); }}>
           <span style={{width:18,height:18,display:"inline-flex"}}>{Ic.sparkle}</span> Organize with AI</button>
       </div>
       <div className="divider"></div>
@@ -4779,14 +4792,22 @@ function ScratchCard({ store, toast, openAI }){
   /* Hands the pad to the EXISTING brain-dump review flow rather than calling the
      model here: that flow already shows every proposed item for approval before
      anything is saved, and duplicating it would mean a second, less-reviewed
-     path into the same stores. The pad is deliberately NOT cleared - Chris may
-     back out of that screen, and a draft that vanished on the way would be a
-     draft he lost. He clears it when he can see the items landed. */
+     path into the same stores.
+
+     WHEN THE PAD EMPTIES (Chris, 2026-09-25, choosing between three options):
+     not here, and not never - on APPLY. Clearing here would destroy the capture
+     if he backs out of the AI screen without applying, and he would have no way
+     to know what he lost. Never clearing means Organising the same pile twice
+     creates every todo twice. So the ids that were SENT ride along in
+     `aiSeedScratchIds`, and the apply step removes exactly those - lines added
+     after the hand-off are not in the list and survive. */
   function organize(){
+    const sent = scratchLines(store.scratch);
     const seed = scratchSeedText(store.scratch);
     if(!seed) return;
     lsSet("aiSeed", seed);
-    log("SCRATCH","organize -> aichat ("+lines.length+" lines)");
+    lsSet("aiSeedScratchIds", sent.map(l => l.id));
+    log("SCRATCH","organize -> aichat ("+sent.length+" lines)");
     openAI();
   }
   return (
@@ -4803,8 +4824,10 @@ function ScratchCard({ store, toast, openAI }){
         {visible.map(l=>
           <div key={l.id} className="row" style={{alignItems:"center",gap:8,background:"var(--bg)",marginBottom:6,padding:"8px 10px"}}>
             <span style={{flex:1,minWidth:0,fontSize:14,lineHeight:1.35,wordBreak:"break-word"}}>{l.text}</span>
-            <button className="btn btn-ghost btn-sm scr-btn" style={{flex:"0 0 auto"}}
-              aria-label={"Remove "+l.text} onClick={()=>drop(l.id)}>Clear</button>
+            {/* A symbol, not the word: "Clear" once per line plus "Clear all" put
+                the same word on screen four times. The 44px hit area is unchanged. */}
+            <button className="btn btn-ghost btn-sm scr-btn scr-x" style={{flex:"0 0 auto"}}
+              aria-label={"Remove "+l.text} onClick={()=>drop(l.id)}>{"×"}</button>
           </div>)}
         {hidden>0 &&
           <button className="btn btn-ghost btn-sm btn-block scr-btn" onClick={()=>setExpanded(true)}>
@@ -5943,6 +5966,16 @@ function AIChat({ store, toast, back }){
     });
     if(!included.length){ toast("Nothing selected"); return; }
     const res = store.applyPlan(included);
+    /* The plan came from the scratch pad, and the items are now really saved, so
+       the lines that produced them come off - otherwise Organising the same pile
+       again would create everything twice. Only the ids that were SENT are
+       removed: anything captured after the hand-off was never in this plan. */
+    const fromPad = lsGet("aiSeedScratchIds", null);
+    if(Array.isArray(fromPad) && fromPad.length){
+      store.saveScratch(scratchAfterApply(store.scratch, fromPad));
+      lsDel("aiSeedScratchIds");
+      log("SCRATCH","pad cleared on apply ("+fromPad.length+" lines)");
+    }
     // Keep the UNSELECTED items on the table so you can refine or apply them next. A kept
     // todo that pointed at a project we just created can't resolve its tmpId anymore -> null it.
     const remaining = plan.ops.filter((_,i)=>plan.excluded.includes(i)).map(o=>{
@@ -5954,7 +5987,9 @@ function AIChat({ store, toast, back }){
     setMessages(m=>[...m, { role:"system", text:"Applied "+res.created+" created"+(res.updated?", "+res.updated+" updated":"")+tail }]);
     toast(remaining.length ? "Applied selected" : "Plan applied");
   }
-  function clearChat(){ setMessages([]); setPlan(null); setErr(""); lsDel("aiChat"); lsDel("aiPlan"); }
+  // Clearing the chat abandons the plan, so the pad is no longer owed anything:
+  // drop the hand-off record or a LATER, unrelated apply would empty the pad.
+  function clearChat(){ setMessages([]); setPlan(null); setErr(""); lsDel("aiChat"); lsDel("aiPlan"); lsDel("aiSeedScratchIds"); }
 
   function opLabel(o){
     if(o.op==="create_project") return ["New project", o.name||"(untitled)"];
@@ -6336,7 +6371,7 @@ function SettingsView({ store, toast, toastUndo, go, onCheckUpdate, updMsg, upda
       <button className="btn btn-danger btn-block" style={{marginTop:22}} onClick={()=>setConfirmClear(true)}>Clear this device & sign out</button>
       <p className="hint" style={{textAlign:"center",marginTop:8}}>Clears this device's cache and sign-in. Your data stays safe on the server and re-syncs when you sign back in.</p>
       {confirmClear && <Confirm text="This clears the local cache and sign-in on THIS device. Your data on the server is untouched and re-syncs when you sign back in."
-        confirmLabel="Clear device" onConfirm={()=>{ FILES.forEach(f=>lsDel("cache:"+f)); ["cfg","cfgDirty","dirty","pendingReview","aiChat","aiPlan","aiSeed"].forEach(lsDel); location.reload(); }}
+        confirmLabel="Clear device" onConfirm={()=>{ FILES.forEach(f=>lsDel("cache:"+f)); ["cfg","cfgDirty","dirty","pendingReview","aiChat","aiPlan","aiSeed","aiSeedScratchIds"].forEach(lsDel); location.reload(); }}
         onCancel={()=>setConfirmClear(false)}/>}
     </div>
   );

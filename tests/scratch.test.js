@@ -10,7 +10,8 @@
    still there, and handing the pad to the AI does not consume it. */
 const { build, is, section, report } = require("./lift");
 
-const S = build(["SCRATCH_MAX", "cleanScratchLine", "scratchLines", "addScratchLine", "scratchSeedText"], `
+const S = build(["SCRATCH_MAX", "cleanScratchLine", "scratchLines", "addScratchLine", "scratchSeedText",
+  "scratchAfterApply"], `
   let _n = 0; function uid(){ return "s" + (++_n); }
   function nowISO(){ return "2026-09-25T12:00:00.000Z"; }
 `);
@@ -92,6 +93,34 @@ section("handing the pad to the AI does not consume it");
   S.scratchSeedText(pad);
   is("the pad is byte-identical after seeding", pad, before);
   is("and still has every line", S.scratchLines(pad).length, 3);
+}
+
+/* The other half of that decision (Chris, 2026-09-25): the pad empties on APPLY,
+   not on hand-off and not never. Never clearing means Organising the same pile
+   twice creates every todo twice; clearing at hand-off loses the capture if he
+   backs out. Both failures are silent, which is why both are pinned here. */
+section("the pad empties on APPLY, and only of what was actually sent");
+is("no id list means the plan did not come from the pad - leave it alone",
+  S.scratchAfterApply(pad, null).length, 3);
+is("an empty id list likewise leaves the pad alone", S.scratchAfterApply(pad, []).length, 3);
+is("applying every sent line empties the pad",
+  S.scratchAfterApply(pad, ["l1", "l2", "l3"]).length, 0);
+is("a partial list removes only its own lines",
+  S.scratchAfterApply(pad, ["l2"]).map(l => l.id), ["l3", "l1"]);
+is("an id that is no longer on the pad is harmless",
+  S.scratchAfterApply(pad, ["l2", "gone"]).length, 2);
+{
+  // The race that makes this worth doing: a thought captured WHILE the proposed
+  // plan sits on screen was never part of that plan and must survive the apply.
+  const withNew = S.addScratchLine(pad, "typed while the plan was on screen");
+  const after = S.scratchAfterApply(withNew, ["l1", "l2", "l3"]);
+  is("a line captured after the hand-off SURVIVES the apply", after.length, 1);
+  is("and it is the new one", after[0].text, "typed while the plan was on screen");
+}
+{
+  const before = JSON.parse(JSON.stringify(pad));
+  S.scratchAfterApply(pad, ["l1"]);
+  is("scratchAfterApply does not mutate the pad it is given", pad, before);
 }
 
 /* Guards against the pad quietly becoming a to-do list. It has no status, no
