@@ -11,7 +11,7 @@
 const { build, is, section, report } = require("./lift");
 
 const S = build(["SCRATCH_MAX", "cleanScratchLine", "scratchLines", "addScratchLine", "scratchSeedText",
-  "scratchAfterApply", "editScratchLine"], `
+  "scratchAfterApply", "editScratchLine", "mergeScratchIds"], `
   let _n = 0; function uid(){ return "s" + (++_n); }
   function nowISO(){ return "2026-09-25T12:00:00.000Z"; }
 `);
@@ -121,6 +121,35 @@ is("an id that is no longer on the pad is harmless",
   const before = JSON.parse(JSON.stringify(pad));
   S.scratchAfterApply(pad, ["l1"]);
   is("scratchAfterApply does not mutate the pad it is given", pad, before);
+}
+
+/* Organise one line or all of them (Chris, 2026-09-26). A single line goes
+   through the same review as the whole pad, so the only new risk is the
+   hand-off RECORD: the AI screen is one running conversation, and if a second
+   Organise overwrote the first one's ids, applying the combined plan would clear
+   only the newest line and a later Organise all would duplicate the rest. */
+section("organising a single line");
+is("the seed for one line is just that line", S.scratchSeedText([pad[1]]), "domu schedule?");
+is("it does not drag the rest of the pad along", S.scratchSeedText([pad[1]]).includes("book flights"), false);
+
+section("mergeScratchIds - the hand-off record is a union, never an overwrite");
+is("first hand-off starts the record", S.mergeScratchIds(null, ["l1"]), ["l1"]);
+is("a second hand-off ADDS to it", S.mergeScratchIds(["l1"], ["l2"]), ["l1", "l2"]);
+is("sending a line twice does not list it twice", S.mergeScratchIds(["l1", "l2"], ["l2", "l3"]), ["l1", "l2", "l3"]);
+is("garbage previous value is treated as empty", S.mergeScratchIds("junk", ["l1"]), ["l1"]);
+is("empty ids leave the record as it was", S.mergeScratchIds(["l1"], []), ["l1"]);
+is("blank ids are ignored", S.mergeScratchIds([], ["", null, "l1"]), ["l1"]);
+{
+  const prev = ["l1"];
+  S.mergeScratchIds(prev, ["l2"]);
+  is("the previous record is not mutated", prev, ["l1"]);
+}
+{
+  // The scenario that motivated the union: organise l1, back out, organise l2,
+  // apply the combined plan. BOTH lines must come off.
+  const record = S.mergeScratchIds(S.mergeScratchIds(null, ["l1"]), ["l2"]);
+  is("one-then-another, then apply: both lines are cleared",
+    S.scratchAfterApply(pad, record).map(l => l.id), ["l3"]);
 }
 
 /* Editing in place (Chris, 2026-09-25: "we need to be able to edit it as well

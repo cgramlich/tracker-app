@@ -22,7 +22,7 @@ for (const sel of [".card", ".input", ".btn", ".row", ".hint", ".scr-btn", ".scr
 
 const consts = ["SCRATCH_MAX"].map(n => liftConstFrom(src, n)).join("\n");
 const fns = ["cleanScratchLine", "scratchLines", "addScratchLine", "editScratchLine", "scratchSeedText",
-  "scratchAfterApply", "ScratchCard"]
+  "scratchAfterApply", "mergeScratchIds", "ScratchCard"]
   .map(n => liftFrom(src, n)).join("\n\n");
 
 const stub = `
@@ -30,7 +30,9 @@ const { useState, useRef, useEffect } = React;
 function nowISO(){ return new Date().toISOString(); }
 let _u = 0; function uid(){ return "u" + (++_u); }
 function log(){}
-function lsSet(k, v){ window.__seed = v; }
+window.__ls = {};
+function lsSet(k, v){ window.__ls[k] = v; window.__seed = v; }
+function lsGet(k, d){ return k in window.__ls ? window.__ls[k] : d; }
 const Ic = { sparkle:"\\u2726" };
 
 const at = (n) => { const d = new Date(); d.setHours(d.getHours() - n); return d.toISOString(); };

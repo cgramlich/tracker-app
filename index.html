@@ -588,11 +588,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.51.0";
+const APP_VERSION = "1.52.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-09-25.3";
+const BUILD = "2026-09-26.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1037,6 +1037,17 @@ function scratchSeedText(list){
    SENT, so a thought captured while the plan sat on screen is never swept up in
    an apply it had no part in. A missing or empty id list means this plan did not
    come from the pad, and the pad is then left completely alone. */
+/* The hand-off record is a UNION, never an overwrite. The AI screen is one
+   running conversation: organise one line, back out, organise another, and the
+   plan on the table now carries both. Overwriting the record with the second id
+   would forget the first, so applying that plan would clear only one line and a
+   later Organise all would create the other line's items a second time. */
+function mergeScratchIds(prev, ids){
+  const out = Array.isArray(prev) ? prev.slice() : [];
+  (ids || []).forEach(id => { if(id && !out.includes(id)) out.push(id); });
+  return out;
+}
+
 function scratchAfterApply(list, sentIds){
   const ids = Array.isArray(sentIds) ? sentIds : [];
   if(!ids.length) return scratchLines(list);
@@ -3810,7 +3821,7 @@ function CaptureSheet({ store, onClose, toast, openEditor, openAI }){
         <textarea className="textarea" value={brain} onChange={e=>setBrain(e.target.value)} style={{minHeight:92}}
           placeholder="Talk or type everything on your mind - I'll turn it into todos, projects, and ideas, and help file your inbox..."/>
         <button className="btn btn-primary btn-block" style={{marginTop:8,display:"flex",alignItems:"center",justifyContent:"center",gap:8}}
-          onClick={()=>{ const t=brain.trim(); if(t) lsSet("aiSeed", t); lsDel("aiSeedScratchIds"); openAI(); }}>
+          onClick={()=>{ const t=brain.trim(); if(t) lsSet("aiSeed", t); openAI(); }}>
           <span style={{width:18,height:18,display:"inline-flex"}}>{Ic.sparkle}</span> Organize with AI</button>
       </div>
       <div className="divider"></div>
@@ -4835,13 +4846,19 @@ function ScratchCard({ store, toast, openAI }){
      creates every todo twice. So the ids that were SENT ride along in
      `aiSeedScratchIds`, and the apply step removes exactly those - lines added
      after the hand-off are not in the list and survive. */
-  function organize(){
-    const sent = scratchLines(store.scratch);
-    const seed = scratchSeedText(store.scratch);
+  /* One line or the whole pad (Chris, 2026-09-26: "organize each item by AI or
+     all of them"). Same hand-off either way, so a single line still goes through
+     the approve-before-save review rather than a quicker, unreviewed path. */
+  function organize(only){
+    // `only.id` rather than `only`: wired straight to onClick, this receives the
+    // click EVENT, which is truthy - v1.52.0's harness caught Organize all doing
+    // nothing because the event was being treated as a one-line pad.
+    const sent = (only && only.id) ? [only] : scratchLines(store.scratch);
+    const seed = scratchSeedText(sent);
     if(!seed) return;
     lsSet("aiSeed", seed);
-    lsSet("aiSeedScratchIds", sent.map(l => l.id));
-    log("SCRATCH","organize -> aichat ("+sent.length+" lines)");
+    lsSet("aiSeedScratchIds", mergeScratchIds(lsGet("aiSeedScratchIds", null), sent.map(l => l.id)));
+    log("SCRATCH","organize -> aichat ("+sent.length+" line"+(sent.length===1?"":"s")+")");
     openAI();
   }
   return (
@@ -4875,6 +4892,9 @@ function ScratchCard({ store, toast, openAI }){
             {/* A symbol, not the word: "Clear" once per line plus "Clear all" put
                 the same word on screen four times. The 44px hit area is unchanged. */}
             <button className="btn btn-ghost btn-sm scr-btn scr-x" style={{flex:"0 0 auto"}}
+              aria-label={"Organize "+l.text} onClick={()=>organize(l)}>
+              <span style={{width:18,height:18,display:"inline-flex"}}>{Ic.sparkle}</span></button>
+            <button className="btn btn-ghost btn-sm scr-btn scr-x" style={{flex:"0 0 auto"}}
               aria-label={"Remove "+l.text} onClick={()=>drop(l.id)}>{"×"}</button>
           </div>)}
         {hidden>0 &&
@@ -4883,8 +4903,8 @@ function ScratchCard({ store, toast, openAI }){
         {expanded && lines.length>SHOWN &&
           <button className="btn btn-ghost btn-sm btn-block scr-btn" onClick={()=>setExpanded(false)}>Show less</button>}
         <div className="row" style={{marginTop:8,gap:8}}>
-          <button className="btn btn-ghost btn-sm scr-btn" style={{flex:1,minWidth:0}} onClick={organize}>
-            {Ic.sparkle} Organize with AI</button>
+          <button className="btn btn-ghost btn-sm scr-btn" style={{flex:1,minWidth:0}} onClick={()=>organize()}>
+            {Ic.sparkle} Organize all</button>
           <button className="btn btn-ghost btn-sm scr-btn" style={{flex:"0 0 auto"}} onClick={clearAll}>Clear all</button>
         </div>
       </div>}
