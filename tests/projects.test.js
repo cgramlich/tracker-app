@@ -18,7 +18,7 @@
    invisible on the one screen whose entire job is to show it. */
 const { build, lift, is, section, report } = require("./lift");
 
-const P = build(["projectTodos", "projectTodosOutOfSpace"], `
+const P = build(["projectTodos", "projectTodosOutOfSpace", "projectSpace"], `
   const DEFAULT_SPACE = "personal";
 `);
 
@@ -110,5 +110,54 @@ is("no lookup by projectId/goalId reads store.data" +
    (offenders.length ? " (" + offenders.join(" | ") + ")" : ""), offenders, []);
 is("and the known link lookups read allData instead",
   (SRC.match(/store\.allData\.(projects|goals|todos)\.(find|filter)/g) || []).length >= 4, true);
+
+/* Inheriting the project's Space (Chris, 2026-09-28: "yes make new todos inherit
+   their project's area"). v1.52.1 made a cross-Space todo visible; this stops
+   most of them arising. The planner stamping the ACTIVE Space, never the
+   project's, was the main source. */
+section("projectSpace - where a new todo should be filed");
+is("no project means no opinion, so the caller keeps its own default", P.projectSpace([proj], ""), "");
+is("a null project id likewise", P.projectSpace([proj], null), "");
+is("an UNKNOWN project id gives no opinion rather than a guess", P.projectSpace([proj], "ghost"), "");
+is("a null project list is safe", P.projectSpace(null, "p1"), "");
+is("a junk entry cannot throw", P.projectSpace([null, proj], "p1"), "personal");
+is("the project's Space is returned", P.projectSpace([proj, workProj], "p2"), "work");
+is("a project with no Space field reads as the default", P.projectSpace([{ id: "p9" }], "p9"), "personal");
+
+/* The empty string is load-bearing: `addTop` does `row.space || newItemSpace()`,
+   so "" must fall through to the old behaviour and never be stored as a Space. */
+section("no opinion falls through to the caller's default, it is never stored");
+const addTopSpace = (row, active) => row.space || active;
+is("an unattached todo still gets the active Space",
+  addTopSpace({ space: P.projectSpace([proj], "") }, "work"), "work");
+is("an attached todo takes the project's Space instead of the active one",
+  addTopSpace({ space: P.projectSpace([proj], "p1") }, "work"), "personal");
+is("a todo attached to a project that vanished falls back, it does not blank",
+  addTopSpace({ space: P.projectSpace([proj], "ghost") }, "work"), "work");
+
+/* The end-to-end point: a todo created this way is no longer a stray on its own
+   project, which is the bug that started all of this. */
+section("a todo created under a project is not a stray on that project");
+{
+  const made = { id: "t9", title: "Planned by AI", projectId: "p1",
+                 space: P.projectSpace([proj], "p1") || "work" };
+  is("it is filed in the project's Space, not the active one", made.space, "personal");
+  is("and it does NOT show up as out-of-Space",
+    P.projectTodosOutOfSpace(todos.concat([made]), proj).some(t => t.id === "t9"), false);
+  is("while the pre-existing stray is still reported",
+    P.projectTodosOutOfSpace(todos.concat([made]), proj).map(t => t.id), ["t2"]);
+}
+
+/* Pinned in the source: these are wiring, not logic, and wiring is exactly what
+   the unit tests above cannot see. The Organize-all bug of v1.52.0 was wiring. */
+section("the creation paths actually use it");
+const plan = SRC.slice(SRC.indexOf('filter(o=>o.op==="create_todo")'), SRC.indexOf('op==="update_todo"'));
+is("the AI plan stamps a created todo with its project's Space",
+  /space: projectSpace\(d\.projects, pid\)/.test(plan), true);
+const picker = SRC.slice(SRC.indexOf('<span className="label">Project (optional)</span>'), SRC.indexOf('Location / context'));
+is("choosing a project in the editor moves the Space field",
+  /projectSpace\(store\.allData\.projects/.test(picker) && /setSpace\(ps\)/.test(picker), true);
+is("a project created from the todo sheet is born in the todo's Space",
+  /status:"active", outcome:"", description:"", deadline:"", goalId:null, space \}/.test(SRC), true);
 
 report();

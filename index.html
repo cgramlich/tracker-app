@@ -588,11 +588,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.52.1";
+const APP_VERSION = "1.53.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-09-28.1";
+const BUILD = "2026-09-28.2";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -2792,7 +2792,11 @@ function useStore(){
     (plan||[]).filter(o=>o.op==="create_idea").forEach(o=>addTop("ideas", { title:o.title||"Untitled", body:o.body||"", type:o.type||"", state:"raw", capturedAt:nowISO(), tags:o.tags||[] }));
     (plan||[]).filter(o=>o.op==="create_todo").forEach(o=>{
       let pid = o.projectId||null; if(pid && tmp[pid]) pid = tmp[pid];
+      // Follow the project's Space. This was the main source of cross-Space
+      // todos: the planner stamped the ACTIVE Space and never looked at the
+      // project. "" falls through to newItemSpace() inside addTop.
       addTop("todos", { title:o.title||"Untitled", status:o.status||"inbox", type:o.type||"", quad:o.quad||"", due:o.due||"",
+        space: projectSpace(d.projects, pid),
         defer:o.defer||"", location:o.location||"", projectId:pid, tags:o.tags||[], notes:o.notes||"",
         subtasks:(o.subtasks||[]).map(s=>({ id:uid(), title:(typeof s==="string"?s:(s.title||"")), done:false })) });
     });
@@ -3211,7 +3215,9 @@ function TodoEditor({ store, todo, onClose, toast }){
     let finalProjectId = projectId;
     if(projectId==="__new"){
       if(newProj.trim()){
-        const p = store.upsert("projects",{ name:newProj.trim(), type, status:"active", outcome:"", description:"", deadline:"", goalId:null });
+        // Born together, so born in the same Space - otherwise this very sheet
+        // would create the mismatch the project screen then has to explain.
+        const p = store.upsert("projects",{ name:newProj.trim(), type, status:"active", outcome:"", description:"", deadline:"", goalId:null, space });
         finalProjectId = p.id;
         log("SAVE","todo created project "+newProj.trim());
       } else {
@@ -3283,7 +3289,14 @@ function TodoEditor({ store, todo, onClose, toast }){
               and it stays out of your to-do list.</p>}
         </>}</div>
       <div className="field"><span className="label">Project (optional)</span>
-        <select className="select" value={projectId} onChange={e=>setProjectId(e.target.value)}>
+        {/* Choosing a project moves the Space field to match it. Done here, on the
+            visible control, rather than silently at save: the Space field is right
+            there on this sheet, so Chris sees the change and can override it. */}
+        <select className="select" value={projectId} onChange={e=>{
+          const v = e.target.value; setProjectId(v);
+          const ps = projectSpace(store.allData.projects, v);
+          if(ps) setSpace(ps);
+        }}>
           <option value="">None</option>
           {projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
           <option value="__new">+ Create new project...</option>
@@ -5376,6 +5389,21 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
         }}/>}
     </div>
   );
+}
+
+/* The Space a todo should take from the project it is attached to.
+   Returns "" when there is no project, or the project cannot be found, so every
+   caller falls back to its own default rather than to a guess.
+
+   WHY (Chris, 2026-09-28, after the project-todos bug): the v1.52.1 fix made a
+   cross-Space todo VISIBLE on its project; this stops most of them arising. The
+   mismatch was never intentional - it came from the planner stamping whatever
+   Space happened to be active. Attaching work to a project is a statement about
+   where that work belongs, so the project is the better source. */
+function projectSpace(projects, projectId){
+  if(!projectId) return "";
+  const p = (projects || []).find(x => x && x.id === projectId);
+  return p ? (p.space || DEFAULT_SPACE) : "";
 }
 
 /* Every todo attached to a project, REGARDLESS of Space.
