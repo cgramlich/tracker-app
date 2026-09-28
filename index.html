@@ -588,11 +588,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.52.0";
+const APP_VERSION = "1.52.1";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-09-26.1";
+const BUILD = "2026-09-28.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -3670,7 +3670,12 @@ function MoveSheet({ store, onPick, onClose }){
 function TodoRow({ store, todo, onOpen }){
   const done = todo.status==="done";
   const [snz,setSnz]=useState(false);
-  const project = store.data.projects.find(p=>p.id===todo.projectId);
+/* THE SPACE RULE, learned from the 2026-09-28 project-todos bug:
+   a Space filter decides what you BROWSE, never whether a LINK resolves.
+   Resolving an id against the scoped set makes a real relationship vanish
+   whenever the two items sit in different Spaces - silently, with the item
+   simply looking unattached. Link lookups therefore read `allData`. */
+  const project = store.allData.projects.find(p=>p.id===todo.projectId);
   const subDone = (todo.subtasks||[]).filter(s=>s.done).length;
   const dwait = todo.status==="waiting" ? waitingDays(todo) : null;            // days waiting (null if not waiting)
   const waitStale = dwait!=null && dwait >= waitThreshold(store);              // past the follow-up threshold
@@ -5308,11 +5313,12 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
   const projects = store.data.projects.filter(p=>(typeFilter==="all"||p.type===typeFilter)).sort(byOrder);
   if(active){
     const p = store.data.projects.find(x=>x.id===active.id)||active;
-    const todos = store.data.todos.filter(t=>t.projectId===p.id).sort(sortTodos);
+    const todos = projectTodos(store.allData.todos, p.id).sort(sortTodos);
+    const strays = projectTodosOutOfSpace(store.allData.todos, p);
     const activeTodos = todos.filter(t=>t.status!=="done");   // open work, always stays on top
     const doneTodos = todos.filter(t=>t.status==="done");     // completed, hidden by default
     const doneShown = showDone ? doneTodos : [];              // completed only rendered when toggled on
-    const goal = store.data.goals.find(g=>g.id===p.goalId);
+    const goal = store.allData.goals.find(g=>g.id===p.goalId);   // link, not browse - see THE SPACE RULE
     return (
       <div className="screen">
         <div className="topbar" style={{padding:0,position:"static"}}>
@@ -5330,6 +5336,9 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
         </div>
         {p.outcome && <div className="card" style={{marginTop:14}}><div className="label">Outcome</div><div>{p.outcome}</div></div>}
         {p.description && <p className="hint" style={{marginTop:12}}>{p.description}</p>}
+        {strays.length>0 &&
+          <p className="hint" style={{marginTop:12}}>{strays.length===1?"1 todo below sits":strays.length+" todos below sit"} in
+            a different area of life than this project. They are listed here because they belong to it.</p>}
         <div className="topbar-row" style={{marginTop:18}}><h3 style={{fontSize:17}}>Todos</h3>
           <button className="btn btn-ghost btn-sm" onClick={()=>openEditor("todo",{projectId:p.id,type:p.type,space:p.space})}>{Ic.plus} Add</button></div>
         {doneTodos.length>0 && <DoneToggle showDone={showDone} setShowDone={setShowDone} n={doneTodos.length}/>}
@@ -5358,7 +5367,8 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
       {projects.length===0? <Empty glyph={"\u25A1"} title="No projects" sub="A project is any outcome needing more than one step."/> :
         <DragList items={projects} getId={p=>p.id} onReorder={(id,ids)=>reorderItem(store,"projects",id,ids,projects)} onDelete={p=>del("projects",p)}
           render={p=>{
-          const open = store.data.todos.filter(t=>t.projectId===p.id&&t.status!=="done").length;
+          // Unscoped, so this count can never disagree with the detail screen it opens.
+          const open = projectTodos(store.allData.todos, p.id).filter(t=>t.status!=="done").length;
           return <div className="item" onClick={()=>setActive(p)}>
             <div className="item-body"><div className="item-title">{p.name}</div>
               <div className="item-meta"><TypeChip type={p.type}/><span className="chip">{p.status}</span>
@@ -5366,6 +5376,38 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
         }}/>}
     </div>
   );
+}
+
+/* Every todo attached to a project, REGARDLESS of Space.
+   ===========================================================================
+   THE BUG THIS EXISTS TO FIX (Chris, 2026-09-28): "I opened a project with two
+   or three todos associated and don't see them AND when i opened a todo
+   associated with that project it indicated as much."
+
+   The project screen filtered `store.data.todos`, which is Space-SCOPED. A todo
+   can easily end up in a different Space from its project - the AI plan stamps
+   new todos with the ACTIVE Space and never looks at the project's, and the
+   project picker in the todo editor offers projects the same way. When the two
+   disagree, the project's own todo list silently dropped them: no message, no
+   count, just an empty list under a project that plainly has work in it. The
+   todo still showed the project's name on its row, which is what made it look
+   like the app was contradicting itself.
+
+   A project's todo list must be COMPLETE - that is the entire job of the screen,
+   and a hidden todo is a lost todo. So this reads the UNSCOPED set. The Space
+   filter is a focus tool for browsing; it has no business deciding whether a
+   project shows its own contents. */
+function projectTodos(allTodos, projectId){
+  if(!projectId) return [];
+  return (allTodos || []).filter(t => t && t.projectId === projectId);
+}
+
+// Todos on this project that sit in a DIFFERENT Space than the project itself.
+// Surfaced rather than silently corrected: it is Chris's filing, not ours.
+function projectTodosOutOfSpace(allTodos, project){
+  if(!project) return [];
+  const ps = project.space || DEFAULT_SPACE;
+  return projectTodos(allTodos, project.id).filter(t => (t.space || DEFAULT_SPACE) !== ps);
 }
 
 /* ============================================================
@@ -5424,7 +5466,7 @@ function GoalsView({ store, openEditor, typeFilter, setTypeFilter, del }){
       {goals.length===0? <Empty glyph={"\u25CE"} title="No goals" sub="Set a longer-term objective for projects to roll up to."/> :
         <DragList items={goals} getId={g=>g.id} onReorder={(id,ids)=>reorderItem(store,"goals",id,ids,goals)} onDelete={g=>del("goals",g)}
           render={g=>{
-          const projs = store.data.projects.filter(p=>p.goalId===g.id);
+          const projs = store.allData.projects.filter(p=>p.goalId===g.id);   // link, not browse
           return <div className="item" onClick={()=>openEditor("goal",g)} style={g.status!=="active"?{opacity:.6}:null}>
             <div className="item-body"><div className="item-title">{g.name}</div>
               {g.why && <p className="hint" style={{marginTop:4}}>{g.why.slice(0,110)}</p>}
@@ -5446,7 +5488,7 @@ function WeeklyReview({ store, back, go }){
   const waiting = store.data.todos.filter(t=>t.status==="waiting").length;
   const someday = store.data.todos.filter(t=>t.status==="someday").length;
   const noNext = store.data.projects.filter(p=>p.status==="active" &&
-    store.data.todos.filter(t=>t.projectId===p.id&&t.status==="next").length===0).length;
+    projectTodos(store.allData.todos, p.id).filter(t=>t.status==="next").length===0).length;
   const steps = [
     { k:"inbox", b:"Process Inbox to zero", p:inbox+" item"+(inbox===1?"":"s")+" waiting", go:()=>go("lists") },
     { k:"next", b:"Review Next actions", p:"Still the right next steps?", go:()=>go("lists") },
@@ -6070,7 +6112,7 @@ function AIChat({ store, toast, back }){
       return ["New todo", (o.title||"(untitled)") + (bits.length?"  ("+bits.join(", ")+")":"")];
     }
     if(o.op==="update_todo"){
-      const t = store.data.todos.find(x=>x.id===o.id); const name = t?t.title:("#"+o.id);
+      const t = store.allData.todos.find(x=>x.id===o.id); const name = t?t.title:("#"+o.id);
       const ch=[]; ["status","type","due","location"].forEach(k=>{ if(o[k]!==undefined) ch.push(k+"="+o[k]); });
       if(o.quad!==undefined) ch.push("priority="+(QUADRANTS[o.quad]?QUADRANTS[o.quad].label:o.quad));
       if(o.projectId!==undefined) ch.push("project");
@@ -6078,7 +6120,7 @@ function AIChat({ store, toast, back }){
       return ["Update", name + (ch.length?"  ("+ch.join(", ")+")":"")];
     }
     if(o.op==="update_idea"){
-      const it = store.data.ideas.find(x=>x.id===o.id); const name = o.title || (it?it.title:("#"+o.id));
+      const it = store.allData.ideas.find(x=>x.id===o.id); const name = o.title || (it?it.title:("#"+o.id));
       const ch=[]; if(o.state!==undefined) ch.push(o.state==="promoted"?"turned into work":o.state);
       if(o.type!==undefined) ch.push(o.type);
       if(o.title!==undefined && it && o.title!==it.title) ch.push("retitled");
