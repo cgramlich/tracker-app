@@ -18,7 +18,8 @@
    invisible on the one screen whose entire job is to show it. */
 const { build, lift, is, section, report } = require("./lift");
 
-const P = build(["projectTodos", "projectTodosOutOfSpace", "projectSpace"], `
+const P = build(["projectTodos", "projectTodosOutOfSpace", "projectSpace", "projectTodoCounts",
+  "projectTodoCountLabel", "withLinked"], `
   const DEFAULT_SPACE = "personal";
 `);
 
@@ -159,5 +160,70 @@ is("choosing a project in the editor moves the Space field",
   /projectSpace\(store\.allData\.projects/.test(picker) && /setSpace\(ps\)/.test(picker), true);
 is("a project created from the todo sheet is born in the todo's Space",
   /status:"active", outcome:"", description:"", deadline:"", goalId:null, space \}/.test(SRC), true);
+
+/* The count on the Edit project sheet (Chris, 2026-09-28). He opened that sheet
+   twice looking for his todos; it is a form and never listed them. */
+section("projectTodoCounts - counted across Spaces");
+is("p1 has two open and one done, whatever Space they sit in", P.projectTodoCounts(todos, "p1"), { open: 2, done: 1 });
+is("an unknown project counts nothing", P.projectTodoCounts(todos, "ghost"), { open: 0, done: 0 });
+is("a null list counts nothing", P.projectTodoCounts(null, "p1"), { open: 0, done: 0 });
+
+section("projectTodoCountLabel - what the sheet says");
+is("none", P.projectTodoCountLabel({ open: 0, done: 0 }), "No todos yet");
+is("a null count reads as none, it does not throw", P.projectTodoCountLabel(null), "No todos yet");
+is("one open is singular", P.projectTodoCountLabel({ open: 1, done: 0 }), "1 open todo");
+is("several open", P.projectTodoCountLabel({ open: 3, done: 0 }), "3 open todos");
+is("both", P.projectTodoCountLabel({ open: 3, done: 2 }), "3 open todos, 2 done");
+is("both, singular open", P.projectTodoCountLabel({ open: 1, done: 4 }), "1 open todo, 4 done");
+is("only done, one", P.projectTodoCountLabel({ open: 0, done: 1 }), "1 todo, done");
+is("only done, several", P.projectTodoCountLabel({ open: 0, done: 5 }), "All 5 todos done");
+
+/* A <select> whose value matches no option DISPLAYS its first option - "None" -
+   while the link is still stored. Saving it then changes nothing, which is worse
+   than an error: it looks confirmed. */
+section("withLinked - a picker never hides the item it is linked to");
+const browse = [{ id: "a" }, { id: "b" }];
+const everything = [{ id: "a" }, { id: "b" }, { id: "elsewhere" }];
+is("no link leaves the list as it was", P.withLinked(browse, everything, "").map(x => x.id), ["a", "b"]);
+is("a link already in the list is not duplicated", P.withLinked(browse, everything, "a").map(x => x.id), ["a", "b"]);
+is("a link OUTSIDE the browse list is added", P.withLinked(browse, everything, "elsewhere").map(x => x.id), ["a", "b", "elsewhere"]);
+is("a link to something deleted adds nothing, rather than a ghost", P.withLinked(browse, everything, "gone").length, 2);
+is("null lists are safe", P.withLinked(null, null, "x"), []);
+{
+  const before = JSON.stringify(browse);
+  P.withLinked(browse, everything, "elsewhere");
+  is("the browse list passed in is not mutated", JSON.stringify(browse), before);
+}
+
+/* THE ROOT CAUSE of "I don't see any of my to-dos under here": the Dashboard's
+   Active projects list opened the Edit FORM on tap, directly under a row reading
+   "3 open". The Projects tab opened the page. Pinned, because it is wiring. */
+section("the Dashboard opens a project's PAGE, not its edit form");
+const dStart = SRC.indexOf("function DashboardView(");
+const dash = SRC.slice(dStart, SRC.indexOf("<Section title=\"Goals\"", dStart));
+is("the Dashboard slice is non-empty, so these checks test something", dash.length > 500, true);
+is("tapping an active project calls openProject", /onClick=\{\(\)=>openProject\(p\)\}/.test(dash), true);
+is("and no longer opens the editor", /openEditor\("project",p\)/.test(dash), false);
+is("the app routes openProject to the Projects page with a focus",
+  /openProject=\{\(p\)=>\{ setProjFocus\(p\); setSub\("projects"\);/.test(SRC), true);
+is("and the Projects page opens straight onto that project",
+  /useState\(\(\) => focus \|\| null\)/.test(SRC), true);
+
+section("the Edit sheet and both pickers are wired");
+const pe = SRC.slice(SRC.indexOf("function ProjectEditor("), SRC.indexOf("function GoalEditor("));
+is("the Edit sheet renders the count", /projectTodoCountLabel\(counts\)/.test(pe), true);
+is("its count reads the unscoped todos", /projectTodoCounts\(store\.allData\.todos, t\.id\)/.test(pe), true);
+is("the goal picker keeps the linked goal", /withLinked\([^;]*store\.allData\.goals, t\.goalId\)/.test(pe), true);
+is("the todo editor's project picker keeps the linked project",
+  /withLinked\([^;]*store\.allData\.projects, t\.projectId\)/.test(SRC), true);
+
+/* STRICTER TRIPWIRE. The first one searched for `store.data.todos...projectId`,
+   and the Dashboard slipped past it by destructuring `todos` from store.data a
+   few lines up. The rule is now structural: every "todos of this project" filter
+   goes through projectTodos(), so there is exactly one place to get it right. */
+section("tripwire - every todos-by-project filter goes through projectTodos()");
+const rawFilters = (SRC.match(/\.filter\(\s*\(?\s*t\s*\)?\s*=>\s*t\.projectId\s*===/g) || []);
+is("no hand-written todos-by-project filter remains" +
+   (rawFilters.length ? " (" + rawFilters.length + " found)" : ""), rawFilters.length, 0);
 
 report();

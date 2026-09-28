@@ -546,6 +546,18 @@ svg{fill:none;stroke:currentColor;stroke-width:2;}
    is a capture box, not a toolbar), so they get the height back explicitly.
    Measured at 375px, not guessed: v1.44.0 shipped a 22px target by eyeballing. */
 .scr-btn{min-height:44px;}
+/* The todo count under a project's name on the Edit sheet. */
+.proj-count{margin:-6px 2px 14px;font-size:14px;color:var(--ink-2);}   /* its only job is to be noticed */
+/* iOS Safari gives <input type=date> its own intrinsic minimum width and height,
+   so width:100% does not hold it: the Deadline box ran past the right edge of the
+   Edit project sheet and stood taller than the fields around it (Chris's
+   screenshots, 2026-09-28). Stripping the native appearance lets width:100% win;
+   the value is then re-aligned left like every other field. This applies to all
+   seven date fields, which share .input.
+   NOT VERIFIABLE HERE: the Chromium preview does not reproduce the iOS layout, so
+   the proof is on the phone. */
+.input[type="date"]{-webkit-appearance:none;appearance:none;min-width:0;display:block;min-height:46px;}
+.input[type="date"]::-webkit-date-and-time-value{text-align:left;}
 /* The per-line remove. A bare glyph needs its own size and a square footprint,
    or it reads as a typo rather than a control. */
 .scr-x{min-width:44px;font-size:20px;line-height:1;padding:0;}
@@ -588,11 +600,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.53.0";
+const APP_VERSION = "1.54.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-09-28.2";
+const BUILD = "2026-09-28.3";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -3207,7 +3219,8 @@ function TodoEditor({ store, todo, onClose, toast }){
   const [location,setLocation]=useState(t.location||"");
   const [locCustom,setLocCustom]=useState(!!t.location && !locs.includes(t.location));
   const [newProj,setNewProj]=useState("");      // inline "create new project" name
-  const projects = store.data.projects.filter(p=>p.status!=="archived");
+  // Browse list plus the project this todo is already attached to - see withLinked.
+  const projects = withLinked(store.data.projects.filter(p=>p.status!=="archived"), store.allData.projects, t.projectId);
 
   function save(){
     if(!title.trim()){ toast("Add a title first"); return; }
@@ -3418,7 +3431,9 @@ function ProjectEditor({ store, project, onClose, toast }){
   const [description,setDescription]=useState(t.description||"");
   const [goalId,setGoalId]=useState(t.goalId||"");
   const [event,setEvent]=useState(t.event||null);
-  const goals = store.data.goals.filter(g=>g.status==="active");
+  // Browse list plus the goal this project already rolls up to - see withLinked.
+  const goals = withLinked(store.data.goals.filter(g=>g.status==="active"), store.allData.goals, t.goalId);
+  const counts = t.id ? projectTodoCounts(store.allData.todos, t.id) : null;
   function save(){
     if(!name.trim()){ toast("Name it first"); return; }
     store.upsert("projects",{ id:t.id, name:name.trim(), type, status, outcome, deadline, description,
@@ -3429,6 +3444,7 @@ function ProjectEditor({ store, project, onClose, toast }){
     <Sheet title={t.id?"Edit project":"New project"} onClose={onClose} action={<button className="btn btn-primary btn-sm" onClick={save}>{t.id?"Save":"Create"}</button>}>
       <div className="title-field"><span className="label">Name (as an outcome)</span>
         <input className="title-input" value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Submit final tech pack" autoFocus/></div>
+      {counts && <p className="hint proj-count">{projectTodoCountLabel(counts)}{(counts.open||counts.done) ? ". Listed on the project page." : "."}</p>}
       <div className="field"><span className="label">Outcome - what does done look like?</span>
         <textarea className="textarea" value={outcome} onChange={e=>setOutcome(e.target.value)} placeholder="The project is done when..."/></div>
       <EventLinkField store={store} value={event} onChange={setEvent}/>
@@ -5319,13 +5335,16 @@ function TemplatesEditor({ store, toast }){
   );
 }
 
-function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, onOpenTodo, del, toast }){
-  const [active,setActive]=useState(null); // project detail
+function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, onOpenTodo, del, toast, focus, clearFocus }){
+  // `focus` lets another screen open a project's PAGE directly (the Dashboard did
+  // not - it opened the edit FORM, which is why Chris could not find the todos).
+  const [active,setActive]=useState(() => focus || null); // project detail
+  useEffect(() => { if(focus && clearFocus) clearFocus(); }, []); // eslint-disable-line
   const [showDone,setShowDone]=useShowDone(); // reveal completed to-dos inside a project
   const [tplSheet,setTplSheet]=useState(false); // "save as template" sheet
   const projects = store.data.projects.filter(p=>(typeFilter==="all"||p.type===typeFilter)).sort(byOrder);
   if(active){
-    const p = store.data.projects.find(x=>x.id===active.id)||active;
+    const p = store.allData.projects.find(x=>x.id===active.id)||active;   // an opened project resolves across Spaces
     const todos = projectTodos(store.allData.todos, p.id).sort(sortTodos);
     const strays = projectTodosOutOfSpace(store.allData.todos, p);
     const activeTodos = todos.filter(t=>t.status!=="done");   // open work, always stays on top
@@ -5428,6 +5447,41 @@ function projectSpace(projects, projectId){
 function projectTodos(allTodos, projectId){
   if(!projectId) return [];
   return (allTodos || []).filter(t => t && t.projectId === projectId);
+}
+
+// Open and done counts for a project, from the UNSCOPED set (see THE SPACE RULE).
+function projectTodoCounts(allTodos, projectId){
+  const list = projectTodos(allTodos, projectId);
+  const done = list.filter(t => t.status === "done").length;
+  return { open: list.length - done, done };
+}
+
+/* The count line on the Edit project sheet (Chris, 2026-09-28). That sheet is a
+   FORM and has never listed todos, but it looked like the place they ought to be:
+   he opened it twice expecting them. Stating the count there says the work exists
+   and where it lives. Stative, not an instruction - the sheet may be holding
+   unsaved edits, so it must not offer a button that closes it. */
+function projectTodoCountLabel(c){
+  const n = (k, w) => k + " " + w + (k === 1 ? "" : "s");
+  const open = c ? c.open || 0 : 0, done = c ? c.done || 0 : 0;
+  if(!open && !done) return "No todos yet";
+  if(!done) return n(open, "open todo");
+  if(!open) return done === 1 ? "1 todo, done" : "All " + done + " todos done";
+  return n(open, "open todo") + ", " + done + " done";
+}
+
+/* A picker's options, plus the item this record is ALREADY linked to when that
+   item falls outside the browse list (another Space, archived, inactive). A
+   <select> whose value has no matching <option> silently DISPLAYS its first
+   option - "None" - while the link is still stored. The picker then lies about
+   the record, and saving it changes nothing, which is worse: it looks confirmed.
+   Same family as THE SPACE RULE: browsing decides the list, not the link. */
+function withLinked(list, all, id){
+  const out = (list || []).slice();
+  if(!id || out.some(x => x && x.id === id)) return out;
+  const hit = (all || []).find(x => x && x.id === id);
+  if(hit) out.push(hit);
+  return out;
 }
 
 // Todos on this project that sit in a DIFFERENT Space than the project itself.
@@ -6248,7 +6302,7 @@ function ExportView({ store, toast, back }){
       L.push("* "+p.name+"  ("+[p.type, p.status, p.deadline?("due "+p.deadline):""].filter(Boolean).join(", ")+")");
       if(p.outcome) L.push("    Outcome: "+p.outcome);
       if(p.description) L.push("    "+p.description.replace(/\n/g," "));
-      (d.todos||[]).filter(t=>t.projectId===p.id).forEach(t=>L.push("    ["+(t.status==="done"?"x":" ")+"] "+t.title));
+      projectTodos(d.todos, p.id).forEach(t=>L.push("    ["+(t.status==="done"?"x":" ")+"] "+t.title));
     });
     L.push(""); L.push("== IDEAS ==");
     (d.ideas||[]).forEach(i=>{
@@ -6298,7 +6352,7 @@ function ExportView({ store, toast, back }){
         L.push("_"+[p.type, p.status, p.deadline?("due "+p.deadline):""].filter(Boolean).join(" - ")+"_");
         if(p.outcome) L.push("**Outcome:** "+p.outcome);
         if(p.description) L.push(p.description);
-        (d.todos||[]).filter(t=>t.projectId===p.id).forEach(t=>L.push("- ["+(t.status==="done"?"x":" ")+"] "+t.title));
+        projectTodos(d.todos, p.id).forEach(t=>L.push("- ["+(t.status==="done"?"x":" ")+"] "+t.title));
       });
     }
     if((d.ideas||[]).length){ L.push(""); L.push("## Notes & ideas");
@@ -6852,7 +6906,7 @@ function CalendarView({ store }){
   );
 }
 
-function DashboardView({ store, onOpen, openEditor, go }){
+function DashboardView({ store, onOpen, openEditor, go, openProject }){
   const active = store.activeSpace;
   const isAll = !active || active==="all";
   const spaceName = isAll ? "All spaces" : (((store.spaces||[]).find(s=>s.id===active)||{}).name || "Space");
@@ -6872,7 +6926,9 @@ function DashboardView({ store, onOpen, openEditor, go }){
     ...goals.map(x=>({x,kind:"goal",name:x.name})),
   ].filter(r=>r.x.updatedAt).sort((a,b)=> a.x.updatedAt<b.x.updatedAt?1:-1).slice(0,6);
 
-  const openCount = (pid)=> todos.filter(t=>t.projectId===pid && t.status!=="done").length;
+  // Unscoped, like every project count - see THE SPACE RULE. This one hid from the
+  // v1.52.1 sweep because `todos` is destructured from store.data a few lines up.
+  const openCount = (pid)=> projectTodoCounts(store.allData.todos, pid).open;
   const Dot = ({id})=>{ if(!isAll) return null; const s=(store.spaces||[]).find(x=>x.id===id); return s? <span className="space-dot" style={{background:s.color,marginRight:6,display:"inline-block",verticalAlign:"middle"}} title={s.name}></span>:null; };
   const More = ({n})=> n>0 ? <p className="hint" style={{marginTop:6}}>+{n} more</p> : null;
   const Section = ({title, n, children, empty})=> (
@@ -6995,7 +7051,9 @@ function DashboardView({ store, onOpen, openEditor, go }){
 
       <Section title="Active projects" n={activeProjects.length} empty="No active projects."
         children={activeProjects.length ? <><div className="list">{activeProjects.slice(0,6).map(p=>
-          <Row key={p.id} spaceId={p.space} title={p.name} onClick={()=>openEditor("project",p)}
+          /* Opens the project PAGE, where its todos are. It used to open the edit
+             FORM, which has no todos on it - right under a row reading "3 open". */
+          <Row key={p.id} spaceId={p.space} title={p.name} onClick={()=>openProject(p)}
             chips={<><span className="chip">{openCount(p.id)} open</span>{p.deadline && <span className="chip amber">{fmtDate(p.deadline)}</span>}</>}/>)}
           </div><More n={activeProjects.length-6}/></> : null}/>
 
@@ -8130,6 +8188,7 @@ function App(){
   const store = useStore();
   const [tab,setTab]=useState("today");        // bottom-nav tab
   const [sub,setSub]=useState(null);           // sub-view within More (projects/ideas/etc)
+  const [projFocus,setProjFocus]=useState(null); // a project to open straight onto its page
   const [capture,setCapture]=useState(false);
   const [editor,setEditor]=useState(null);     // {kind, entity}
   const [toastObj,setToastObj]=useState(null);   // { msg, label?, fn? }
@@ -8275,14 +8334,16 @@ function App(){
 
   // sub-views launched from More / Today
   let subView = null;
-  if(sub==="projects") subView=<ProjectsView store={store} openEditor={openEditor} onOpenTodo={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} del={deleteWithUndo} toast={toast}/>;
+  if(sub==="projects") subView=<ProjectsView store={store} openEditor={openEditor} onOpenTodo={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} del={deleteWithUndo} toast={toast}
+    focus={projFocus} clearFocus={()=>setProjFocus(null)}/>;
   else if(sub==="ideas") subView=<IdeasView store={store} openEditor={openEditor} typeFilter={typeFilter} setTypeFilter={setTypeFilter} del={deleteWithUndo}/>;
   else if(sub==="goals") subView=<GoalsView store={store} openEditor={openEditor} typeFilter={typeFilter} setTypeFilter={setTypeFilter} del={deleteWithUndo}/>;
   else if(sub==="review") subView=<WeeklyReview store={store} back={()=>setSub(null)} go={go}/>;
   else if(sub==="now") subView=<NowView store={store} onOpen={openTodo} back={()=>setSub(null)}/>;
   else if(sub==="search") subView=<SearchView store={store} openEditor={openEditor} back={()=>setSub(null)}/>;
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
-  else if(sub==="dashboard") subView=<DashboardView store={store} onOpen={openTodo} openEditor={openEditor} go={go}/>;
+  else if(sub==="dashboard") subView=<DashboardView store={store} onOpen={openTodo} openEditor={openEditor} go={go}
+    openProject={(p)=>{ setProjFocus(p); setSub("projects"); log("NAV","dashboard -> project page"); }}/>;
   else if(sub==="wins") subView=<WinsView store={store} back={()=>setSub(null)}/>;
   else if(sub==="orders") subView=<OrdersView store={store} toast={toast} back={()=>setSub(null)}/>;
   else if(sub==="calendar") subView=<CalendarView store={store}/>;
