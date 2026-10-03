@@ -560,11 +560,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.55.0";
+const APP_VERSION = "1.56.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-09-28.4";
+const BUILD = "2026-10-03.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -6666,7 +6666,15 @@ function CalendarView({ store }){
   );
 }
 
-function DashboardView({ store, onOpen, openEditor, go, openProject }){
+/* Every to-do on the Dashboard is the SAME row as on Today: tick to complete, swipe
+   to delete (with undo). Chris, 2026-10-03, looking at a to-do in Recent activity:
+   "shouldn't there be something right there on that card without even having to
+   open it, and shouldn't I also be able to slide and just delete it". Recent
+   activity drew to-dos with the generic mixed-item Row, which has neither, and the
+   Today/Overdue and Priorities lists had the tick but not the swipe. A to-do should
+   act the same wherever it appears; learning a gesture on one screen that silently
+   does nothing on another is how people stop trusting gestures. */
+function DashboardView({ store, onOpen, openEditor, go, openProject, del }){
   const active = store.activeSpace;
   const isAll = !active || active==="all";
   const spaceName = isAll ? "All spaces" : (((store.spaces||[]).find(s=>s.id===active)||{}).name || "Space");
@@ -6803,10 +6811,10 @@ function DashboardView({ store, onOpen, openEditor, go, openProject }){
             </div>))}</div> : null}/>}
 
       <Section title="Today / Overdue" n={todayOverdue.length} empty="Nothing due or overdue. Nice."
-        children={todayOverdue.length ? <><div className="list">{todayOverdue.slice(0,10).map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div><More n={todayOverdue.length-10}/></> : null}/>
+        children={todayOverdue.length ? <><div className="list">{todayOverdue.slice(0,10).map(t=><SwipeRow key={t.id} onDelete={()=>del("todos",t)}><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/></SwipeRow>)}</div><More n={todayOverdue.length-10}/></> : null}/>
 
       <Section title="Priorities" n={priorities.length} empty="No flagged or Do-First items."
-        children={priorities.length ? <><div className="list">{priorities.slice(0,6).map(t=><TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpen(t)}/>)}</div><More n={priorities.length-6}/></> : null}/>
+        children={priorities.length ? <><div className="list">{priorities.slice(0,6).map(t=><SwipeRow key={t.id} onDelete={()=>del("todos",t)}><TodoRow store={store} todo={t} onOpen={()=>onOpen(t)}/></SwipeRow>)}</div><More n={priorities.length-6}/></> : null}/>
 
       <Section title="Active projects" n={activeProjects.length} empty="No active projects."
         children={activeProjects.length ? <><div className="list">{activeProjects.slice(0,6).map(p=>
@@ -6824,8 +6832,10 @@ function DashboardView({ store, onOpen, openEditor, go, openProject }){
         })}</div><More n={activeGoals.length-5}/></> : null}/>
 
       <Section title="Recent activity" empty="Nothing yet."
-        children={recent.length ? <div className="list">{recent.map((r,i)=>
-          <Row key={r.kind+i} spaceId={r.x.space} title={r.name} onClick={()=>openEditor(r.kind, r.x)}
+        children={recent.length ? <div className="list">{recent.map((r,i)=> r.kind==="todo"
+          ? <SwipeRow key={r.kind+r.x.id} onDelete={()=>del("todos",r.x)}>
+              <TodoRow store={store} todo={r.x} onOpen={()=>onOpen(r.x)}/></SwipeRow>
+          : <Row key={r.kind+i} spaceId={r.x.space} title={r.name} onClick={()=>openEditor(r.kind, r.x)}
             chips={<><span className="chip">{r.kind}</span><span className="chip">{fmtDate((r.x.updatedAt||"").slice(0,10))}</span></>}/>)}
           </div> : null}/>
 
@@ -8096,7 +8106,7 @@ function App(){
   else if(sub==="now") subView=<NowView store={store} onOpen={openTodo} back={()=>setSub(null)}/>;
   else if(sub==="search") subView=<SearchView store={store} openEditor={openEditor} back={()=>setSub(null)}/>;
   else if(sub==="matrix") subView=<MatrixView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter}/>;
-  else if(sub==="dashboard") subView=<DashboardView store={store} onOpen={openTodo} openEditor={openEditor} go={go}
+  else if(sub==="dashboard") subView=<DashboardView store={store} onOpen={openTodo} openEditor={openEditor} go={go} del={deleteWithUndo}
     openProject={(p)=>{ setProjFocus(p); setSub("projects"); log("NAV","dashboard -> project page"); }}/>;
   else if(sub==="wins") subView=<WinsView store={store} back={()=>setSub(null)}/>;
   else if(sub==="orders") subView=<OrdersView store={store} toast={toast} back={()=>setSub(null)}/>;
