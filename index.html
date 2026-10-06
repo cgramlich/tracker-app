@@ -560,11 +560,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.56.0";
+const APP_VERSION = "1.57.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-10-03.1";
+const BUILD = "2026-10-06.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -3390,6 +3390,7 @@ function ProjectEditor({ store, project, onClose, toast }){
   const [deadline,setDeadline]=useState(t.deadline||"");
   const [description,setDescription]=useState(t.description||"");
   const [goalId,setGoalId]=useState(t.goalId||"");
+  const [pinned,setPinned]=useState(!!t.pinned);
   const [event,setEvent]=useState(t.event||null);
   // Browse list plus the goal this project already rolls up to - see withLinked.
   const goals = withLinked(store.data.goals.filter(g=>g.status==="active"), store.allData.goals, t.goalId);
@@ -3397,7 +3398,7 @@ function ProjectEditor({ store, project, onClose, toast }){
   function save(){
     if(!name.trim()){ toast("Name it first"); return; }
     store.upsert("projects",{ id:t.id, name:name.trim(), type, status, outcome, deadline, description,
-      goalId:goalId||null, space, event: cleanEventLink(event) });
+      goalId:goalId||null, space, pinned, event: cleanEventLink(event) });
     toast(t.id?"Saved":"Created"); onClose();
   }
   return (
@@ -3420,6 +3421,14 @@ function ProjectEditor({ store, project, onClose, toast }){
       <SpaceField store={store} value={space} onChange={setSpace}/>
       <div className="field"><span className="label">Deadline (optional)</span>
         <input className="input" type="date" value={deadline} onChange={e=>setDeadline(e.target.value)}/></div>
+      {/* Same shape as the Rundown's north-star checkbox - one job, one control. */}
+      <label className="row" style={{alignItems:"flex-start",gap:10,marginTop:4,marginBottom:14,cursor:"pointer"}}>
+        <input type="checkbox" checked={pinned} onChange={e=>setPinned(e.target.checked)}
+          style={{width:18,height:18,flex:"0 0 auto",marginTop:2}}/>
+        <span style={{flex:1,minWidth:0}}>Pin to Today
+          <span className="hint" style={{display:"block",marginTop:2}}>
+            Shows this project and its open to-dos at the top of Today until you unpin it.</span></span>
+      </label>
       <div className="field"><span className="label">Roll up to goal (optional)</span>
         <select className="select" value={goalId} onChange={e=>setGoalId(e.target.value)}>
           <option value="">None</option>{goals.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}</select></div>
@@ -3656,7 +3665,7 @@ function MoveSheet({ store, onPick, onClose }){
   );
 }
 
-function TodoRow({ store, todo, onOpen }){
+function TodoRow({ store, todo, onOpen, hideProject }){
   const done = todo.status==="done";
   const [snz,setSnz]=useState(false);
 /* THE SPACE RULE, learned from the 2026-09-28 project-todos bug:
@@ -3688,7 +3697,9 @@ function TodoRow({ store, todo, onOpen }){
           {todo.waitingOn && <span className="chip blue">waiting: {todo.waitingOn}</span>}
           {todo.event && todo.event.title && <span className="chip blue">{Ic.schedule} {todo.event.title}</span>}
           {todo.location && <span className="chip green">{todo.location}</span>}
-          {project && <span className="chip">{project.name}</span>}
+          {/* Suppressed when the row is already inside that project's own card:
+              repeating the name on every line crowds out the task itself. */}
+          {project && !hideProject && <span className="chip">{project.name}</span>}
           {todo.recur && todo.recur!=="none" && <span className="chip violet">{Ic.review} {todo.recur}</span>}
           {(todo.subtasks||[]).length>0 && <span className="chip">{subDone}/{todo.subtasks.length}</span>}
           {(todo.tags||[]).map(t=><span key={t} className="chip">#{t}</span>)}
@@ -4586,6 +4597,44 @@ function HeadsUpCard({ store, style }){
     </div>
   );
 }
+/* A pinned project on Today: the name, then its open work as ordinary todo rows
+   so it can be ticked off without leaving the screen. Tapping the header opens
+   the project's page. Renders nothing at all when nothing is pinned - a heading
+   over an empty space is worse than no heading. */
+function PinnedProjectsCard({ store, onOpenTodo, openProject }){
+  const pins = pinnedProjects(store.data.projects);
+  if(!pins.length) return null;
+  return (
+    <div style={{marginTop:14}}>
+      {pins.map(p => {
+        const open = projectTodos(store.allData.todos, p.id)
+          .filter(t => t.status !== "done").sort(sortTodos);
+        return (
+          <div key={p.id} className="card" style={{padding:"12px 14px",marginBottom:10}}>
+            <button onClick={()=>openProject && openProject(p)}
+              style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:0,textAlign:"left",minHeight:44}}>
+              <span style={{width:16,height:16,flex:"0 0 auto",color:"var(--amber)"}}>{Ic.star}</span>
+              <span style={{flex:1,minWidth:0}}>
+                <b style={{fontFamily:"Fraunces",fontSize:15,display:"block"}}>{p.name}</b>
+                <span className="hint">{open.length
+                  ? open.length + " open" + (p.deadline ? " \u00B7 " + fmtDate(p.deadline) : "")
+                  : "Nothing open" + (p.deadline ? " \u00B7 " + fmtDate(p.deadline) : "")}</span>
+              </span>
+            </button>
+            {open.length>0 &&
+              <div className="list" style={{marginTop:10}}>
+                {open.slice(0,5).map(t =>
+                  <TodoRow key={t.id} store={store} todo={t} onOpen={()=>onOpenTodo(t)} hideProject/>)}
+              </div>}
+            {open.length>5 &&
+              <p className="hint" style={{marginTop:8}}>+{open.length-5} more on the project page.</p>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /* The scratch pad card. Lives at the TOP of Today, above Heads up: the whole
    point is that capture costs no scrolling and no taps, and a box you have to
    reach is a box you will not use when it matters.
@@ -4706,7 +4755,7 @@ function ScratchCard({ store, toast, openAI }){
   );
 }
 
-function TodayView({ store, onOpen, goNow, typeFilter, del, toast, openAI }){
+function TodayView({ store, onOpen, goNow, typeFilter, del, toast, openAI, openProject }){
   const [habitOpen,setHabitOpen] = useState(null);
   // Which day the screen is showing. Deliberately NOT persisted: the useful
   // default is always "today", and a stale "tomorrow" left over from last night
@@ -4759,6 +4808,9 @@ function TodayView({ store, onOpen, goNow, typeFilter, del, toast, openAI }){
         <button className={"seg-b"+(week?" on":"")} onClick={()=>setDay("week")}>7 days</button>
       </div>
       {!tomorrow && !week && <ScratchCard store={store} toast={toast} openAI={openAI}/>}
+      {/* Pinned work sits under capture and above Heads up: it is the thing he
+          chose to keep in front of him, so it outranks the generated summary. */}
+      {!tomorrow && !week && <PinnedProjectsCard store={store} onOpenTodo={onOpen} openProject={openProject}/>}
       {(tomorrow||week)
         ? <div className="card" style={{marginTop:14}}>
             <div className="eyebrow" style={{marginBottom:6}}>Heads up</div>
@@ -5163,11 +5215,34 @@ function ProjectsView({ store, onOpen, openEditor, typeFilter, setTypeFilter, on
           const open = projectTodos(store.allData.todos, p.id).filter(t=>t.status!=="done").length;
           return <div className="item" onClick={()=>setActive(p)}>
             <div className="item-body"><div className="item-title">{p.name}</div>
-              <div className="item-meta"><TypeChip type={p.type}/><span className="chip">{p.status}</span>
+              <div className="item-meta">{p.pinned && <span className="chip amber">{Ic.star} Pinned</span>}<TypeChip type={p.type}/><span className="chip">{p.status}</span>
                 <span className="chip">{open} open</span>{p.deadline&&<span className="chip amber">{fmtDate(p.deadline)}</span>}</div></div></div>;
         }}/>}
     </div>
   );
+}
+
+/* Projects pinned to Today (Chris, 2026-10-06: "I need to be able to pin a
+   project on the homepage").
+
+   WHAT A PIN SHOWS: the project AND its open work, not just its name. A pinned
+   name on its own is a label - you would still have to go to Projects to find
+   out what to do about it, which is the trip the pin was supposed to save. So a
+   pinned project renders its open todos inline, as the same TodoRow used
+   everywhere else, tick and swipe included.
+
+   NOT a second starring system. Todos already have `starredToday`, which is a
+   TODAY flag the daily sweep clears. A pinned project is a standing choice that
+   persists until unpinned, so it is its own field rather than a reuse of that
+   one. The road not taken: deriving "pinned" from the project with the nearest
+   deadline. Rejected because the point is HIS judgement about what matters now,
+   which a deadline does not capture.
+
+   UNSCOPED lookup for the todos, per THE SPACE RULE - the pinned project itself
+   is Space-filtered like everything else you browse, but once it is on screen
+   its work is its work. */
+function pinnedProjects(projects){
+  return (projects || []).filter(p => p && p.pinned && p.status !== "done" && p.status !== "archived");
 }
 
 /* The Space a todo should take from the project it is attached to.
@@ -8120,7 +8195,8 @@ function App(){
 
   let main;
   if(sub && sub!=="more") main=subView;
-  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter} del={deleteWithUndo} toast={toast} openAI={()=>setSub("aichat")}/>;
+  else if(tab==="today") main=<TodayView store={store} onOpen={openTodo} goNow={()=>setSub("now")} typeFilter={typeFilter} del={deleteWithUndo} toast={toast} openAI={()=>setSub("aichat")}
+    openProject={(p)=>{ setProjFocus(p); setSub("projects"); log("NAV","today -> pinned project"); }}/>;
   else if(tab==="lists") main=<ListsView store={store} onOpen={openTodo} typeFilter={typeFilter} setTypeFilter={setTypeFilter} locFilter={locFilter} setLocFilter={setLocFilter} del={deleteWithUndo} toast={toast}/>;
   else if(tab==="more") main=<MoreView store={store} go={go}/>;
 
