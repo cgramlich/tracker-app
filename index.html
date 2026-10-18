@@ -181,6 +181,15 @@ a{color:var(--amber);}
 .rd-next{color:var(--green);}
 .rd-block{color:var(--red);}
 .rd-item.pinned{border-color:var(--amber);background:var(--bg-3);}
+/* Deal heat. Three steps only: more would be a score nobody can apply
+   consistently, and the point is a glance, not a model. */
+.rd-chip.heat-hot{background:var(--red);color:#fff;border-color:transparent;}
+.rd-chip.heat-warm{background:var(--amber);color:#1a1205;border-color:transparent;}
+.rd-chip.heat-cold{background:transparent;color:var(--ink-3);border-color:var(--line-2);}
+/* A next-step date rides on the Next line rather than taking a line of its own. */
+.rd-due{margin-left:8px;font-size:11.5px;font-weight:700;letter-spacing:.03em;
+  text-transform:uppercase;color:var(--ink-3);}
+.rd-due.late{color:var(--red);}
 .rd-star{flex:0 0 auto;display:inline-flex;align-items:center;}
 .rd-star svg{width:14px;height:14px;fill:var(--amber);stroke:var(--amber);}
 .rd-note{color:var(--ink-3);font-size:12.5px;}
@@ -560,11 +569,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.57.0";
+const APP_VERSION = "1.58.0";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-10-06.1";
+const BUILD = "2026-10-18.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -4385,6 +4394,32 @@ function AffirmationLine({ store }){
 /* Dashboard line, shown ONLY when an order needs a look: late, gone quiet, or
    flagged as a problem. Something simply on its way is not worth interrupting
    the Dashboard for; that is what the Orders screen is for. */
+/* Pursuits that have gone quiet. Modelled on OrdersNeedsLookLine, because it is
+   the same job: one line, only when there is something to act on, tapping
+   through to the full list.
+
+   ON THE DASHBOARD, NOT IN HEADS UP. Heads up is one sentence about today's
+   work; folding the pipeline into it would dilute the only line Chris reads
+   every morning. A deal going quiet is a this-week concern, and the Dashboard is
+   where he looks for those.
+
+   Renders nothing when nothing is stalled. A permanent "0 pursuits need a chase"
+   would be a line he learns to skip, and then misses when it says something. */
+function PursuitChaseLine({ store, go }){
+  const line = pursuitChaseLine(((store.rundown||{}).items)||[], waitThreshold(store), TODAY());
+  if(!line) return null;
+  return (
+    <button className="card" onClick={()=>go("rundown")}
+      style={{marginTop:14,display:"flex",gap:10,alignItems:"center",width:"100%",textAlign:"left",borderColor:"var(--amber-line)"}}>
+      <span style={{flex:1,minWidth:0}}>
+        <b style={{fontFamily:"Fraunces",fontSize:15,display:"block"}}>Pipeline needs a chase</b>
+        <span className="hint">{line}</span>
+      </span>
+      <span style={{flex:"0 0 auto",color:"var(--ink-3)"}}>{"\u203A"}</span>
+    </button>
+  );
+}
+
 function OrdersNeedsLookLine({ store, go }){
   const sum = ordersSummary(ordersInSpace(store), TODAY());
   if(!sum.needsLook) return null;
@@ -6849,6 +6884,7 @@ function DashboardView({ store, onOpen, openEditor, go, openProject, del }){
 
       <HeadsUpCard store={store} style={{marginTop:16}}/>
       <OrdersNeedsLookLine store={store} go={go}/>
+      <PursuitChaseLine store={store} go={go}/>
       <NewWinLine store={store} go={go}/>
       <ComingUpCard store={store}/>
 
@@ -7391,15 +7427,24 @@ function parseRundownPaste(text){
     const cont = line.match(/^\s*(next|blocked|blocker|note|decide|decision)\s*:\s*(.*)$/i);
     if(cont && last){
       const k=cont[1].toLowerCase(); const v=cont[2].trim();
-      if(k==="next") last.nextStep=v;
-      else if(k==="blocked"||k==="blocker") last.blocker=v;
+      if(k==="next"){
+        // "next: chase counsel @2026-10-20" - a trailing @date sets the due date.
+        const m = v.match(/\s+@(\d{4}-\d{2}-\d{2})\s*$/);
+        if(m && isRealISODate(m[1])){ last.nextStepDue = m[1]; v = v.slice(0, m.index).trim(); }
+        last.nextStep=v;
+      }
+      else if(k==="blocked"||k==="blocker"){
+        last.blocker=v;
+        // "blocked: Eric" on a waiting item is also who you are waiting ON.
+        if(!last.waitingOn) last.waitingOn=v;
+      }
       else if(k==="note") last.note=v;
       else if(k==="decide"||k==="decision") last.decision=parseDecisionLine(v);
       continue;
     }
     let name = line.replace(/^\s*[-*•◦·]\s+/, "").trim();
     if(!name) continue;
-    let status="", initiative=false, pinned=false, pursuit=false;
+    let status="", initiative=false, pinned=false, pursuit=false, heat="";
     // Pull every [tag] out FIRST so a trailing tag can't break the ~strike~ end-anchor.
     // Recognized: status tags, plus [initiative]/[init], [pin]/[pinned]/[north star], [pursuit].
     name = name.replace(/\[([a-z ]+)\]/ig, (m,g)=>{
@@ -7408,11 +7453,14 @@ function parseRundownPaste(text){
       if(k==="initiative"||k==="init"){ initiative=true; return " "; }
       if(k==="pin"||k==="pinned"||k==="north star"){ initiative=true; pinned=true; return " "; }
       if(k==="pursuit"){ pursuit=true; return " "; }
+      // [hot] / [warm] / [cold] imply it is a deal, so they turn Pursuit on too -
+      // rating a line's heat and not meaning it as a pursuit makes no sense.
+      if(PURSUIT_HEAT_MAP[k]){ heat=k; pursuit=true; return " "; }
       return m;   // unknown tag: leave it in the name
     }).replace(/\s{2,}/g," ").trim();
     if(/^~.+~$/.test(name)){ if(!status) status="dropped"; name=name.replace(/^~+|~+$/g,"").trim(); }
     if(!cur){ cur="General"; if(!workstreams.some(w=>w.toLowerCase()==="general")) workstreams.push("General"); }
-    if(name){ last={ workstreamName:cur, name, status, nextStep:"", blocker:"", note:"", decision:null, initiative, pinned:initiative&&pinned, pursuit }; items.push(last); }
+    if(name){ last={ workstreamName:cur, name, status, nextStep:"", blocker:"", note:"", decision:null, initiative, pinned:initiative&&pinned, pursuit, heat, waitingOn:"", nextStepDue:"" }; items.push(last); }
   }
   return { workstreams, items };
 }
@@ -7456,6 +7504,104 @@ function RundownImportSheet({ onImport, onClose }){
   );
 }
 
+/* PURSUIT HEAT, WAITING-SINCE, NEXT-STEP DATES
+   ============================================================================
+   Chris asked (relayed 2026-09-26) for three things on pursuit items: how hot a
+   deal is, how long it has been waiting and on whom, and a date on the next
+   step - with anything stalled surfacing so he knows to chase.
+
+   ALL THREE FIELDS ARE OPTIONAL AND ABSENT BY DEFAULT. Every existing item
+   keeps working untouched: no migration, and an item that never sets them
+   behaves exactly as before.
+
+   REUSING THE FOLLOW-UP SETTING RATHER THAN A NEW CONSTANT. The brief said to
+   keep the chase threshold "in one constant". There already is one, and it is
+   better than a constant: `waitThreshold(store)` reads `cfg.waitDays`, which
+   Chris can change in Settings, and it already drives the "Follow up - waiting
+   N+ days" section for todos. A second hard-coded number would have been a
+   second thing to keep in step, and the two would eventually disagree. Same
+   reasoning for overdue next steps, which use the existing `isOverdue`.
+
+   WHY THE CLOCK IS STAMPED ON THE TRANSITION, not on every save: if editing a
+   note re-stamped it, the clock would reset each time he looked at the item and
+   the chase nudge would never fire. That is a silent failure - nothing errors,
+   the reminder just never comes. `rundownStamp` is what the editor calls, and
+   it only moves `waitingSince` when the status BECOMES waiting. */
+const PURSUIT_HEAT = [
+  { k:"hot",  label:"Hot",  cls:"heat-hot"  },
+  { k:"warm", label:"Warm", cls:"heat-warm" },
+  { k:"cold", label:"Cold", cls:"heat-cold" },
+];
+const PURSUIT_HEAT_MAP = Object.fromEntries(PURSUIT_HEAT.map(h => [h.k, h]));
+// Hot first, then warm, then cold, then anything unrated. Unrated sorts LAST
+// rather than middle: not having judged a deal is not a claim that it is warm.
+const HEAT_RANK = { hot:0, warm:1, cold:2 };
+function heatRank(it){
+  const r = HEAT_RANK[(it && it.heat) || ""];
+  return r === undefined ? 3 : r;
+}
+
+/* Stamp an item being saved. Returns the fields that changed, for the caller to
+   merge, so the editor does not need to know the rule. */
+function rundownStamp(prev, next){
+  const was = (prev && prev.status) || "";
+  const now = (next && next.status) || "";
+  if(now === "waiting"){
+    // Only start the clock on the way IN. An edit to a waiting item keeps the
+    // original date, which is the whole point of the chase reminder.
+    return { waitingSince: (was === "waiting" && prev.waitingSince) ? prev.waitingSince : TODAY() };
+  }
+  // Left waiting: clear the stamp so a later return to waiting starts fresh,
+  // and a stale date can never resurface as a phantom "waiting 40 days".
+  return { waitingSince: "" };
+}
+
+// Days an item has been waiting, or null when it is not waiting / never stamped.
+function rundownWaitingDays(it, today){
+  if(!it || it.status !== "waiting" || !it.waitingSince) return null;
+  const d = daysBetweenISO(it.waitingSince, today || TODAY());
+  return d == null ? null : Math.max(0, d);
+}
+
+/* What needs chasing: waiting too long, or a next step past its date. Both are
+   about an item that has gone quiet, which is exactly what a pipeline hides. */
+function pursuitsNeedingChase(items, waitDays, today){
+  const t = today || TODAY();
+  const n = (waitDays > 0) ? waitDays : DEFAULT_WAIT_DAYS;
+  return (items || []).filter(it => {
+    if(!it || !it.pursuit) return false;
+    if(it.status === "won" || it.status === "done" || it.status === "dropped") return false;
+    const w = rundownWaitingDays(it, t);
+    if(w != null && w >= n) return true;
+    return !!(it.nextStepDue && isRealISODate(it.nextStepDue) && it.nextStepDue < t);
+  });
+}
+
+// One line for the Dashboard, or "" when there is nothing to chase.
+function pursuitChaseLine(items, waitDays, today){
+  const list = pursuitsNeedingChase(items, waitDays, today);
+  if(!list.length) return "";
+  const t = today || TODAY();
+  const n = (waitDays > 0) ? waitDays : DEFAULT_WAIT_DAYS;
+  /* Each item is counted ONCE, by its most pressing reason. A deal can be both
+     waiting too long AND past its next step - counting it in both buckets made
+     the line read "1 pursuit needs a chase - 1 past its next step, 1 waiting 7+
+     days", which looks like the app cannot add up. An overdue next step wins,
+     because that is a commitment Chris made to himself, where waiting is
+     something happening to him. */
+  let late = 0, quiet = 0;
+  list.forEach(it => {
+    if(it.nextStepDue && it.nextStepDue < t){ late++; return; }
+    const w = rundownWaitingDays(it, t);
+    if(w != null && w >= n) quiet++;
+  });
+  const bits = [];
+  if(late)  bits.push(late + " past its next step");
+  if(quiet) bits.push(quiet + " waiting " + n + "+ days");
+  return list.length + (list.length === 1 ? " pursuit needs a chase" : " pursuits need a chase")
+    + (bits.length ? " - " + bits.join(", ") : "");
+}
+
 function RundownItemSheet({ item, workstreams, onSave, onDelete, onClose }){
   const isNew = !item.id;
   const [name,setName]=useState(item.name||"");
@@ -7467,11 +7613,20 @@ function RundownItemSheet({ item, workstreams, onSave, onDelete, onClose }){
   const [initiative,setInitiative]=useState(!!item.initiative);
   const [pinned,setPinned]=useState(!!item.pinned);
   const [pursuit,setPursuit]=useState(!!item.pursuit);
+  const [heat,setHeat]=useState(item.heat||"");
+  const [waitingOn,setWaitingOn]=useState(item.waitingOn||"");
+  const [nextStepDue,setNextDue]=useState(item.nextStepDue||"");
   const [decision,setDecision]=useState(item.decision||null);
   function save(){
     const n=name.trim(); if(!n) return;
-    onSave({ id:item.id, workstreamId, name:n, status, nextStep:nextStep.trim(), blocker:blocker.trim(),
-      note:note.trim(), decision: cleanDecision(decision), initiative, pinned: initiative && pinned, pursuit });
+    // Heat and "waiting on" describe a DEAL, so they are dropped when an item is
+    // not a pursuit - otherwise unticking Pursuit would leave invisible state
+    // behind that reappears if it is ever ticked again.
+    const base = { id:item.id, workstreamId, name:n, status, nextStep:nextStep.trim(), blocker:blocker.trim(),
+      note:note.trim(), decision: cleanDecision(decision), initiative, pinned: initiative && pinned, pursuit,
+      heat: pursuit ? heat : "", waitingOn: pursuit ? waitingOn.trim() : "",
+      nextStepDue: (nextStep.trim() && isRealISODate(nextStepDue)) ? nextStepDue : "" };
+    onSave({ ...base, ...rundownStamp(item, base) });
   }
   return (
     <Sheet title={isNew?(item.initiative?"Add initiative":item.pursuit?"Add pursuit":"Add item"):"Edit item"} onClose={onClose}>
@@ -7490,6 +7645,20 @@ function RundownItemSheet({ item, workstreams, onSave, onDelete, onClose }){
       <div className="field"><span className="label">Next step (optional)</span>
         <input className="input" value={nextStep} onChange={e=>setNext(e.target.value)}
           placeholder="an action, or a wait (e.g. hear back from Eric)"/></div>
+      {/* Only offered once there IS a next step: a date with nothing to do by it
+          is not a commitment, and it would go stale unnoticed. */}
+      {nextStep.trim() &&
+        <div className="field"><span className="label">Next step by (optional)</span>
+          <input className="input" type="date" value={nextStepDue} onChange={e=>setNextDue(e.target.value)}/></div>}
+      {/* Shown only while the item IS waiting - the field has no meaning
+          otherwise, and the clock that pairs with it is not running. */}
+      {status==="waiting" && pursuit &&
+        <div className="field"><span className="label">Waiting on (optional)</span>
+          <input className="input" value={waitingOn} onChange={e=>setWaitingOn(e.target.value)}
+            placeholder="who or what you're waiting for"/>
+          {item.waitingSince && item.status==="waiting" &&
+            <p className="hint" style={{marginTop:6}}>Waiting since {fmtDate(item.waitingSince)}.</p>}
+        </div>}
       <div className="field"><span className="label">Blocker (optional)</span>
         <input className="input" value={blocker} onChange={e=>setBlocker(e.target.value)}
           placeholder="what's in the way / who you're waiting on"/></div>
@@ -7497,6 +7666,16 @@ function RundownItemSheet({ item, workstreams, onSave, onDelete, onClose }){
         <textarea className="input" rows={2} value={note} onChange={e=>setNote(e.target.value)}
           placeholder="context, numbers, links"/></div>
       <DecisionField value={decision} onChange={setDecision}/>
+      {/* Heat sits WITH the Pursuit tick, and only appears once it is on: how
+          likely a deal is to land means nothing on an awareness item. */}
+      {pursuit &&
+        <div className="field"><span className="label">How hot</span>
+          <div className="seg">
+            <button className={"seg-b"+(heat===""?" on":"")} onClick={()=>setHeat("")}>Unrated</button>
+            {PURSUIT_HEAT.map(h =>
+              <button key={h.k} className={"seg-b"+(heat===h.k?" on":"")} onClick={()=>setHeat(h.k)}>{h.label}</button>)}
+          </div>
+        </div>}
       <label className="row" style={{alignItems:"center",gap:10,marginTop:4,cursor:"pointer"}}>
         <input type="checkbox" checked={pursuit} onChange={e=>setPursuit(e.target.checked)}
           style={{width:18,height:18,flex:"0 0 auto",accentColor:"var(--green)"}}/>
@@ -7596,10 +7775,21 @@ function RundownView({ store, toast, toastUndo }){
       <div key={it.id} className={"rd-item"+(it.status==="dropped"?" dropped":"")+(it.pinned?" pinned":"")} onClick={()=>setEdit(it)}>
         <div className="rd-head">
           {it.pinned && <span className="rd-star">{Ic.star}</span>}
+          {it.heat && PURSUIT_HEAT_MAP[it.heat] &&
+            <span className={"rd-chip "+PURSUIT_HEAT_MAP[it.heat].cls}>{PURSUIT_HEAT_MAP[it.heat].label}</span>}
           {st && <span className={"rd-chip "+st.cls}>{st.label}</span>}
           <span className="rd-name">{it.name}</span>
         </div>
-        {it.nextStep && it.nextStep.trim() && <div className="rd-line"><b className="rd-next">Next</b> {it.nextStep}</div>}
+        {/* Days waiting earns its place on the card: the number IS the reason to
+            chase, and it is invisible until you open the item otherwise. */}
+        {(() => { const w = rundownWaitingDays(it, TODAY()); if(w == null) return null;
+          const over = w >= waitThreshold(store);
+          return <div className="rd-line"><b className={over?"rd-block":"rd-next"}>Waiting {w}d</b>
+            {it.waitingOn ? " on " + it.waitingOn : ""}</div>; })()}
+        {it.nextStep && it.nextStep.trim() &&
+          <div className="rd-line"><b className="rd-next">Next</b> {it.nextStep}
+            {it.nextStepDue && <span className={"rd-due"+(it.nextStepDue < TODAY() ? " late" : "")}>
+              {(it.nextStepDue < TODAY() ? "overdue " : "by ") + fmtDate(it.nextStepDue)}</span>}</div>}
         {it.blocker && it.blocker.trim() && <div className="rd-line"><b className="rd-block">Blocked</b> {it.blocker}</div>}
         {decisionIsOpen(it.decision) && <div className="rd-line"><b className="rd-decide">Deciding</b> {decisionSummary(it.decision)}</div>}
         {showNote && it.note && it.note.trim() && <div className="rd-line rd-note">{it.note}</div>}
@@ -7640,6 +7830,10 @@ function RundownView({ store, toast, toastUndo }){
         nextStep:p.nextStep||"", blocker:p.blocker||"", note:p.note||"",
         decision: cleanDecision(p.decision),   // same normalizer the editor uses
         initiative:!!p.initiative, pinned:!!(p.initiative&&p.pinned), pursuit:!!p.pursuit,
+        heat: (p.pursuit && PURSUIT_HEAT_MAP[p.heat]) ? p.heat : "",
+        waitingOn: p.pursuit ? (p.waitingOn||"") : "",
+        waitingSince: p.status==="waiting" ? TODAY() : "",
+        nextStepDue: (p.nextStep && isRealISODate(p.nextStepDue)) ? p.nextStepDue : "",
         order:o, updatedAt:nowISO() });
       added++;
     });
@@ -7663,8 +7857,12 @@ function RundownView({ store, toast, toastUndo }){
   }
   function renderPursuits(){
     const all = items.filter(it=>it.pursuit);
-    const groups = RUNDOWN_STATUSES.map(s=>({ s, list: all.filter(it=>(it.status||"")===s.k).sort(byUpdated) }))
-      .concat([{ s:{k:"",label:"No status"}, list: all.filter(it=>!it.status).sort(byUpdated) }]);
+    // Hot first WITHIN each status group, then most recently touched. Heat does
+    // not reorder the groups themselves: a hot deal that is already Won does not
+    // belong above a warm one still live.
+    const byHeat = (a,b) => (heatRank(a) - heatRank(b)) || byUpdated(a,b);
+    const groups = RUNDOWN_STATUSES.map(s=>({ s, list: all.filter(it=>(it.status||"")===s.k).sort(byHeat) }))
+      .concat([{ s:{k:"",label:"No status"}, list: all.filter(it=>!it.status).sort(byHeat) }]);
     return (
       <>
         <button className="btn btn-primary btn-block" style={{marginTop:12}}
