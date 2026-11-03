@@ -569,11 +569,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.58.0";
+const APP_VERSION = "1.58.1";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-10-18.1";
+const BUILD = "2026-11-03.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -1392,19 +1392,34 @@ function syncErrText(e){
 /* ============================================================
    BACKEND + AUTH CONFIG
    All three values are PUBLIC-SAFE and intentionally shipped in the browser:
-   - the Supabase anon key is designed to be public (it only permits auth, not
-     data access; real data goes through our backend),
+   - the Supabase PUBLISHABLE key is designed to be public (it only permits
+     auth, not data access; real data goes through our backend),
    - the API base is just a URL.
-   The real secrets (Supabase service-role key, Anthropic key) live ONLY on the
-   Railway backend, never here.
+   The real secrets (Supabase secret/service-role key, Anthropic key) live ONLY
+   on the Railway backend, never here.
+
+   WHY A PUBLISHABLE KEY AND NOT THE OLD ANON KEY (2026-11-03): Supabase's
+   legacy anon JWT for this project is DISABLED, so sign-in failed outright
+   with "Legacy API keys disabled" - nobody could log in. THE RULE: this
+   constant holds the project's publishable key (sb_publishable_...), never a
+   legacy JWT. supabase-js takes it as a drop-in second argument to
+   createClient; nothing here decodes the key, so its shape does not matter.
+
+   THE ROAD NOT TAKEN: re-enabling the legacy keys in the Supabase dashboard
+   would also have restored sign-in, and in one click. We did not, because that
+   toggle is PROJECT-WIDE and temporary - the next time it is switched off,
+   every user is locked out again with no warning and no deploy to blame. The
+   publishable key is the durable answer. It also keeps this fix inside the
+   frontend: the backend's own key is untouched, so no Railway variable change
+   and no deploy, which matters while Railway deploys are paused.
    ============================================================ */
 const SUPABASE_URL = "https://mtazdrtvsvlcyyzpausr.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im10YXpkcnR2c3ZsY3l5enBhdXNyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIzMzI1OTIsImV4cCI6MjA5NzkwODU5Mn0.IQ0kV_mN6A5bAzh0SB6JUrE8KZYEJz7aU6cQD7sp6xM";
+const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_axVmV7I7awKlaUxtgWBZlw_r1WhJyla";
 const API_BASE = "https://web-production-f0353.up.railway.app";
 
 // Supabase client - used for AUTH ONLY (login, session, token refresh). Data and
 // AI never touch it; they go through our backend with the user's access token.
-const supa = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+const supa = supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, storage: window.localStorage, storageKey: "tracker-auth" }
 });
 
