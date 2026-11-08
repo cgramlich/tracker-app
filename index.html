@@ -1,4 +1,66 @@
 ﻿<!DOCTYPE html>
+<!--
+  PRIORITY CAPTAIN: the whole app, in this one file.
+  A personal GTD and Eisenhower task app, iPhone-first, used as an installed Home Screen
+  web app. React 18 and Babel Standalone load from a CDN and the app code is compiled in
+  the browser. There is no build step: this file is the deliverable. The repo and the
+  Pages URL are called tracker-app on purpose; renaming them breaks installed copies.
+
+  WHAT THIS FILE OWNS
+  - Every screen, all the styles and all client logic: capture (quick add, Jot a note,
+    the AI brain-dump, reading a photo), todos, projects, goals, notes and ideas,
+    decisions (options attached to a Rundown item or a note), Spaces, the Dashboard, the
+    Rundown board and its pursuits, habits, wins, affirmations, orders, the scratch pad,
+    the read-only calendar view, settings and the in-app guide.
+  - The sync engine. Data is kept on the device first, then pushed to and pulled from
+    the backend: four synced collections (todos, ideas, projects, goals) plus one
+    per-user "meta" record that carries settings and every smaller feature's data.
+  - Sign-in, through supabase-js with the project's publishable key. Never a legacy key:
+    Supabase disabled those for this project on 2026-10-22.
+
+  WHAT IT DELIBERATELY DOES NOT DO
+  - Hold an AI provider key or call a model directly. Every AI request goes through the
+    backend relay (repo tracker-backend), which picks the model and enforces spend caps.
+  - See a calendar feed's address. A feed URL is a credential, so it stays on the
+    server; this file only ever sees a feed's id, name, Space and colour.
+  - Create, edit or delete calendar events. The calendar is read-only, permanently.
+  - Track parcels. Orders answers "what never showed up", not "where is the box".
+  - Link a web manifest. Without one, Add to Home Screen keeps the page's current URL,
+    which the #dump capture icon depends on. Do not add one.
+
+  WHERE THINGS ARE, top to bottom
+  Each region opens with a capitalised banner comment; search for "/* ====" to step
+  through them. No line numbers here, because they drift.
+  - Styles: one style block, with the whole palette as CSS variables at its top.
+  - Foundations: the log buffer (an iPhone has no console, so Settings shows it under
+    Diagnostics), the version and build stamps, and small helpers.
+  - Feature rules, kept apart from the screens that use them: habits, affirmations,
+    orders, the scratch pad and wins.
+  - Storage and the backend: local storage, the backend and sign-in settings, the four
+    collections, calendar feeds, and attaching work to a calendar event.
+  - AI: the relay calls and the two-step calendar Q&A.
+  - The data store hook (the sync engine), then Spaces.
+  - Shared pieces: icons, small components, converting an item's type, the editors,
+    the to-do row, drag to reorder, capture and filters.
+  - Screens: one banner per screen, each titled "VIEW:" and a name, plus templates, the
+    Spaces and calendar managers, the in-app guide and the Rundown board.
+  - Startup: first-run setup, the Space switcher, the app shell (navigation, the update
+    check, the #dump deep link) and the mount.
+
+  BEFORE YOU CHANGE IT
+  - Ship: bump APP_VERSION and BUILD (in the foundations region) and VERSION in sw.js
+    together. BUILD must sort after the live one, or installed copies never update.
+  - Run "npm run verify" (the compile gate plus the test suites) before every push.
+  - A new meta slice needs four changes: its state, its ref, an entry in buildMeta and
+    an entry in signOut. Miss the last and it is written into the next account's data.
+  - Every meta change goes through markMetaDirty(). Never set the dirty flag by hand.
+  - A Space filter decides what you browse, never whether a link resolves: look up a
+    todo's project or a project's goal in the unfiltered data. A test enforces this.
+  - Keep every path relative. The app is served from a subpath, not a domain root.
+  - No text input under 16px, or iOS zooms the page when it gets focus.
+  - The full story, with every decision and the road not taken: HANDOFF.md in the
+    Dropbox folder CG Apps/PriorityCaptain.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -569,11 +631,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.58.1";
+const APP_VERSION = "1.58.2";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-11-03.1";
+const BUILD = "2026-11-08.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
