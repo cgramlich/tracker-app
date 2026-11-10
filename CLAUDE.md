@@ -97,6 +97,11 @@ PWA's self-update - so "Tracker" in these docs = the codebase/working title.
     backend (`tests/store-harness.js`). Any change to sync, pull/push, or
     signOut must keep it green. A test named after a real bug also runs on a
     copy of the app with that fix stripped out, and asserts the bug returns.
+  - `tests/orientation.test.js` keeps the comment at the very top of index.html
+    inert. The compile gate, the lifters, the in-app updater and several suites
+    all take the FIRST match in the file, so that comment must hold no
+    `<script`, no `const `, no banner title and nothing a suite searches for.
+    If you add a suite that anchors on a new phrase, this one checks it too.
   - Visual work: `node tests/harness/build.js`, serve tests/harness, and MEASURE
     the DOM at 375px. Screenshots often fail to composite; measuring catches more
     and has repeatedly found real bugs that reading the code did not.
