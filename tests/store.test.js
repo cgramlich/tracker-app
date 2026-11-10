@@ -17,11 +17,13 @@ const { createBackend, createDevice, settle } = require("./store-harness");
 
 // Strip a named fix out of the source, and refuse to continue if the anchor has
 // moved - otherwise the "proof" would silently run against unmodified code.
-function without(fix, anchor, replacement) {
-  const n = SRC.split(anchor).length - 1;
+// Pass `from` to strip a second fix out of an already-stripped copy.
+function without(fix, anchor, replacement, from) {
+  const src = from || SRC;
+  const n = src.split(anchor).length - 1;
   if (n !== 1) throw new Error("strip '" + fix + "': anchor found " + n + " times, expected exactly 1. " +
     "The code under test changed; update this proof rather than deleting it.");
-  return SRC.replace(anchor, replacement);
+  return src.replace(anchor, replacement);
 }
 
 async function signedIn(dev, email) {
@@ -129,7 +131,7 @@ const mentions = (obj, needle) => JSON.stringify(obj === undefined ? null : obj)
     is("'" + k + "' is removed from localStorage in signOut", lsDelList.includes('"' + k + '"'), true);
   }
   const ALLOW = ["cfg", "spaces", "defaultSpace", "spacesSeeded", "templates", "rundown",
-                 "affirmations", "habits", "habitsMigrated", "habitsBackup", "orders", "scratch"];
+                 "affirmations", "habits", "habitsMigrated", "orders", "scratch"];
   const unknown = metaKeys.filter(k => !ALLOW.includes(k));
   is("no NEW meta key has appeared without a sign-out test being added here" +
      (unknown.length ? " (new: " + unknown.join(", ") + ")" : ""), unknown, []);
@@ -314,7 +316,7 @@ const mentions = (obj, needle) => JSON.stringify(obj === undefined ? null : obj)
     is("the ordinary todo was NOT touched", server.todos.some(t => t.title === "An ordinary todo"), true);
     is("the HABIT itself reached the server, not just the phone",
       (server.meta.habits || []).map(h => h.name), ["Complete daily exercise"]);
-    is("the deleted rows are stashed in the server's habitsBackup", (server.meta.habitsBackup || []).map(t => t.id).sort(), ["r1", "r2"]);
+    is("no backup of the deleted rows is kept on the server (retired in v1.58.3)", "habitsBackup" in (server.meta || {}), false);
     is("the migration is marked done on the server so it cannot run twice", server.meta.habitsMigrated, true);
 
     await app.store.pull(); await settle();
@@ -326,6 +328,60 @@ const mentions = (obj, needle) => JSON.stringify(obj === undefined ? null : obj)
       "if(metaSeqRef.current === sentSeq){", "if(true){"));
     is("PROOF: with the fix stripped out, the habits again never reach the server",
       (server.meta.habits || []).length === 0 && server.meta.habitsMigrated !== true, true);
+  }
+
+  /* ------------------------------------------------------------------------
+     v1.58.3 (2026-11-10): THE HABITS BACKUP IS RETIRED, NOT CARRIED FOREVER.
+
+     The habit migration used to stash the routine rows it deleted in
+     habitsBackup, and that copy then rode every settings save for good. Chris
+     chose to remove it once its one live copy was checked: every completed day
+     in it was already in its habit. Removal has two halves and each is pinned
+     here. The server copy must drop on the next settings save, because
+     buildMeta no longer sends it and the server replaces meta whole. The copy an
+     older version left on the phone must be cleared, which pull does. Neither
+     may touch the habits themselves.
+     ------------------------------------------------------------------------ */
+  section("v1.58.3 - the retired habits backup is dropped from the server and the phone");
+  async function withOldBackup(source) {
+    const be = createBackend();
+    be.seed("alice@example.test", { meta: {
+      cfg: { appName: "Alice" },
+      habits: [{ id: "h1", name: "Take daily medications", cadence: "daily", done: ["2026-06-30", "2026-07-02"] }],
+      habitsMigrated: true,
+      habitsBackup: [{ id: "OLD-BACKUP-ROW", title: "Take daily medications", status: "done" }],
+    } });
+    const dev = createDevice(be, { source });
+    dev.localStorage.setItem("tracker:habitsBackup", JSON.stringify([{ id: "OLD-BACKUP-ROW" }]));
+    const app = await signedIn(dev, "alice@example.test");
+    app.store.saveCfg({ ...app.store.cfg, appName: "Alice again" });
+    await settle();
+    return { dev, app, server: be.account("alice@example.test") };
+  }
+  {
+    const { dev, app, server } = await withOldBackup(SRC);
+    is("precondition: the settings save really reached the server", (server.meta.cfg || {}).appName, "Alice again");
+    is("the phone's leftover copy is cleared", dev.ls("habitsBackup"), undefined);
+    is("the next settings save leaves no backup on the server", "habitsBackup" in server.meta, false);
+    is("the habit and its history are untouched on the server",
+      ((server.meta.habits || [])[0] || {}).done, ["2026-06-30", "2026-07-02"]);
+    is("and on the phone", ((app.store.habits || [])[0] || {}).done, ["2026-06-30", "2026-07-02"]);
+    is("the migration stays marked done, so it cannot run again", server.meta.habitsMigrated, true);
+  }
+  {
+    const { dev } = await withOldBackup(without("v1.58.3 phone cleanup", 'lsDel("habitsBackup");', ""));
+    is("PROOF: with the cleanup line stripped, the phone's copy survives", dev.ls("habitsBackup") !== undefined, true);
+  }
+  {
+    // Put the old behaviour back: pull copies the server's backup onto the phone, buildMeta sends it.
+    const pulled = without("v1.58.3 stop reading", 'lsDel("habitsBackup");',
+      'if(m && m.habitsBackup) lsSet("habitsBackup", m.habitsBackup);');
+    const old = without("v1.58.3 stop sending", "m.habitsMigrated = !!habitsMigratedRef.current;",
+      'm.habitsMigrated = !!habitsMigratedRef.current; if(lsGet("habitsBackup", null)) m.habitsBackup = lsGet("habitsBackup", null);',
+      pulled);
+    const { server } = await withOldBackup(old);
+    is("PROOF: with the old read and send put back, the backup rides the save again",
+      mentions(server.meta.habitsBackup, "OLD-BACKUP-ROW"), true);
   }
 
   /* ------------------------------------------------------------------------ */

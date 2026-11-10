@@ -631,11 +631,11 @@ const LOG = [];
 // User-facing semantic version (MAJOR.MINOR.PATCH). This is what shows in Settings,
 // the update prompts, and the footers - a real version, not a build date. Bump it on
 // every deploy: PATCH for a fix, MINOR for a feature, MAJOR for a big milestone.
-const APP_VERSION = "1.58.2";
+const APP_VERSION = "1.58.3";
 // Internal build stamp. Bump on every deploy too (today's date + a counter). This is
 // what the updater actually COMPARES (it's monotonic, so detection never misfires) and
 // what cache-busts the reload; APP_VERSION above is the friendly label shown to users.
-const BUILD = "2026-11-08.1";
+const BUILD = "2026-11-10.1";
 // Compare two build stamps of the form "YYYY-MM-DD.N". A plain string compare is wrong
 // (the counter isn't zero-padded, so ".11" < ".9" lexically); split on - and . into
 // numeric fields and compare left to right. True iff `a` is strictly newer than `b`.
@@ -2158,8 +2158,7 @@ function useStore(){
   const [templates, setTemplates] = useState(() => lsGet("templates", []));
   const templatesRef = useRef(templates); templatesRef.current = templates;
   // Habits: [{id,name,cadence,space,type,startedAt,done:[iso]}]. Another meta slice.
-  // `habitsMigrated` marks the one-time routine-todo conversion as already run;
-  // `habitsBackup` holds the routine rows it deleted, so a bad migration is undoable.
+  // `habitsMigrated` marks the one-time routine-todo conversion as already run.
   const [habits, setHabits] = useState(() => lsGet("habits", null));
   const habitsRef = useRef(habits); habitsRef.current = habits;
   // Affirmations: [{id,text,addedAt}]. A meta slice like the rest. Which one is
@@ -2173,7 +2172,6 @@ function useStore(){
   const [scratch, setScratch] = useState(() => lsGet("scratch", null));
   const scratchRef = useRef(scratch); scratchRef.current = scratch;
   const habitsMigratedRef = useRef(lsGet("habitsMigrated", false));
-  const habitsBackupRef = useRef(lsGet("habitsBackup", null));
   // RTR Rundown: an awareness board that rides on meta (like templates/spaces). null until
   // first use. Shape: { workstreams:[{id,name,order}], items:[{id,workstreamId,name,status,
   // nextStep,blocker,note,order,updatedAt}] }. See SCOPE-rtr-rundown.md.
@@ -2216,7 +2214,6 @@ function useStore(){
     if(habitsRef.current){
       m.habits = habitsRef.current;
       m.habitsMigrated = !!habitsMigratedRef.current;
-      if(habitsBackupRef.current) m.habitsBackup = habitsBackupRef.current;
     }
     return m;
   };
@@ -2407,9 +2404,13 @@ function useStore(){
 
      DELETION SAFETY, in order:
       1. Guarded by habitsMigrated so it can never run twice.
-      2. The deleted rows are stashed verbatim in habitsBackup FIRST, so the
-         "delete" is undoable even though Chris asked for a delete.
-      3. Habits are written before the todos are removed, never after.
+      2. Habits are written before the todos are removed, never after.
+     There is no longer a backup of the deleted rows. Until v1.58.3 they were
+     stashed in habitsBackup, which rode every settings save. Removed 2026-11-10
+     on Chris's say-so, after checking the one live copy: every completed day in
+     it was already in its habit. Only an account that held routine todos
+     before 2026-08-11 can reach the delete below, and the only such account has
+     already migrated. A new account marks itself migrated on its first, empty pull.
      Grouping is by title (see migrateRoutines) - a renamed routine splits. */
   const ensureHabits = useCallback(() => {
     if(habitsMigratedRef.current) return;
@@ -2421,8 +2422,6 @@ function useStore(){
       return;
     }
     const kill = new Set(removeIds);
-    const backup = list.filter(t => kill.has(t.id));          // stash BEFORE removing
-    habitsBackupRef.current = backup; lsSet("habitsBackup", backup);
 
     const nextHabits = (habitsRef.current || []).concat(made);
     habitsRef.current = nextHabits; setHabits(nextHabits); lsSet("habits", nextHabits);
@@ -2433,8 +2432,7 @@ function useStore(){
 
     habitsMigratedRef.current = true; lsSet("habitsMigrated", true);
     markMetaDirty();
-    log("HABIT","converted "+made.length+" habit(s), removed "+removeIds.length+" routine todo(s), "+
-                backup.length+" row(s) backed up");
+    log("HABIT","converted "+made.length+" habit(s), removed "+removeIds.length+" routine todo(s)");
   }, [markDirty]);
 
   const ensureRoutines = useCallback(() => {
@@ -2523,9 +2521,12 @@ function useStore(){
           if(Array.isArray(m && m.habits)){
             habitsRef.current = m.habits; setHabits(m.habits); lsSet("habits", m.habits);
             habitsMigratedRef.current = !!m.habitsMigrated; lsSet("habitsMigrated", !!m.habitsMigrated);
-            if(m.habitsBackup){ habitsBackupRef.current = m.habitsBackup; lsSet("habitsBackup", m.habitsBackup); }
             log("HABIT","habits <- meta ("+m.habits.length+")");
           }
+          // The retired habits backup (see ensureHabits). It is never read, and buildMeta no
+          // longer sends it, so the server copy drops on the next settings save. This clears
+          // the copy an older version left on this device. Harmless when there is none.
+          lsDel("habitsBackup");
         }catch(e){ log("ERROR","pull meta: "+e.message); }
       }
       setSync(FILES.some(f=>dirtyRef.current[f])?"pending":"idle"); setSyncMsg("");
@@ -2565,7 +2566,7 @@ function useStore(){
     // to - or pushed under - a different account on the same device (migration footgun).
     FILES.forEach(f => lsDel("cache:"+f));
     ["dirty","pendingReview","aiChat","aiPlan","aiSeed","aiSeedScratchIds","cfgDirty","spaces","defaultSpace","spacesSeeded","templates","rundown",
-     "habits","habitsMigrated","habitsBackup","affirmations","orders","scratch"].forEach(k => lsDel(k));
+     "habits","habitsMigrated","affirmations","orders","scratch"].forEach(k => lsDel(k));
     const empty = {}; FILES.forEach(f => empty[f] = []);
     dataRef.current = empty; setData(empty);
     dirtyRef.current = {}; setDirty({});
@@ -2585,7 +2586,6 @@ function useStore(){
     scratchRef.current = null; setScratch(null);
     habitsRef.current = null; setHabits(null);
     habitsMigratedRef.current = false;
-    habitsBackupRef.current = null;
     // The Rundown lives in meta like templates do, and buildMeta pushes whatever is in
     // rundownRef. Leaving it behind meant the previous account's board stayed on screen
     // AND could be written into the next account's meta on the first sync.
